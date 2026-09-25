@@ -1,0 +1,14 @@
+{
+    "poetry_add": {
+        "template": "poetry add {arg}",
+        "description": "Adds a specific python package to the project (e.g., 'requests')."
+    },
+    "poetry_remove": {
+        "template": "poetry remove {arg}",
+        "description": "Removes a specific python package to the project (e.g., 'requests')."
+    },
+    "install_deps": {
+        "template": "poetry install",
+        "description": "Installs all project dependencies defined in pyproject.toml."
+    }
+}

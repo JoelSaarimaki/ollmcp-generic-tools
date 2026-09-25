@@ -1,0 +1,63 @@
+{
+    "mcpServers": {
+        "codebase-mapper": {
+          "command": "python",
+          "args": [
+            ".\\mcp-servers\\generate-map-mcp.py"
+          ],
+          "env": {
+            "INPUT_DIR": ".\\"
+          }
+        },
+        "search-tool": {
+          "command": "python",
+          "args": [
+            ".\\mcp-servers\\search-tool-mcp.py"
+          ],
+          "env": {
+            "INPUT_DIR": ".\\"
+          }
+        },
+        "instructions": {
+          "command": "python",
+          "args": [
+            ".\\mcp-servers\\instructions-mcp.py"
+          ],
+          "env": {
+            "PROJECT_INSTRUCTIONS_FILE": ".\\_instructions\\app-instructions.md"
+          }
+        },
+        "commands": {
+          "command": "python",
+          "args": [
+            ".\\mcp-servers\\commands-mcp.py"
+          ],
+          "env": {
+            "COMMANDS_CONFIG": ".\\_commands\\app-commands.json"
+          }
+        },
+        "context": {
+          "command": "python",
+          "args": [
+            ".\\mcp-servers\\context-record-mcp.py"
+          ],
+          "env": {
+            "CONTEXT_FOLDER_PATH": ".\\_external_context\\app-context"
+          }
+        },
+        "filesystem": {
+          "command": "npx",
+          "args": [
+            "-y",
+            "@modelcontextprotocol/server-filesystem",
+            ".\\"
+          ]
+        },
+        "web-search": {
+          "command": "uvx",
+          "args": [
+            "duckduckgo-mcp-server"
+          ]
+        }
+    }
+}

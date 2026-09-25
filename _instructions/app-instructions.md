@@ -1,3 +1,5 @@
+This is an example file.
+
 # Essentials for understanding the project
 
 ## Tools

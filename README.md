@@ -41,4 +41,6 @@ Performs text or regex searches across files in a specified directory.
 - **search_text_in_files** Search for text or regex patterns from code files in the codebase.
 
 
+## Use
+
 The `.mcp.json` file includes an example of a servers JSON file that ollmcp can read to gain access to the MCP servers and their tools. Place it in the project root folder, adjust the filepaths and start ollmcp in the same folder using `ollmcp`.

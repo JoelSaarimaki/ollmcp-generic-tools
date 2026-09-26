@@ -53,6 +53,12 @@
           "env": {
             "ALLOWED_DIR": ".\\"
           }
+        },
+        "git-diff": {
+          "command": "python",
+          "args": [
+            ".\\mcp-servers\\git-diff-mcp.py"
+          ]
         }
     }
 }

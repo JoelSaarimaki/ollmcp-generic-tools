@@ -3,19 +3,74 @@ import ast
 import os
 import re
 import traceback
+import fnmatch
 from pathlib import Path
+from typing import Set, List
 
 mcp = MCPServer("GenerateMap")
 
 # --- Constants & Config ---
 INPUT_DIR = Path(os.getenv("INPUT_DIR", os.getcwd()))
+GITIGNORE_PATH = os.getenv("GITIGNORE_PATH")
 IGNORED_DIRS = {"node_modules", ".git", "__pycache__", "dist", "build", ".next"}
 PYTHON_SUFFIXES = {".py"}
 JS_TS_SUFFIXES = {".js", ".jsx", ".ts", ".tsx"}
 OTHER_SUFFIXES = {".md", ".json", ".css", ".scss", ".html"}
 ALL_ALLOWED_SUFFIXES = PYTHON_SUFFIXES | JS_TS_SUFFIXES | OTHER_SUFFIXES
 
-# --- Internal Helpers ---
+# --- Gitignore Parser ---
+
+def load_gitignore_patterns(input_dir: Path) -> List[str]:
+    """
+    Loads patterns from a .gitignore file.
+    Checks for GITIGNORE_PATH env var, otherwise checks input_dir/.gitignore.
+    """
+    if GITIGNORE_PATH:
+        gitignore_path = Path(GITIGNORE_PATH)
+    else:
+        gitignore_path = input_dir / ".gitignore"
+    
+    if not gitignore_path.exists():
+        return []
+    
+    patterns = []
+    try:
+        with open(gitignore_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                patterns.append(line)
+    except Exception:
+        pass
+    return patterns
+
+def is_ignored(path: Path, input_dir: Path, ignored_dirs: Set[str], gitignore_patterns: List[str]) -> bool:
+    """
+    Checks if a path is ignored by IGNORED_DIRS or .gitignore patterns.
+    """
+    # Check IGNORED_DIRS first
+    if any(ignored in path.parts for ignored in ignored_dirs):
+        return True
+    
+    if not gitignore_patterns:
+        return False
+
+    # Check .gitignore patterns
+    try:
+        rel_path = path.relative_to(input_dir).as_posix()
+    except ValueError:
+        return False
+    
+    for pattern in gitignore_patterns:
+        # Handle basic glob patterns using fnmatch
+        # Real .gitignore is more complex, but this covers common cases.
+        if fnmatch.fnmatch(rel_path, pattern) or \
+           fnmatch.fnmatch(f"{rel_path}/", pattern) or \
+           any(fnmatch.fnmatch(part, pattern) for part in path.relative_to(input_dir).parts):
+            return True
+            
+    return False
 
 def format_docstring(docstring: str) -> str:
     """
@@ -209,15 +264,15 @@ def _get_project_metadata(root_dir: Path) -> dict:
                             metadata["symbols"].add(sub.name)
     return metadata
 
-def _generate_simple_map(input_dir: Path) -> str:
+def _generate_simple_map(input_dir: Path, gitignore_patterns: List[str]) -> str:
     lines = [f"Root: `{input_dir.as_posix()}`\n"]
     
     def _build_tree(current_dir: Path, prefix: str = ""):
         try:
             entries = []
             for entry in current_dir.iterdir():
-                # Skip ignored directories
-                if any(ignored in entry.parts for ignored in IGNORED_DIRS):
+                # Skip if ignored by IGNORED_DIRS or .gitignore
+                if is_ignored(entry, input_dir, IGNORED_DIRS, gitignore_patterns):
                     continue
                 
                 if entry.is_dir():
@@ -248,13 +303,14 @@ def _generate_simple_map(input_dir: Path) -> str:
     return "".join(lines)
 
 def _create_and_write_map(input_dir: Path) -> str:
+    gitignore_patterns = load_gitignore_patterns(input_dir)
     metadata = _get_project_metadata(input_dir)
     
     content = ["# Codebase Structure & Summaries\n\n"]
     
     # Add File Map section with code block for console compatibility
     content.append("## File Map\n")
-    map_tree = _generate_simple_map(input_dir)
+    map_tree = _generate_simple_map(input_dir, gitignore_patterns)
     content.append(f"```\n{map_tree}```\n\n")
     content.append("## Detailed Descriptions\n\n")
     
@@ -263,8 +319,8 @@ def _create_and_write_map(input_dir: Path) -> str:
         if path.is_dir():
             continue
 
-        # Skip common dependency/build folders using path.parts
-        if any(ignored in path.parts for ignored in IGNORED_DIRS):
+        # Skip if ignored by IGNORED_DIRS or .gitignore
+        if is_ignored(path, input_dir, IGNORED_DIRS, gitignore_patterns):
             continue
 
         file_content = ""

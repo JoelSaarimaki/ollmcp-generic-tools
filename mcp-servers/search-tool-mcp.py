@@ -1,7 +1,6 @@
 from mcp.server.mcpserver import MCPServer
 import os
 import re
-import traceback
 from pathlib import Path
 
 mcp = MCPServer("ContentSearch")
@@ -59,19 +58,57 @@ def search_text_in_files(query: str, case_sensitive: bool = False) -> str:
 
     Args:
         query (str): The text or regex pattern to search for.
-        case_sensitive (bool): Whether the search should be case sensitive. Default is False.
+        case_sensitive (bool): Whether the search should be case-sensitive. The default is False
 
     Returns:
-        str: A string containing the search results or an error message.
+        str: A list of matching lines with file paths and line numbers, or an error message.
     """
-    if not INPUT_DIR.exists():
-        return f"Error: Input directory {INPUT_DIR} does not exist."
-
     try:
-        output = _conduct_search(root_dir=INPUT_DIR, query=query, case_sensitive=case_sensitive)
-        return f"Search results for '{query}' in '{INPUT_DIR}':\n\n{output}"
+        return _conduct_search(INPUT_DIR, query, case_sensitive)
     except Exception as e:
-        return f"Error searching text in files:\n{e}\n{traceback.format_exc()}"
+        return f"Error searching text in files: {str(e)}"
+
+@mcp.tool()
+def search_files_by_pattern(pattern: str) -> str:
+    """
+    Searches for files and directories that match a glob-style pattern.
+
+    Args:
+        pattern (str): A glob pattern (e.g., `**/*.ts`, `src/utils/*.py`, `README*`).
+
+    Returns:
+        str: A string list of matching file paths or an error message.
+    """
+    try:
+        # We use INPUT_DIR as the base for searching
+        # Use rglob for recursive globbing if the pattern doesn't specify it, 
+        # but pathlib's glob/rglob behavior is what we want.
+        
+        matches = []
+        # Use rglob if pattern starts with ** or just glob if it's a simple pattern
+        # For simplicity and following spec, we'll use rglob if possible
+        # or just iterate and match.
+        
+        # A more robust way to handle both glob and rglob:
+        if "**" in pattern:
+            for p in INPUT_DIR.rglob(pattern):
+                if not any(ignored in p.parts for ignored in IGNORED_DIRS):
+                    matches.append(str(p.relative_to(INPUT_DIR)))
+        else:
+            for p in INPUT_DIR.glob(pattern):
+                if not any(ignored in p.parts for ignored in IGNORED_DIRS):
+                    matches.append(str(p.relative_to(INPUT_DIR)))
+
+        if not matches:
+            return f"No files found matching pattern: '{pattern}'"
+
+        # Cap the results
+        if len(matches) > 100:
+            return "\n".join(matches[:100]) + f"\n... (and {len(matches) - 100} more matches)"
+        
+        return "\n".join(matches)
+    except Exception as e:
+        return f"Error searching for files: {str(e)}"
 
 if __name__ == "__main__":
     mcp.run()

@@ -1,6 +1,39 @@
 # ollmcp-generic-tools
 
-Generic custom MCP servers for Ollmcp for Python and JS/TX development purposes.
+Generic custom MCP servers for Ollmcp for Python and JS/TS development purposes.
+
+## Setup
+
+### Prerequisites
+
+1.  **Install Ollama**:
+    Download and install Ollama from [ollama.com](https://ollama.com/). Once installed, you can run a model (for example gemma4:26b), using:
+    ```bash
+    ollama run gemma4:26b
+    ```
+
+2.  **Install ollmcp**:
+    Install `ollmcp` via pip:
+    ```bash
+    pip install ollmcp
+    ```
+
+### Configuration
+
+To use these MCP servers, you need to configure a `.mcp.json` file in your project root. This file tells `ollmcp` which servers to start and how to access them.
+
+**Important Notes on File Paths:**
+- The MCP servers themselves (the code) do **not** need to be located within your project folder.
+- However, the file paths specified in `.mcp.json` must correctly point to the location of the server scripts and any data directories used by the tools.
+- The special directories used by the tools (`_context`, `_instructions`, and `_commands`) can either be located inside your project folder or anywhere else on your system, as long as you provide the correct absolute or relative paths in your configuration.
+
+### Running
+
+Once configured, start `ollmcp` in your project root directory:
+
+```bash
+ollmcp
+```
 
 ## MCP Servers
 
@@ -28,19 +61,37 @@ Generates a comprehensive structure map and summary of a codebase, supporting Py
 
 - **generate_codebase_map** Generates a structuremap of the codebase.
 
+### git-diff-mcp
+
+Provides tools to inspect git history and differences for files within a repository.
+
+- **get_file_diff** Retrieves the differences for a specified file.
+- **get_file_history** Retrieves the commit history and associated diffs for a specified file.
+- **is_git_repository** Checks if the current working directory or a specified directory is a Git repository.
+
 ### instructions-mcp
 
 Retrieves project-specific instructions from a designated Markdown file.
 
 - **get_project_instructions** Returns the content of the project-specific instructions markdown file.
 
+### safe-filesystem-mcp
+
+Provides safe and robust file system operations, including metadata retrieval and atomic writes.
+
+- **safe_write_file** Safely updates an existing file with hash validation.
+- **create_file** Creates a new file with the provided content.
+- **read_file_with_metadata** Reads a file and returns its content along with metadata (sha256, encoding, etc.).
+- **read_image_as_base64** Reads an image file and returns its content as a base64 encoded string.
+- **get_file_stats** Retrieves metadata about a file without reading its content.
+- **list_directory** Lists all files and directories within the specified path.
+- **create_directory** Creates a new directory at the specified path.
+- **move_file** Moves or renames a file or directory.
+- **delete_file** Deletes a file or a directory.
+
 ### search-tool-mcp
 
 Performs text or regex searches across files in a specified directory.
 
 - **search_text_in_files** Search for text or regex patterns from code files in the codebase.
-
-
-## Use
-
-The `.mcp.json` file includes an example of a servers JSON file that ollmcp can read to gain access to the MCP servers and their tools. Place it in the project root folder, adjust the filepaths and start ollmcp in the same folder using `ollmcp`.
+- **search_files_by_pattern** Searches for files and directories that match a glob-style pattern.

@@ -27,6 +27,29 @@ To use these MCP servers, you need to configure a `.mcp.json` file in your proje
 - However, the file paths specified in `.mcp.json` must correctly point to the location of the server scripts and any data directories used by the tools.
 - The special directories used by the tools (`_context`, `_instructions`, and `_commands`) can either be located inside your project folder or anywhere else on your system, as long as you provide the correct absolute or relative paths in your configuration.
 
+### Environment Variables
+
+Most of the MCP servers use environment variables for configuration. These should be defined in your `.mcp.json` under the `env` key for each server.
+
+#### commands-mcp
+- `COMMANDS_CONFIG`: Path to the JSON configuration file containing the command registry.
+
+#### context-record-mcp
+- `CONTEXT_FOLDER_PATH`: Path to the folder containing the context Markdown files.
+
+#### generate-map-mcp
+- `INPUT_DIR`: The directory to scan for the codebase map. (Defaults to current working directory)
+- `GITIGNORE_PATH`: Path to the `.gitignore` file to use for excluding files.
+
+#### instructions-mcp
+- `PROJECT_INSTRUCTIONS_FILE`: Path to the project-specific instructions Markdown file.
+
+#### safe-filesystem-mcp
+- `ALLOWED_DIR`: The directory within which file operations are permitted. (Defaults to current working directory)
+
+#### search-tool-mcp
+- `INPUT_DIR`: The directory to perform searches in. (Defaults to current working directory)
+
 ### Running
 
 Once configured, start `ollmcp` in your project root directory:

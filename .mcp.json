@@ -42,7 +42,7 @@
             ".\\mcp-servers\\context-record-mcp.py"
           ],
           "env": {
-            "CONTEXT_FOLDER_PATH": ".\\_external_context\\app-context"
+            "CONTEXT_FOLDER_PATH": ".\\_context"
           }
         },
         "filesystem": {

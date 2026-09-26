@@ -1,4 +1,4 @@
-This is an example file.
+This is an example file. Do not use these contents.
 
 # Essentials for understanding the project
 

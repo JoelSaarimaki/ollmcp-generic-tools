@@ -5,6 +5,7 @@ import traceback
 import json
 import datetime
 import shutil
+import base64
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from mcp.server.mcpserver import MCPServer
@@ -299,6 +300,48 @@ def read_file_with_metadata(path: str) -> str:
         return json.dumps({"error": "file_not_found", "message": str(e)})
     except Exception as e:
         return json.dumps({"error": "read_error", "message": str(e), "traceback": traceback.format_exc()})
+
+@mcp.tool()
+def read_image_as_base64(path: str) -> str:
+    """
+    Reads an image file and returns its content as a base64 encoded string.
+    Useful for visual analysis of UI components or assets.
+
+    Args:
+        path (str): Path to the image file.
+
+    Returns:
+        str: JSON string containing the base64 string, file metadata, or error message.
+    """
+    try:
+        p = Path(path).resolve()
+        if not _is_path_allowed(p):
+            return json.dumps({"success": False, "error": "access_denied", "message": f"Path is not within the allowed directory: {ALLOWED_DIR}"})
+        
+        if not p.exists():
+            return json.dumps({"success": False, "error": "file_not_found", "message": f"File not found: {p}"})
+
+        with open(p, 'rb') as f:
+            binary_data = f.read()
+            
+        base64_data = base64.b64encode(binary_data).decode('utf-8')
+        
+        # Get metadata (using a simplified version since we don't want to decode text)
+        stats = p.stat()
+        info = {
+            "path": str(p),
+            "size_bytes": stats.st_size,
+            "modified_at": datetime.datetime.fromtimestamp(stats.st_mtime, tz=datetime.timezone.utc).isoformat(),
+            "mime_type": "image/unknown" # In a real app, we'd use mimetypes lib
+        }
+
+        return json.dumps({
+            "success": True,
+            "metadata": info,
+            "base64": base64_data
+        })
+    except Exception as e:
+        return json.dumps({"success": False, "error": "read_image_error", "message": str(e), "traceback": traceback.format_exc()})
 
 @mcp.tool()
 def get_file_stats(path: str) -> str:

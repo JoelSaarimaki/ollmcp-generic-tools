@@ -4,6 +4,7 @@ import os
 import traceback
 import json
 import datetime
+import shutil
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from mcp.server.mcpserver import MCPServer
@@ -145,6 +146,37 @@ def _safe_write_logic(path: Path, content: str, expected_sha256: str) -> str:
 # --- Public MCP Tools ---
 
 @mcp.tool()
+def safe_write_file(path: str, content: str, expected_sha256: str) -> str:
+    """
+    Safely updates an existing file. 
+    It checks if the file's current SHA-256 hash matches the expected_sha256 
+    to ensure no one else has modified it since you last read it.
+
+    IMPORTANT: If you receive a 'hash_mismatch' error, it means the file has 
+    changed on disk. You MUST call 'read_file_with_metadata' to get the 
+    new content and the new SHA-256 before attempting to write again.
+
+    Args:
+        path (str): Path to the file to update.
+        content (str): The new content to write.
+        expected_sha256 (str): The SHA-256 hash of the file as it was when last read.
+
+    Returns:
+        str: JSON response indicating success or error (e.g., hash_mismatch).
+    """
+    try:
+        p = Path(path).resolve()
+        if not _is_path_allowed(p):
+            return json.dumps({"success": False, "error": "access_denied", "message": f"Path is not within the allowed directory: {ALLOWED_DIR}"})
+        
+        # Call the internal logic
+        result = _safe_write_logic(p, content, expected_sha256)
+        return result
+
+    except Exception as e:
+        return json.dumps({"success": False, "error": "safe_write_error", "message": str(e), "traceback": traceback.format_exc()})
+
+@mcp.tool()
 def create_file(path: str, content: str) -> str:
     """
     Creates a new file with the provided content.
@@ -269,32 +301,150 @@ def read_file_with_metadata(path: str) -> str:
         return json.dumps({"error": "read_error", "message": str(e), "traceback": traceback.format_exc()})
 
 @mcp.tool()
-def safe_write_file(path: str, content: str, expected_sha256: str) -> str:
+def get_file_stats(path: str) -> str:
     """
-    Safely writes content to a file after validating the SHA-256 hash to prevent accidental overwrites.
-    Uses an atomic write strategy.
-
-    When hash_mismatch occurs:
-    1. Read the file again.
-    2. Reapply changes.
-    3. Retry the write.
-    Never attempt to force an overwrite.
+    Retrieves metadata about a file without reading its content.
+    This is useful for checking if a file has changed before deciding to read it.
 
     Args:
-        path (str): Path to the file being modified.
-        content (str): The complete new contents of the file.
-        expected_sha256 (str): The SHA-256 hash returned from the most recent read operation.
+        path (str): Path to the file.
 
     Returns:
-        str: JSON response indicating success or error.
+        str: JSON string containing file metadata, or error message.
     """
     try:
         p = Path(path).resolve()
         if not _is_path_allowed(p):
             return json.dumps({"success": False, "error": "access_denied", "message": f"Path is not within the allowed directory: {ALLOWED_DIR}"})
-        return _safe_write_logic(p, content, expected_sha256)
+        if not p.exists():
+            return json.dumps({"success": False, "error": "file_not_found", "message": f"File not found: {p}"})
+        
+        info = _get_file_info(p)
+        return json.dumps(asdict(info))
     except Exception as e:
-        return json.dumps({"success": False, "error": "unexpected_error", "message": str(e), "traceback": traceback.format_exc()})
+        return json.dumps({"success": False, "error": "stats_error", "message": str(e), "traceback": traceback.format_exc()})
+
+@mcp.tool()
+def list_directory(path: str) -> str:
+    """
+    Lists all files and directories within the specified path.
+
+    Args:
+        path (str): The directory to list.
+
+    Returns:
+        str: JSON string containing a list of entries, distinguishing between [FILE] and [DIR].
+    """
+    try:
+        p = Path(path).resolve()
+        if not _is_path_allowed(p):
+            return json.dumps({"success": False, "error": "access_denied", "message": f"Path is not within the allowed directory: {ALLOWED_DIR}"})
+        if not p.is_dir():
+            return json.dumps({"success": False, "error": "not_a_directory", "message": f"{p} is not a directory."})
+
+        entries = []
+        for entry in p.iterdir():
+            try:
+                info = entry.stat()
+                entry_data = {
+                    "name": entry.name,
+                    "type": "DIR" if entry.is_dir() else "FILE",
+                    "size_bytes": info.st_size,
+                    "modified_at": datetime.datetime.fromtimestamp(info.st_mtime, tz=datetime.timezone.utc).isoformat()
+                }
+                entries.append(entry_data)
+            except Exception as e:
+                entries.append({
+                    "name": entry.name,
+                    "type": "UNKNOWN",
+                    "error": str(e)
+                })
+
+        return json.dumps({"success": True, "entries": entries})
+    except Exception as e:
+        return json.dumps({"success": False, "error": "list_error", "message": str(e), "traceback": traceback.format_exc()})
+
+@mcp.tool()
+def create_directory(path: str) -> str:
+    """
+    Creates a new directory at the specified path. Supports creating parent directories.
+
+    Args:
+        path (str): The path of the directory to create.
+
+    Returns:
+        str: JSON success/error message.
+    """
+    try:
+        p = Path(path).resolve()
+        if not _is_path_allowed(p):
+            return json.dumps({"success": False, "error": "access_denied", "message": f"Path is not within the allowed directory: {ALLOWED_DIR}"})
+        
+        if p.exists() and not p.is_dir():
+            return json.dumps({"success": False, "error": "file_exists", "message": "A file already exists at this path."})
+
+        p.mkdir(parents=True, exist_ok=True)
+        return json.dumps({"success": True, "message": f"Directory created: {p}"})
+    except Exception as e:
+        return json.dumps({"success": False, "error": "create_dir_error", "message": str(e), "traceback": traceback.format_exc()})
+
+@mcp.tool()
+def move_file(source: str, destination: str) -> str:
+    """
+    Moves or renames a file or directory from the source to the destination.
+
+    Args:
+        source (str): Current path of the file/directory.
+        destination (str): New path of the file/directory.
+
+    Returns:
+        str: JSON success/error message.
+    """
+    try:
+        src = Path(source).resolve()
+        dst = Path(destination).resolve()
+
+        if not _is_path_allowed(src):
+            return json.dumps({"success": False, "error": "access_denied", "message": f"Source path is not within the allowed directory: {ALLOWED_DIR}"})
+        if not _is_path_allowed(dst):
+            return json.dumps({"success": False, "error": "access_denied", "message": f"Destination path is not within the allowed directory: {ALLOWED_DIR}"})
+
+        if not src.exists():
+            return json.dumps({"success": False, "error": "source_not_found", "message": f"Source not found: {src}"})
+        if dst.exists():
+            return json.dumps({"success": False, "error": "destination_exists", "message": f"Destination already exists: {dst}"})
+
+        shutil.move(str(src), str(dst))
+        return json.dumps({"success": True, "message": f"Moved {src} to {dst}"})
+    except Exception as e:
+        return json.dumps({"success": False, "error": "move_error", "message": str(e), "traceback": traceback.format_exc()})
+
+@mcp.tool()
+def delete_file(path: str) -> str:
+    """
+    Deletes a file or a directory (and its contents if it's a directory).
+
+    Args:
+        path (str): Path to the file/directory to be deleted.
+
+    Returns:
+        str: JSON success/error message.
+    """
+    try:
+        p = Path(path).resolve()
+        if not _is_path_allowed(p):
+            return json.dumps({"success": False, "error": "access_denied", "message": f"Path is not within the allowed directory: {ALLOWED_DIR}"})
+        if not p.exists():
+            return json.dumps({"success": False, "error": "not_found", "message": f"Path not found: {p}"})
+
+        if p.is_dir():
+            shutil.rmtree(p)
+        else:
+            p.unlink()
+        
+        return json.dumps({"success": True, "message": f"Deleted: {p}"})
+    except Exception as e:
+        return json.dumps({"success": False, "error": "delete_error", "message": str(e), "traceback": traceback.format_exc()})
 
 if __name__ == "__main__":
     mcp.run()

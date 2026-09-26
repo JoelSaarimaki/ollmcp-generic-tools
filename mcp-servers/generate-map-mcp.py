@@ -350,7 +350,7 @@ def _create_and_write_map(input_dir: Path) -> str:
 @mcp.tool()
 def generate_codebase_map() -> str:
     """
-    Generate a structuremap of the codebase. 
+    Generate a filemap and structuremap of the codebase. 
     Supports Python (via AST) and React/JS/TS (via regex).
     Use this tool to gain starting information about all the code in the codebase.
 
@@ -369,6 +369,27 @@ def generate_codebase_map() -> str:
 
     except Exception as e:
         return f"Error generating map:\n{e}\n{traceback.format_exc()}"
+
+@mcp.tool()
+def generate_file_map() -> str:
+    """
+    Generate the file tree map of the codebase.
+    Useful for a quick overview of the directory structure without detailed summaries.
+
+    Returns:
+        str: The generated file tree map as a string.
+    """
+    if not INPUT_DIR.exists():
+        return f"Error: Input directory {INPUT_DIR} does not exist."
+
+    try:
+        gitignore_patterns = load_gitignore_patterns(INPUT_DIR)
+        map_tree = _generate_simple_map(INPUT_DIR, gitignore_patterns)
+        
+        return f"File map of {INPUT_DIR.as_posix()}\n\n```\n{map_tree}```"
+
+    except Exception as e:
+        return f"Error generating file map:\n{e}\n{traceback.format_exc()}"
 
 if __name__ == "__main__":
     mcp.run()

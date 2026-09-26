@@ -39,7 +39,7 @@ Most of the MCP servers use environment variables for configuration. These shoul
 
 #### generate-map-mcp
 - `INPUT_DIR`: The directory to scan for the codebase map. (Defaults to current working directory)
-- `GITIGNORE_PATH`: Path to the `.gitignore` file to use for excluding files.
+- `GITIGNORE_PATH`: Path to the `.gitignore` file to use for excluding files. (Optional)
 
 #### instructions-mcp
 - `PROJECT_INSTRUCTIONS_FILE`: Path to the project-specific instructions Markdown file.

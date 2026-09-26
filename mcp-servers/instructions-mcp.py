@@ -10,6 +10,7 @@ mcp = MCPServer("Instructions-Server")
 INSTRUCTIONS_FILE_PATH = os.getenv("PROJECT_INSTRUCTIONS_FILE")
 
 # --- Public MCP Tools ---
+
 @mcp.tool()
 def get_project_instructions() -> str:
     """
@@ -17,7 +18,7 @@ def get_project_instructions() -> str:
     Use this tool at the start of a session to understand the project context and initial instructions.
 
     Returns:
-        str: The content of the instructions file or an error message.
+        str: The content of the instructions file, or an error message.
     """
     if not INSTRUCTIONS_FILE_PATH:
         return "Error: The 'PROJECT_INSTRUCTIONS_FILE' environment variable is not set."
@@ -34,7 +35,7 @@ def get_project_instructions() -> str:
             
         return content
     except Exception as e:
-        return f"Error reading instructions file:\n{e}\n{traceback.format_exc()}"
+        return f"Error: reading instructions file failed:\n{e}\n{traceback.format_exc()}"
 
 if __name__ == "__main__":
     mcp.run()

@@ -1,11 +1,14 @@
-from mcp.server.mcpserver import MCPServer
+# --- context-record-mcp.py ---
 import os
 import traceback
 from pathlib import Path
+from typing import List, Optional
 
-mcp = MCPServer("ContextFolderManager")
+from mcp.server.mcpserver import MCPServer
 
 # --- Constants & Config ---
+mcp = MCPServer("ContextFolderManager")
+
 # The folder path is defined via an environment variable.
 CONTEXT_FOLDER_PATH = os.getenv("CONTEXT_FOLDER_PATH")
 
@@ -14,13 +17,18 @@ CONTEXT_FOLDER_PATH = os.getenv("CONTEXT_FOLDER_PATH")
 def _get_context_folder() -> Path:
     """
     Returns the Path object for the context folder, 
-    raising an error if the environment variable is not set.
+    raising a ValueError if the environment variable is not set.
+
+    Returns:
+        Path: The path to the context folder.
+
+    Raises:
+        ValueError: If CONTEXT_FOLDER_PATH is not set.
     """
     if not CONTEXT_FOLDER_PATH:
         raise ValueError("Environment variable 'CONTEXT_FOLDER_PATH' is not set.")
     
-    path = Path(CONTEXT_FOLDER_PATH)
-    return path
+    return Path(CONTEXT_FOLDER_PATH)
 
 # --- Public MCP Tools ---
 
@@ -45,7 +53,7 @@ def list_context_files() -> str:
         
         return "\n".join(sorted(files))
     except Exception as e:
-        return f"Error listing context files:\n{e}\n{traceback.format_exc()}"
+        return f"Error: Listing context files failed:\n{e}\n{traceback.format_exc()}"
 
 @mcp.tool()
 def read_context_file(filename: str) -> str:
@@ -67,10 +75,9 @@ def read_context_file(filename: str) -> str:
         if not file_path.is_file():
             return f"Error: '{filename}' is not a file."
             
-        content = file_path.read_text(encoding="utf-8")
-        return content
+        return file_path.read_text(encoding="utf-8")
     except Exception as e:
-        return f"Error reading context file:\n{e}\n{traceback.format_exc()}"
+        return f"Error: Reading context file failed:\n{e}\n{traceback.format_exc()}"
 
 @mcp.tool()
 def write_context_file(filename: str, content: str) -> str:
@@ -95,7 +102,7 @@ def write_context_file(filename: str, content: str) -> str:
             
         return f"Successfully wrote to context file: {filename} (in {folder.as_posix()})"
     except Exception as e:
-        return f"Error writing to context file:\n{e}\n{traceback.format_exc()}"
+        return f"Error: Writing to context file failed:\n{e}\n{traceback.format_exc()}"
 
 @mcp.tool()
 def append_to_context_file(filename: str, content: str) -> str:
@@ -125,7 +132,7 @@ def append_to_context_file(filename: str, content: str) -> str:
             
         return f"Successfully appended to context file: {filename} (in {folder.as_posix()})"
     except Exception as e:
-        return f"Error appending to context file:\n{e}\n{traceback.format_exc()}"
+        return f"Error: Appending to context file failed:\n{e}\n{traceback.format_exc()}"
 
 @mcp.tool()
 def read_all_context_files() -> str:
@@ -155,7 +162,7 @@ def read_all_context_files() -> str:
             
         return "\n".join(output)
     except Exception as e:
-        return f"Error reading all context files:\n{e}\n{traceback.format_exc()}"
+        return f"Error: Reading all context files failed:\n{e}\n{traceback.format_exc()}"
 
 @mcp.tool()
 def remove_context_file(filename: str) -> str:
@@ -180,7 +187,7 @@ def remove_context_file(filename: str) -> str:
         file_path.unlink()
         return f"Successfully removed context file: {filename} (from {folder.as_posix()})"
     except Exception as e:
-        return f"Error removing context file:\n{e}\n{traceback.format_exc()}"
+        return f"Error: Removing context file failed:\n{e}\n{traceback.format_exc()}"
 
 if __name__ == "__main__":
     mcp.run()

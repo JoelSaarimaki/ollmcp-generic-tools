@@ -46,12 +46,13 @@
           }
         },
         "filesystem": {
-          "command": "npx",
+          "command": "python",
           "args": [
-            "-y",
-            "@modelcontextprotocol/server-filesystem",
-            ".\\"
-          ]
+            ".\\mcp-servers\\safe-filesystem-mcp.py"
+          ],
+          "env": {
+            "ALLOWED_DIR": ".\\"
+          }
         },
         "web-search": {
           "command": "uvx",

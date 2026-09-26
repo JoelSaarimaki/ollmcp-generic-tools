@@ -1,3 +1,4 @@
+# --- generate-map-mcp.py ---
 from mcp.server.mcpserver import MCPServer
 import ast
 import os
@@ -5,7 +6,7 @@ import re
 import traceback
 import fnmatch
 from pathlib import Path
-from typing import Set, List
+from typing import Set, List, Dict, Any
 
 mcp = MCPServer("GenerateMap")
 
@@ -24,6 +25,12 @@ def load_gitignore_patterns(input_dir: Path) -> List[str]:
     """
     Loads patterns from a .gitignore file.
     Checks for GITIGNORE_PATH env var, otherwise checks input_dir/.gitignore.
+
+    Args:
+        input_dir (Path): The directory to check for .gitignore.
+
+    Returns:
+        List[str]: A list of gitignore patterns.
     """
     if GITIGNORE_PATH:
         gitignore_path = Path(GITIGNORE_PATH)
@@ -48,6 +55,15 @@ def load_gitignore_patterns(input_dir: Path) -> List[str]:
 def is_ignored(path: Path, input_dir: Path, ignored_dirs: Set[str], gitignore_patterns: List[str]) -> bool:
     """
     Checks if a path is ignored by IGNORED_DIRS or .gitignore patterns.
+
+    Args:
+        path (Path): The path to check.
+        input_dir (Path): The root directory.
+        ignored_dirs (Set[str]): Set of directory names to ignore.
+        gitignore_patterns (List[str]): List of patterns to check against.
+
+    Returns:
+        bool: True if ignored, False otherwise.
     """
     # Check IGNORED_DIRS first
     if any(ignored in path.parts for ignored in ignored_dirs):
@@ -63,8 +79,6 @@ def is_ignored(path: Path, input_dir: Path, ignored_dirs: Set[str], gitignore_pa
         return False
     
     for pattern in gitignore_patterns:
-        # Handle basic glob patterns using fnmatch
-        # Real .gitignore is more complex, but this covers common cases.
         if fnmatch.fnmatch(rel_path, pattern) or \
            fnmatch.fnmatch(f"{rel_path}/", pattern) or \
            any(fnmatch.fnmatch(part, pattern) for part in path.relative_to(input_dir).parts):
@@ -76,6 +90,12 @@ def format_docstring(docstring: str) -> str:
     """
     Parses a docstring to extract the summary and returns it
     as a single-line markdown description.
+
+    Args:
+        docstring (str): The docstring to format.
+
+    Returns:
+        str: A formatted markdown summary string.
     """
     if not docstring:
         return ""
@@ -86,7 +106,17 @@ def format_docstring(docstring: str) -> str:
     return f": *{summary}*" if summary else ""
 
 def parse_python(filepath: Path, input_dir: Path, metadata: dict) -> str:
-    """Python parser using AST."""
+    """
+    Parses a Python file using AST to extract structure and symbols.
+
+    Args:
+        filepath (Path): Path to the file.
+        input_dir (Path): Root directory.
+        metadata (dict): Metadata containing symbols, classes, and modules.
+
+    Returns:
+        str: A markdown summary of the file's content.
+    """
     try:
         content = filepath.read_text(encoding="utf-8")
         tree = ast.parse(content, filename=str(filepath))
@@ -136,6 +166,7 @@ def parse_python(filepath: Path, input_dir: Path, metadata: dict) -> str:
     return "".join(out)
 
 def _get_function_calls_python(node, metadata: dict) -> list[str]:
+    """Internal helper to find function calls in a node."""
     symbols = metadata["symbols"]
     classes = metadata["classes"]
     modules = metadata["modules"]
@@ -162,6 +193,7 @@ def _get_function_calls_python(node, metadata: dict) -> list[str]:
     return sorted(list(calls))
 
 def _get_class_instantiations_python(node, metadata: dict) -> list[str]:
+    """Internal helper to find class instantiations in a node."""
     classes = metadata["classes"]
     modules = metadata["modules"]
     instantiations = set()
@@ -191,6 +223,13 @@ def parse_js_ts(filepath: Path, input_dir: Path) -> str:
     """
     A lightweight regex-based parser for JS/TS/JSX/TSX.
     Targets exports, components, hooks, and interfaces.
+
+    Args:
+        filepath (Path): Path to the file.
+        input_dir (Path): Root directory.
+
+    Returns:
+        str: A markdown summary of the file's content.
     """
     try:
         content = filepath.read_text(encoding="utf-8")
@@ -200,15 +239,12 @@ def parse_js_ts(filepath: Path, input_dir: Path) -> str:
     rel_path = filepath.relative_to(input_dir)
     out = [f"### `{rel_path.as_posix()}`\n"]
     
-    # 1. Extract JSDoc if present
-    jsdoc_pattern = re.compile(r'/\*\*(.*?)\*/', re.DOTALL)
+    jsdoc_pattern = re.compile(r'/\*\* (.*?) \*/', re.DOTALL)
     jsdocs = jsdoc_pattern.findall(content)
     if jsdocs:
         out.append(f"> {jsdocs[0].strip().splitlines()[0]}\n")
 
     symbols = []
-    
-    # Patterns for components, functions, hooks, classes, interfaces, types
     patterns = [
         (r'export\s+function\s+(\w+)\s*\((.*?)\)', "Function"),
         (r'export\s+const\s+(\w+)\s*=\s*(?:\([^)]*\)|[^=]+)\s*=>', "Component/ArrowFn"),
@@ -235,6 +271,7 @@ def parse_js_ts(filepath: Path, input_dir: Path) -> str:
     return "".join(out)
 
 def _get_project_metadata(root_dir: Path) -> dict:
+    """Internal helper to scan the project for metadata."""
     metadata = {
         "symbols": set(),
         "classes": set(),
@@ -265,20 +302,19 @@ def _get_project_metadata(root_dir: Path) -> dict:
     return metadata
 
 def _generate_simple_map(input_dir: Path, gitignore_patterns: List[str]) -> str:
+    """Internal helper to generate a directory tree string."""
     lines = [f"Root: `{input_dir.as_posix()}`\n"]
     
     def _build_tree(current_dir: Path, prefix: str = ""):
         try:
             entries = []
             for entry in current_dir.iterdir():
-                # Skip if ignored by IGNORED_DIRS or .gitignore
                 if is_ignored(entry, input_dir, IGNORED_DIRS, gitignore_patterns):
                     continue
                 
                 if entry.is_dir():
                     entries.append(entry)
                 else:
-                    # Only include files with allowed suffixes
                     if entry.suffix in ALL_ALLOWED_SUFFIXES:
                         entries.append(entry)
             
@@ -303,35 +339,28 @@ def _generate_simple_map(input_dir: Path, gitignore_patterns: List[str]) -> str:
     return "".join(lines)
 
 def _create_and_write_map(input_dir: Path) -> str:
+    """Internal helper to create the full codebase map content."""
     gitignore_patterns = load_gitignore_patterns(input_dir)
     metadata = _get_project_metadata(input_dir)
     
     content = ["# Codebase Structure & Summaries\n\n"]
-    
-    # Add File Map section with code block for console compatibility
     content.append("## File Map\n")
     map_tree = _generate_simple_map(input_dir, gitignore_patterns)
     content.append(f"```\n{map_tree}```\n\n")
     content.append("## Detailed Descriptions\n\n")
     
-    # Using rglob for consistent traversal
     for path in input_dir.rglob("*"):
         if path.is_dir():
             continue
 
-        # Skip if ignored by IGNORED_DIRS or .gitignore
         if is_ignored(path, input_dir, IGNORED_DIRS, gitignore_patterns):
             continue
 
         file_content = ""
-        # Python Logic
         if path.suffix in PYTHON_SUFFIXES:
             file_content = parse_python(path, input_dir, metadata)
-        
-        # JS/TS Logic
         elif path.suffix in JS_TS_SUFFIXES:
             file_content = parse_js_ts(path, input_dir)
-        
         elif path.suffix in OTHER_SUFFIXES:
             file_content = f"### `{path.relative_to(input_dir).as_posix()}`\n"
 
@@ -341,9 +370,7 @@ def _create_and_write_map(input_dir: Path) -> str:
             else:
                 content.append(file_content)
 
-    result_content = "".join(content)
-    
-    return result_content
+    return "".join(content)
 
 # --- Public MCP Tools ---
 
@@ -355,20 +382,16 @@ def generate_codebase_map() -> str:
     Use this tool to gain starting information about all the code in the codebase.
 
     Returns:
-        str: The generated codebase structure map as a string.
+        str: The generated codebase structure map as a string, or an error message.
     """
     if not INPUT_DIR.exists():
         return f"Error: Input directory {INPUT_DIR} does not exist."
 
     try:
-        content = _create_and_write_map(
-            input_dir=INPUT_DIR
-        )
-        
+        content = _create_and_write_map(input_dir=INPUT_DIR)
         return f"Codebase structure map of {INPUT_DIR.as_posix()}\n\n{content}"
-
     except Exception as e:
-        return f"Error generating map:\n{e}\n{traceback.format_exc()}"
+        return f"Error: generating map failed:\n{e}\n{traceback.format_exc()}"
 
 @mcp.tool()
 def generate_file_map() -> str:
@@ -377,7 +400,7 @@ def generate_file_map() -> str:
     Useful for a quick overview of the directory structure without detailed summaries.
 
     Returns:
-        str: The generated file tree map as a string.
+        str: The generated file tree map as a string, or an error message.
     """
     if not INPUT_DIR.exists():
         return f"Error: Input directory {INPUT_DIR} does not exist."
@@ -385,11 +408,9 @@ def generate_file_map() -> str:
     try:
         gitignore_patterns = load_gitignore_patterns(INPUT_DIR)
         map_tree = _generate_simple_map(INPUT_DIR, gitignore_patterns)
-        
         return f"File map of {INPUT_DIR.as_posix()}\n\n```\n{map_tree}```"
-
     except Exception as e:
-        return f"Error generating file map:\n{e}\n{traceback.format_exc()}"
+        return f"Error: generating file map failed:\n{e}\n{traceback.format_exc()}"
 
 if __name__ == "__main__":
     mcp.run()

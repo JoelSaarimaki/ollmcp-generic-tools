@@ -13,7 +13,11 @@ mcp = MCPServer("GenerateMap")
 # --- Constants & Config ---
 INPUT_DIR = Path(os.getenv("INPUT_DIR", os.getcwd()))
 GITIGNORE_PATH = os.getenv("GITIGNORE_PATH")
-IGNORED_DIRS = {"node_modules", ".git", "__pycache__", "dist", "build", ".next"}
+IGNORED_DIRS = {
+    "node_modules", ".git", "__pycache__", "dist", "build", ".next", 
+    ".venv", "venv", "env", ".pytest_cache", ".idea", ".vscode", 
+    "target", "out", ".mypy_cache", ".ruff_cache"
+}
 PYTHON_SUFFIXES = {".py"}
 JS_TS_SUFFIXES = {".js", ".jsx", ".ts", ".tsx"}
 OTHER_SUFFIXES = {".md", ".json", ".css", ".scss", ".html"}

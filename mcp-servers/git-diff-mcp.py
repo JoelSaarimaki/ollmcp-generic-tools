@@ -1,6 +1,5 @@
 # --- git-diff-mcp.py ---
 import json
-import os
 import subprocess
 import traceback
 from pathlib import Path
@@ -129,6 +128,21 @@ def get_file_history(path: str, limit: int = 10) -> str:
             "stderr": result["stderr"].strip()
         }, indent=2)
 
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+def get_git_status(path: Optional[str] = None) -> str:
+    """
+    Returns the results of 'git status'.
+
+    Args:
+        path (str, optional): The directory to run the command in. Defaults to the current working directory.
+
+    Returns:
+        str: A JSON-formatted string containing the git status output or an error message.
+    """
+    target_path = path if path else "."
+    result = _run_git_command(["status"], cwd=target_path)
     return json.dumps(result, indent=2)
 
 @mcp.tool()

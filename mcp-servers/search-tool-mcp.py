@@ -2,6 +2,7 @@ from mcp.server.mcpserver import MCPServer
 import os
 import re
 from pathlib import Path
+from typing import List
 
 mcp = MCPServer("ContentSearch")
 
@@ -17,7 +18,7 @@ MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10MB limit
 
 # --- Internal Helpers ---
 
-def _conduct_search(root_dir: Path, query: str, case_sensitive: bool = False) -> str:
+def _conduct_search(root_dir: Path, query: str, case_sensitive: bool = False) -> List[str]:
     """
     The 'meat' of the tool. Performs regex search through the file system.
     """
@@ -27,7 +28,7 @@ def _conduct_search(root_dir: Path, query: str, case_sensitive: bool = False) ->
     try:
         pattern = re.compile(query, flags)
     except re.error:
-        return f"Invalid regular expression: '{query}'"
+        raise ValueError(f"Invalid regular expression: '{query}'")
 
     # Iterate through all files recursively
     for path in root_dir.rglob("*"):
@@ -48,17 +49,7 @@ def _conduct_search(root_dir: Path, query: str, case_sensitive: bool = False) ->
         except Exception:
             continue  # Skip unreadable or binary files
 
-    if not results:
-        return f"No matches found for '{query}' in {root_dir.as_posix()}"
-        
-    # Cap output to protect context window limit
-    output_lines = results[:100]
-    output = f"Found {len(results)} matches:\n"
-    output += "\n".join(output_lines)
-    if len(results) > 100:
-        output += f"\n... (and {len(results) - 100} more matches)"
-        
-    return output
+    return results
 
 # --- Public MCP Tools ---
 
@@ -76,7 +67,20 @@ def search_text_in_files(query: str, case_sensitive: bool = False) -> str:
         str: A list of matching lines with file paths and line numbers, or an error message.
     """
     try:
-        return _conduct_search(INPUT_DIR, query, case_sensitive)
+        results = _conduct_search(INPUT_DIR, query, case_sensitive)
+        if not results:
+            return f"No matches found for '{query}' in {INPUT_DIR.as_posix()}"
+            
+        # Cap output to protect context window limit
+        output_lines = results[:100]
+        output = f"Found {len(results)} matches in {INPUT_DIR.as_posix()}:\n\n"
+        output += "\n".join(output_lines)
+        if len(results) > 100:
+            output += f"\n... (and {len(results) - 100} more matches)"
+            
+        return output
+    except ValueError as e:
+        return str(e)
     except Exception as e:
         return f"Error searching text in files: {str(e)}"
 
@@ -118,7 +122,7 @@ def search_files_by_pattern(pattern: str, recursive: bool = False) -> str:
         else:
             result_text = "\n".join(matches)
             
-        return f"Found {len(matches)} matches:\n{result_text}"
+        return f"Found {len(matches)} matches in {INPUT_DIR.as_posix()}:\n\n{result_text}"
         
     except Exception as e:
         return f"Error searching for files: {str(e)}"

@@ -22,6 +22,7 @@ EXPECTED_TOOLS = {
     "commands": ["list_available_commands", "run_predefined_command"],
     "context": ["list_context_files", "read_context_file", "write_context_file", "append_to_context_file",
                 "read_all_context_files", "remove_context_file"],
+    "web": ["web_search", "web_fetch"],
 }
 
 def list_tools(command: str, args: list[str], env: dict[str, str], cwd) -> list[str]:

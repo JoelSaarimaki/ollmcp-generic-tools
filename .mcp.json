@@ -53,6 +53,15 @@
           "env": {
             "MCP_TOOLS_CONFIG": ".\\tools-config.json"
           }
+        },
+        "web-search": {
+          "command": "python",
+          "args": [
+            ".\\mcp-servers\\web-search-mcp.py"
+          ],
+          "env": {
+            "MCP_TOOLS_CONFIG": ".\\tools-config.json"
+          }
         }
     }
 }

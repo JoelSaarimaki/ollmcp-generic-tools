@@ -6,7 +6,7 @@ Last updated: 2026-09-29, after the commit "Major rewrite: implement single tool
 
 ## Purpose and target
 
-The servers give a **local AI model** (run with Ollama through [ollmcp](https://github.com/jonigl/mcp-client-for-ollama)) what it needs for AI-driven development of Python and JS/TS projects: understanding the code, editing files, running tests and reviewing changes. Web search is expected to come from a separate tool.
+The servers give a **local AI model** (run with Ollama through [ollmcp](https://github.com/jonigl/mcp-client-for-ollama)) what it needs for AI-driven development of Python and JS/TS projects: understanding the code, editing files, running tests and reviewing changes. Web search and fetch come from `web-search-mcp`, which uses Ollama's hosted web search API.
 
 Most design decisions follow from the target model being small and local:
 - **Small context windows** (8k–32k tokens): every response must be limited in size, and the tool definitions themselves cost context on every request.
@@ -15,7 +15,7 @@ Most design decisions follow from the target model being small and local:
 
 ## Current state
 
-Six servers, 26 tools. All servers share `mcp-servers/mcp_common.py` and read one config file.
+Seven servers, 28 tools. All servers share `mcp-servers/mcp_common.py` and read one config file.
 
 | Server | Tools |
 |---|---|
@@ -25,10 +25,11 @@ Six servers, 26 tools. All servers share `mcp-servers/mcp_common.py` and read on
 | `git-diff-mcp` | `get_file_diff`, `get_all_changes_diff`, `get_file_history`, `get_git_status` |
 | `commands-mcp` | `list_available_commands`, `run_predefined_command` |
 | `context-record-mcp` | `list_context_files`, `read_context_file`, `write_context_file`, `append_to_context_file`, `read_all_context_files`, `remove_context_file` |
+| `web-search-mcp` | `web_search`, `web_fetch` |
 
 Configuration:
 - `.mcp.json` only starts the servers and gives each one `MCP_TOOLS_CONFIG`, the path of the tools config file. ollmcp names tools `<server key>.<tool>` (e.g. `codebase-mapper.generate_codebase_map`); for cloud providers the dot becomes `_`.
-- `tools-config.json` holds all settings: `allowed_dir` (required), `forbidden_paths`, `ignored_dirs`, `gitignore_path`, `max_output_chars`, `commands_config`, `context_folder`, `read_only_files`.
+- `tools-config.json` holds all settings: `allowed_dir` (required), `forbidden_paths`, `ignored_dirs`, `gitignore_path`, `max_output_chars`, `commands_config`, `context_folder`, `read_only_files`, `ollama_api_key`.
 - `mcp-servers/mcp_common.py` loads and validates the config and holds the shared helpers and constants.
 - `_commands/app-commands.json`, `_context/` and `_instructions/app-instructions.md` are **example** files showing how a project would use the tools. They are not development notes.
 
@@ -42,6 +43,7 @@ Configuration:
 - **`context-record-mcp`** only accepts plain `.md` names directly inside its folder (no `../`, no `:`), and `read_only_files` cannot be written, appended to or removed. A context file with the same name as a read-only file is hidden and cannot be created.
 - **`commands-mcp`** runs registered templates without a shell. The AI's argument is always one argument; arguments starting with `-` or containing line breaks are rejected, and for `.bat`/`.cmd` programs (e.g. `npm` on Windows) also `& | < > ^ % ! " ( )`. Commands get no input (prompts end immediately), have a timeout and succeed only with exit code 0.
 - **Known limit, documented in the README:** commands execute project code that the AI can write, so they can read or change any file. Complete protection requires keeping `.mcp.json`, the tools config, the server scripts and the command registry outside the project folder (`ollmcp --servers-json <path>`).
+- **`web-search-mcp`** only calls Ollama's hosted API (ollama.com), with the key from `ollama_api_key`; it is passed to the `ollama` client explicitly, so the library's own `OLLAMA_API_KEY` environment variable is not used. `get_config` only reports whether the key is set. `web_fetch` accepts only `http(s)` URLs, and the page is fetched by Ollama's service, not locally. Web content can contain prompt injection; this is not filtered.
 - **Ignored folders are not a security measure**: they only keep noise out of the map and search tools.
 
 ### One configuration, strictly validated
@@ -63,7 +65,7 @@ Configuration:
 
 ### Local-model-friendly reading and editing
 
-- **`read_file_with_metadata` and `edit_file` return plain text**, not JSON: a short metadata header and the exact content between `----- BEGIN CONTENT -----` and `----- END CONTENT -----`. JSON escaping made models copy `\n` and `\"` into `edit_file`. Errors of these two tools are `Error (<code>): <message>`.
+- **`read_file_with_metadata` and `edit_file` return plain text**, not JSON: a short metadata header and the exact content between `----- BEGIN CONTENT -----` and `----- END CONTENT -----`. JSON escaping made models copy `\n` and `\"` into `edit_file`. Errors of these two tools are `Error (<code>): <message>`. `web_fetch` uses the same format, as code is often copied from web pages.
 - **`edit_file` tolerates common copying mistakes**: copied `N| ` line number prefixes are removed, trailing whitespace does not need to match, and when nothing matches, the error shows the lines that match with different indentation so they can be copied exactly. Multiple matches are reported with their line numbers.
 - **Hash-checked writes**: every edit needs the SHA-256 from the last read or edit, and the edit response shows the changed lines and the new hash, so edits can be chained without re-reading.
 - **Placeholder comments** (`// ... existing code ...`, `# rest of the code`, etc.) are rejected in `edit_file` and `write_file` unless the original already contains one. `write_file` warns if a file of 20+ lines shrinks below half.
@@ -93,7 +95,7 @@ Every tool definition is sent with every request, so tools that duplicate others
 
 ## How changes have been verified
 
-The automated test suite in `tests/` (pytest, 154 tests, about a minute) covers every server. Run it from the repository root:
+The automated test suite in `tests/` (pytest, 181 tests, about a minute) covers every server. Run it from the repository root:
 
 ```bash
 python -m pip install -r requirements-dev.txt
@@ -101,7 +103,7 @@ python -m pytest tests
 ```
 
 - `conftest.py` gives every test its own temporary project and tools config (`project` fixture; `make_project` for projects at a specific path, e.g. inside a folder named `out`). `project.load("filesystem")` loads a server fresh for that config, and `start_server()` imports a server in a separate process to test startup errors. The working directory is outside the project, so resolving paths against the working directory instead of `allowed_dir` fails the tests.
-- One test file per server (`test_filesystem.py`, `test_map.py`, `test_search.py`, `test_git.py`, `test_commands.py`, `test_context.py`), plus `test_config.py` for config validation, `test_protection.py` for the access rules across all servers, and `test_servers_start.py`, which starts every server over stdio, including from the repository's own `.mcp.json` and `tools-config.json`.
+- One test file per server (`test_filesystem.py`, `test_map.py`, `test_search.py`, `test_git.py`, `test_commands.py`, `test_context.py`, `test_web.py`, which replaces the Ollama client with a fake one, so no requests are sent), plus `test_config.py` for config validation, `test_protection.py` for the access rules across all servers, and `test_servers_start.py`, which starts every server over stdio, including from the repository's own `.mcp.json` and `tools-config.json`.
 - Windows-only behaviour (name aliases such as `.mcp.json::$DATA`, batch file arguments) is skipped on other systems, and the git tests are skipped if git is not installed.
 - The suite was checked by reintroducing earlier bugs (ignored folders compared on the absolute path, protected files not protected, commands run in the working directory); each made tests fail.
 

@@ -53,7 +53,8 @@ Add every server the same way (see this repository's [`.mcp.json`](.mcp.json)). 
     "max_output_chars": 40000,
     "commands_config": "_commands/app-commands.json",
     "context_folder": "_context",
-    "read_only_files": ["_instructions/app-instructions.md"]
+    "read_only_files": ["_instructions/app-instructions.md"],
+    "ollama_api_key": null
 }
 ```
 
@@ -70,6 +71,7 @@ Relative paths are resolved against the folder of the config file, except `forbi
 | `commands_config` | The command registry of `commands-mcp`. See [commands-mcp](#commands-mcp). (Optional) |
 | `context_folder` | The folder of the context Markdown files of `context-record-mcp`. (Optional) |
 | `read_only_files` | List of files maintained by you, such as project instructions, that the AI can read with `context-record-mcp` but not change or remove. They can be located anywhere, and are read by their file name. (Optional) |
+| `ollama_api_key` | The Ollama API key used by `web-search-mcp`. Create one at [ollama.com/settings/keys](https://ollama.com/settings/keys). The key is never shown to the AI, as the config file is [protected](#protected-files). If the config file is committed to git, do not commit the key. (Optional, without it the web search tools only return a `not_configured` error) |
 | `ignored_dirs` | List of folder names the map and search tools skip at any depth. Replaces the defaults completely. See [Ignored directories](#ignored-directories). (Optional, defaults to `node_modules`, `.git`, `build` and other common build and cache folders) |
 
 The AI can see the effective configuration with the `get_config` tool of `safe-filesystem-mcp`.
@@ -161,6 +163,15 @@ Provides tools to inspect git history and differences for files within a reposit
 - **get_all_changes_diff** Retrieves the differences for all changed files at once, with a list of changed and new untracked files. Useful for reviewing all changes before committing.
 - **get_file_history** Retrieves the commit history and associated diffs for a specified file.
 - **get_git_status** Returns the results of `git status`. Also tells whether a folder is in a git repository: if not, the error is `not_a_repository`.
+
+### web-search-mcp
+
+Searches the web and reads web pages using Ollama's hosted [web search API](https://docs.ollama.com/capabilities/web-search). Requires `ollama_api_key` in the [tools config file](#tools-config-file) and the `ollama` Python package (`pip install ollama`). The queries and URLs are sent to ollama.com.
+
+- **web_search** Searches the web and returns the title, URL and content of the best matching pages (`max_results`, 1–10, default 3).
+- **web_fetch** Fetches a web page and returns its title, links and text content. The content is shown as-is between `----- BEGIN CONTENT -----` and `----- END CONTENT -----` markers, so code copied from a page is not JSON-escaped. Long pages are read in parts with `start_char`.
+
+Web pages can contain text written to mislead the AI (prompt injection). Review the AI's changes when it has read web content.
 
 ### safe-filesystem-mcp
 
@@ -266,5 +277,7 @@ Local models have small context windows, so every tool response is limited to `m
 | `run_predefined_command` | `max_output_chars`, split between stdout and stderr; the middle of long output is cut, as errors are usually at the end | A narrower command, such as tests for a single file |
 | `read_all_context_files` | `max_output_chars`; read-only files always come first, then whole context files are left out | `read_context_file` for the listed files |
 | `read_context_file` | `max_output_chars` | Keep context and read-only files short |
+| `web_search` | `max_output_chars`, shared equally by the results | `web_fetch` for a whole page |
+| `web_fetch` | `max_output_chars` per part; up to 50 links, listed in the first part only | Next part with `start_char` |
 
 The example [`_instructions/app-instructions.md`](_instructions/app-instructions.md) tells the AI to follow these messages instead of repeating the same call, and never to assume that a limited response is the whole result. Include a similar instruction in your own project instructions.

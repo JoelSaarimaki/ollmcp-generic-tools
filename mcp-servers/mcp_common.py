@@ -16,7 +16,7 @@ from pathlib import Path
 # --- Constants & Config ---
 
 CONFIG_ENV_VAR = "MCP_TOOLS_CONFIG"
-CONFIG_KEYS = {"allowed_dir", "forbidden_paths", "max_output_chars", "gitignore_path", "commands_config", "context_folder", "read_only_files", "ignored_dirs"}
+CONFIG_KEYS = {"allowed_dir", "forbidden_paths", "max_output_chars", "gitignore_path", "commands_config", "context_folder", "read_only_files", "ignored_dirs", "ollama_api_key"}
 DEFAULT_MAX_OUTPUT_CHARS = 40000
 MIN_MAX_OUTPUT_CHARS = 2000
 PROTECTED_FILE_NAMES = {".mcp.json"}  # MCP server configuration, never accessible regardless of forbidden_paths
@@ -94,6 +94,17 @@ def _setting_ignored_dirs() -> set[str]:
         raise ValueError(f"{CONFIG_PATH}: 'ignored_dirs' must contain folder names, not paths: {paths}. Folders with these names are skipped at any depth. To exclude one specific folder, add it to 'forbidden_paths' instead.")
     return {v.strip() for v in values}
 
+def _setting_secret(key: str) -> str | None:
+    """
+    Returns a secret string setting, such as an API key, or None if it is not set, null or empty.
+    """
+    value = CONFIG.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{CONFIG_PATH}: '{key}' must be a string.")
+    return value.strip() or None
+
 def _setting_max_output_chars() -> int:
     """
     Returns the max_output_chars setting, at least MIN_MAX_OUTPUT_CHARS, or DEFAULT_MAX_OUTPUT_CHARS if it is not set or null.
@@ -119,6 +130,8 @@ COMMANDS_CONFIG = _setting_path("commands_config", CONFIG_DIR)
 CONTEXT_FOLDER = _setting_path("context_folder", CONFIG_DIR)
 READ_ONLY_FILES = _setting_paths("read_only_files", CONFIG_DIR)
 IGNORED_DIRS = _setting_ignored_dirs()
+# API key for Ollama's hosted web search and fetch (web-search-mcp). Never shown to the AI: the config file is protected.
+OLLAMA_API_KEY = _setting_secret("ollama_api_key")
 
 # --- Shared Helpers ---
 

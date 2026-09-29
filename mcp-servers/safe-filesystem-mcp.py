@@ -21,6 +21,7 @@ from mcp_common import (
     GITIGNORE_PATH,
     IGNORED_DIRS,
     MAX_OUTPUT_CHARS,
+    OLLAMA_API_KEY,
     PROTECTED_FILE_NAMES,
     READ_ONLY_FILES,
     access_denied_message,
@@ -902,6 +903,9 @@ def get_config() -> str:
                 "context_folder_exists": bool(CONTEXT_FOLDER and CONTEXT_FOLDER.is_dir()),
                 "read_only_files": [{"path": p.as_posix(), "found": p.is_file()} for p in READ_ONLY_FILES]
             },
+            "web_search": {
+                "ollama_api_key_set": OLLAMA_API_KEY is not None
+            },
             "notes": [
                 "All servers read the same config_file, so they all use the same allowed_dir, forbidden_paths and max_output_chars.",
                 "Only paths within allowed_dir can be accessed. Relative paths given to the tools are resolved against allowed_dir.",
@@ -909,6 +913,7 @@ def get_config() -> str:
                 "The map and search tools also skip folders named in ignored_dirs at any depth, files matching the .gitignore patterns and, for search, binary files.",
                 "The maps only list files of the map_file_types.",
                 "Git's own .gitignore rules decide which untracked files the git tools list. If repository_root is null, allowed_dir is not in a git repository.",
+                "The web search tools only work if ollama_api_key_set is true. The key itself is never shown.",
                 "Responses longer than max_output_chars are cut short with an 'Output limited:' message that explains how to see the rest."
             ]
         }, indent=2, ensure_ascii=False)

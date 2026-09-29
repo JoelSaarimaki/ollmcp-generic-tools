@@ -6,5 +6,6 @@
     "max_output_chars": 40000,
     "commands_config": "_commands/app-commands.json",
     "context_folder": "_context",
-    "read_only_files": ["_instructions/app-instructions.md"]
+    "read_only_files": ["_instructions/app-instructions.md"],
+    "ollama_api_key": null
 }

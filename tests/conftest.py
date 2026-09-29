@@ -30,6 +30,7 @@ SERVER_FILES = {
     "git": "git-diff-mcp.py",
     "commands": "commands-mcp.py",
     "context": "context-record-mcp.py",
+    "web": "web-search-mcp.py",
 }
 
 requires_git = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")

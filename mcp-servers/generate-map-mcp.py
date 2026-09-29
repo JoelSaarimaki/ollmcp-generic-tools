@@ -244,10 +244,184 @@ def _get_class_instantiations_python(node, metadata: dict) -> list[str]:
                 pass
     return sorted(instantiations)
 
+# Top-level JS/TS declarations. They must start at the beginning of a line, so nested code is not listed.
+_JS_IDENT = r"[A-Za-z_$][\w$]*"
+_JS_FUNCTION = re.compile(rf"^(export\s+(?:default\s+)?)?(?:declare\s+)?(?:async\s+)?function\s*\*?\s*({_JS_IDENT})?", re.M)
+_JS_CLASS = re.compile(rf"^(export\s+(?:default\s+)?)?(?:declare\s+)?(?:abstract\s+)?class\b\s*({_JS_IDENT})?([^{{]*)\{{", re.M)
+_JS_INTERFACE = re.compile(rf"^(export\s+)?(?:declare\s+)?interface\s+({_JS_IDENT})", re.M)
+_JS_TYPE = re.compile(rf"^(export\s+)?(?:declare\s+)?type\s+({_JS_IDENT})\b", re.M)
+_JS_ENUM = re.compile(rf"^(export\s+)?(?:declare\s+)?(?:const\s+)?enum\s+({_JS_IDENT})", re.M)
+_JS_VARIABLE = re.compile(rf"^(export\s+)?(?:declare\s+)?(?:const|let|var)\s+({_JS_IDENT})\s*(?::[^=\n]+)?=(?![=>])", re.M)
+_JS_DEFAULT_NAME = re.compile(rf"^export\s+default\s+({_JS_IDENT})\s*;?[ \t]*$", re.M)
+_JS_DEFAULT_ANONYMOUS = re.compile(rf"^export\s+default\s+(?:async\s+)?(?:\(|{_JS_IDENT}\s*=>)", re.M)
+_JS_EXPORT_LIST = re.compile(r"^export\s+(?:type\s+)?\{([^}]*)\}(?:\s*from\s*['\"]([^'\"]+)['\"])?", re.M)
+_JS_EXPORT_ALL = re.compile(rf"^export\s+(?:type\s+)?\*\s*(?:as\s+({_JS_IDENT})\s*)?from\s*['\"]([^'\"]+)['\"]", re.M)
+_JS_CJS_OBJECT = re.compile(r"^module\.exports\s*=\s*\{([^}]*)\}", re.M)
+_JS_CJS_NAME = re.compile(rf"^(?:module\.exports\s*=\s*({_JS_IDENT})\s*;?[ \t]*$|(?:module\.)?exports\.({_JS_IDENT})\s*=)", re.M)
+_JS_IMPORT = re.compile(r"^[ \t]*(?:import|export)\s+(?:type\s+)?(?:[\w$*{}\s,]+?\s+from\s+)?['\"]([^'\"]+)['\"]", re.M)
+_JS_REQUIRE = re.compile(r"\b(?:require|import)\(\s*['\"]([^'\"]+)['\"]\s*\)")
+# Right-hand sides of variable declarations that make the variable a function or a component
+_JS_FUNCTION_VALUE = re.compile(r"\s*(?:async\s+)?(?:function\b|<[^>]*>\s*\([^()]*\)\s*(?::[^=]*?)?=>|\([^()]*\)\s*(?::[^=]*?)?=>|[A-Za-z_$][\w$]*\s*=>)")
+_JS_COMPONENT_VALUE = re.compile(r"\s*(?:React\.)?(?:memo|forwardRef)\s*[(<]")
+# Class members, matched on lines directly inside a class body
+_JS_MODIFIERS = r"(?:(?:public|private|protected|static|readonly|abstract|override|async|get|set|declare)\s+)*"
+_JS_METHOD = re.compile(rf"^\s*{_JS_MODIFIERS}\*?\s*(#?{_JS_IDENT})\s*(?:<[^>]*>)?\s*\(")
+_JS_ARROW_PROPERTY = re.compile(rf"^\s*{_JS_MODIFIERS}(#?{_JS_IDENT})\s*(?::[^=]+)?=\s*(?:async\s+)?(?:\([^()]*\)|{_JS_IDENT})\s*(?::[^=]*?)?=>")
+_JS_KEYWORDS = {"if", "for", "while", "switch", "catch", "return", "function", "else", "do", "try", "with", "new", "typeof", "await", "super", "throw"}
+MAX_JS_PARSE_BYTES = 1024 * 1024  # Larger files (e.g. bundles) are listed but not parsed
+
+def _blank(chars: list[str], start: int, end: int):
+    """
+    Replaces the characters between start and end with spaces, keeping line breaks.
+    """
+    for i in range(start, end):
+        if chars[i] != "\n":
+            chars[i] = " "
+
+def _mask_js(content: str) -> tuple[str, str]:
+    """
+    Returns two copies of JS/TS source with the same length and line breaks: one with comments
+    replaced by spaces, and one with both comments and string contents replaced by spaces.
+    Used so that code inside comments or strings is not mistaken for declarations or braces.
+    """
+    no_comments = list(content)
+    no_strings = list(content)
+    i, n = 0, len(content)
+    while i < n:
+        c = content[i]
+        nxt = content[i + 1] if i + 1 < n else ""
+        if c == "/" and nxt == "/":
+            end = content.find("\n", i)
+            end = n if end == -1 else end
+            _blank(no_comments, i, end)
+            _blank(no_strings, i, end)
+            i = end
+        elif c == "/" and nxt == "*":
+            end = content.find("*/", i + 2)
+            end = n if end == -1 else end + 2
+            _blank(no_comments, i, end)
+            _blank(no_strings, i, end)
+            i = end
+        elif c in "'\"`":
+            j = i + 1
+            while j < n and content[j] != c:
+                if content[j] == "\\":
+                    j += 1
+                elif c != "`" and content[j] == "\n":
+                    break
+                j += 1
+            _blank(no_strings, i + 1, min(j, n))
+            i = j + 1
+        else:
+            i += 1
+    return "".join(no_comments), "".join(no_strings)
+
+def _comment_summary(comment_body: str) -> str:
+    """
+    Returns the first descriptive line of a block comment body, skipping '*' prefixes and @tags.
+    """
+    for line in comment_body.splitlines():
+        line = line.strip().lstrip("*").strip()
+        if line and not line.startswith("@"):
+            return line
+    return ""
+
+def _jsdoc_summary(content: str, pos: int) -> str:
+    """
+    Returns the summary of the JSDoc comment directly before position pos, or an empty string.
+    """
+    end = pos
+    while end > 0 and content[end - 1].isspace():
+        end -= 1
+    if content[end - 2:end] != "*/":
+        return ""
+    start = content.rfind("/**", 0, end)
+    if start == -1 or content.find("*/", start, end - 2) != -1:
+        return ""
+    return _comment_summary(content[start + 3:end - 2])
+
+def _file_comment_summary(content: str) -> str:
+    """
+    Returns the summary of a block comment at the top of the file that describes the whole file,
+    i.e. one followed by a blank line or an import rather than directly by a declaration.
+    """
+    start = content.find("\n") + 1 if content.startswith("#!") else 0
+    while start < len(content) and content[start].isspace():
+        start += 1
+    if not content.startswith("/*", start):
+        return ""
+    end = content.find("*/", start + 2)
+    if end == -1:
+        return ""
+    rest = content[end + 2:]
+    gap = rest[:len(rest) - len(rest.lstrip())]
+    if "\n\n" in gap.replace("\r", "") or rest.lstrip().startswith(("import", "'use", "\"use", "require")):
+        return _comment_summary(content[start + 2:end].lstrip("*"))
+    return ""
+
+def _find_block_end(code: str, open_index: int) -> int:
+    """
+    Returns the index of the brace that closes the block opened at open_index.
+    """
+    depth = 0
+    for i in range(open_index, len(code)):
+        if code[i] == "{":
+            depth += 1
+        elif code[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+    return len(code)
+
+def _js_class_members(content: str, code: str, body_start: int, body_end: int) -> list[str]:
+    """
+    Returns markdown lines for the methods directly inside a class body.
+    """
+    members = []
+    seen = set()
+    depth = 0
+    pos = body_start
+    for line in code[body_start:body_end].split("\n"):
+        if depth == 0:
+            match = _JS_METHOD.match(line) or _JS_ARROW_PROPERTY.match(line)
+            if match and match.group(1) not in _JS_KEYWORDS and match.group(1) not in seen:
+                seen.add(match.group(1))
+                doc = _jsdoc_summary(content, pos)
+                members.append(f"  - `{match.group(1)}()`" + (f": *{doc}*" if doc else ""))
+        depth += line.count("{") - line.count("}")
+        pos += len(line) + 1
+    return members
+
+def _js_kind(name: str, is_function: bool, suffix: str) -> str:
+    """
+    Classifies a function-like declaration as a Hook, Component or Function by its name and file type.
+    """
+    if not is_function:
+        return "Constant"
+    if re.match(r"use[A-Z0-9]", name):
+        return "Hook"
+    if name[:1].isupper() and suffix in {".jsx", ".tsx"}:
+        return "Component"
+    return "Function"
+
+def _parse_export_names(names: str) -> list[tuple[str, str]]:
+    """
+    Parses the contents of an export list such as "a, b as c, type D" into (local, exported) name pairs.
+    """
+    pairs = []
+    for part in names.split(","):
+        part = re.sub(r"^\s*type\s+", "", part).strip()
+        if not part:
+            continue
+        local, _, exported = part.partition(" as ")
+        pairs.append((local.strip(), (exported or local).strip()))
+    return pairs
+
 def _parse_js_ts(filepath: Path, input_dir: Path) -> str:
     """
-    Parses a JS/TS/JSX/TSX file with regex and returns a markdown summary of its exports,
-    components, hooks and interfaces.
+    Parses a JS/TS/JSX/TSX file with regex and returns a markdown summary of its local imports,
+    top-level functions, components, hooks, classes (with methods), interfaces, types, enums,
+    exported constants and re-exports, with their JSDoc summaries.
     """
     try:
         content = filepath.read_text(encoding="utf-8")
@@ -256,44 +430,139 @@ def _parse_js_ts(filepath: Path, input_dir: Path) -> str:
 
     rel_path = filepath.relative_to(input_dir)
     out = [f"### `{rel_path.as_posix()}`\n"]
+    if len(content) > MAX_JS_PARSE_BYTES:
+        out.append("- (File too large to parse)\n")
+        return "".join(out)
 
-    jsdoc_pattern = re.compile(r"/\*\* (.*?) \*/", re.DOTALL)
-    jsdocs = jsdoc_pattern.findall(content)
-    if jsdocs:
-        out.append(f"> {jsdocs[0].strip().splitlines()[0]}\n")
+    no_comments, code = _mask_js(content)
+    suffix = filepath.suffix.lower()
+
+    file_doc = _file_comment_summary(content)
+    if file_doc:
+        out.append(f"> {file_doc}\n")
+
+    imports = []
+    for match in list(_JS_IMPORT.finditer(no_comments)) + list(_JS_REQUIRE.finditer(no_comments)):
+        source = match.group(1)
+        if source.startswith(".") and source not in imports:
+            imports.append(source)
+    if imports:
+        out.append(f"- Imports: {', '.join(f'`{s}`' for s in imports)}\n")
+
+    # Collect declarations as (position, kind, name, export, extra, members)
+    declarations = []
+    seen = set()
+
+    def add(pos, kind, name, export, extra="", members=None):
+        if (kind, name) in seen:
+            return
+        seen.add((kind, name))
+        declarations.append((pos, kind, name, export, extra, members or []))
+
+    def export_type(prefix):
+        if not prefix:
+            return None
+        return "default" if "default" in prefix else "named"
+
+    for match in _JS_FUNCTION.finditer(code):
+        name = match.group(2)
+        if name:
+            add(match.start(), _js_kind(name, True, suffix), name, export_type(match.group(1)))
+        elif export_type(match.group(1)) == "default":
+            add(match.start(), "Function", "(anonymous)", "default")
+
+    for match in _JS_CLASS.finditer(code):
+        name = match.group(2) or ("(anonymous)" if export_type(match.group(1)) == "default" else None)
+        if not name:
+            continue
+        extends = re.search(r"\bextends\s+([\w$.]+)", match.group(3))
+        body_start = match.end() - 1
+        body_end = _find_block_end(code, body_start)
+        members = _js_class_members(content, code, body_start + 1, body_end)
+        add(match.start(), "Class", name, export_type(match.group(1)), f" extends `{extends.group(1)}`" if extends else "", members)
+
+    for pattern, kind in [(_JS_INTERFACE, "Interface"), (_JS_TYPE, "Type"), (_JS_ENUM, "Enum")]:
+        for match in pattern.finditer(code):
+            add(match.start(), kind, match.group(2), export_type(match.group(1)))
+
+    for match in _JS_VARIABLE.finditer(code):
+        name = match.group(2)
+        value = code[match.end():match.end() + 300]
+        if _JS_COMPONENT_VALUE.match(value):
+            kind = "Component"
+        else:
+            kind = _js_kind(name, bool(_JS_FUNCTION_VALUE.match(value)), suffix)
+        export = export_type(match.group(1))
+        if kind != "Constant" or export:
+            add(match.start(), kind, name, export)
+
+    for match in _JS_DEFAULT_ANONYMOUS.finditer(code):
+        add(match.start(), "Function", "(anonymous)", "default")
+
+    # Names exported separately from their declarations
+    declared = {d[2] for d in declarations}
+    default_names = {m.group(1) for m in _JS_DEFAULT_NAME.finditer(code)} - {"function", "class", "async"}
+    named_exports = []
+    re_exports = []
+    for match in _JS_EXPORT_LIST.finditer(no_comments):
+        pairs = _parse_export_names(match.group(1))
+        if match.group(2):
+            re_exports.append(f"{', '.join(f'`{e}`' for _, e in pairs)} from `{match.group(2)}`")
+        else:
+            named_exports.extend(local for local, _ in pairs)
+    for match in _JS_EXPORT_ALL.finditer(no_comments):
+        label = f"all as `{match.group(1)}`" if match.group(1) else "all"
+        re_exports.append(f"{label} from `{match.group(2)}`")
+    for match in _JS_CJS_OBJECT.finditer(code):
+        # module.exports = { a, b: localName }
+        for part in match.group(1).split(","):
+            local = part.split(":")[-1].strip()
+            if re.fullmatch(_JS_IDENT, local):
+                named_exports.append(local)
+    for match in _JS_CJS_NAME.finditer(code):
+        if match.group(1):
+            default_names.add(match.group(1))  # module.exports = name
+        else:
+            named_exports.append(match.group(2))  # exports.name = ...
 
     symbols = []
-    patterns = [
-        (r"export\s+function\s+(\w+)\s*\((.*?)\)", "Function"),
-        (r"export\s+const\s+(\w+)\s*=\s*(?:\([^)]*\)|[^=]+)\s*=>", "Component/ArrowFn"),
-        (r"export\s+class\s+(\w+)", "Class"),
-        (r"export\s+interface\s+(\w+)", "Interface"),
-        (r"export\s+type\s+(\w+)", "Type"),
-        (r"export\s+const\s+(\w+)\s*=\s*use\w+", "Hook")
-    ]
+    for pos, kind, name, export, extra, members in sorted(declarations):
+        if name in default_names:
+            export = "default"
+        elif name in named_exports and not export:
+            export = "named"
+        tag = {"default": " (default export)", "named": " (export)"}.get(export, "")
+        doc = _jsdoc_summary(content, pos)
+        doc_str = f": *{doc}*" if doc else ""
+        if name == "(anonymous)":
+            label = f"**{kind}** (anonymous)"
+        elif kind == "Function":
+            label = f"`{name}()`"
+        else:
+            label = f"**{kind}** `{name}`"
+        symbols.append(f"- {label}{extra}{tag}{doc_str}")
+        symbols.extend(members)
 
-    for pattern, label in patterns:
-        matches = re.finditer(pattern, content, re.MULTILINE)
-        for match in matches:
-            name = match.group(1)
-            if label == "Function":
-                symbols.append(f"- `{name}()`")
-            else:
-                symbols.append(f"- **{label}** `{name}`")
+    undeclared = [n for n in dict.fromkeys(named_exports) if n not in declared]
+    undeclared += [n for n in sorted(default_names) if n not in declared]
+    if undeclared:
+        symbols.append(f"- Exports: {', '.join(f'`{n}`' for n in undeclared)}")
+    for re_export in re_exports:
+        symbols.append(f"- Re-exports {re_export}")
 
     if symbols:
         out.append("\n".join(symbols) + "\n")
     else:
-        out.append("- (No significant exports detected)\n")
+        out.append("- (No declarations detected)\n")
 
     return "".join(out)
 
-def _iter_files(input_dir: Path, gitignore_patterns: list[str]):
+def _iter_files(input_dir: Path, gitignore_patterns: list[str], start_dir: Path | None = None):
     """
-    Yields the files within input_dir that are not ignored, in sorted order.
+    Yields the files within start_dir (defaulting to input_dir) that are not ignored, in sorted order.
     Ignored folders are skipped without being entered, which keeps large folders such as node_modules fast.
     """
-    for dirpath, dirnames, filenames in os.walk(input_dir):
+    for dirpath, dirnames, filenames in os.walk(start_dir or input_dir):
         current_dir = Path(dirpath)
         dirnames[:] = sorted(
             (d for d in dirnames if not _is_ignored(current_dir / d, input_dir, IGNORED_DIRS, gitignore_patterns)),
@@ -337,11 +606,31 @@ def _get_project_metadata(input_dir: Path, gitignore_patterns: list[str]) -> dic
                             metadata["symbols"].add(sub.name)
     return metadata
 
-def _generate_simple_map(input_dir: Path, gitignore_patterns: list[str]) -> str:
+def _resolve_scope(path: str | None, gitignore_patterns: list[str]) -> tuple[Path, str | None]:
     """
-    Generates a directory tree string of the allowed files.
+    Resolves the folder a map is limited to. Relative paths are resolved against INPUT_DIR.
+    Returns the folder and an error message, which is None if the folder can be mapped.
     """
-    lines = [f"Root: `{input_dir.as_posix()}`\n"]
+    if not path:
+        return INPUT_DIR, None
+    p = Path(path)
+    if not p.is_absolute():
+        p = INPUT_DIR / p
+    p = p.resolve()
+    if not p.is_relative_to(INPUT_DIR):
+        return p, f"Error: Path '{path}' is not within the input directory {INPUT_DIR.as_posix()}."
+    if not p.is_dir():
+        return p, f"Error: Path '{path}' is not a directory within the input directory {INPUT_DIR.as_posix()}."
+    if p != INPUT_DIR and _is_ignored(p, INPUT_DIR, IGNORED_DIRS, gitignore_patterns):
+        return p, f"Error: Path '{path}' is ignored or forbidden. Use get_codebase_map_config to see why."
+    return p, None
+
+def _generate_simple_map(input_dir: Path, gitignore_patterns: list[str], root_dir: Path | None = None) -> str:
+    """
+    Generates a directory tree string of the allowed files within root_dir (defaulting to input_dir).
+    """
+    root_dir = root_dir or input_dir
+    lines = [f"Root: `{root_dir.as_posix()}`\n"]
 
     def _build_tree(current_dir: Path, prefix: str = ""):
         try:
@@ -373,23 +662,23 @@ def _generate_simple_map(input_dir: Path, gitignore_patterns: list[str]) -> str:
             else:
                 lines.append(f"{prefix}{connector}{entry.name}\n")
 
-    _build_tree(input_dir)
+    _build_tree(root_dir)
     return "".join(lines)
 
-def _create_map_content(input_dir: Path) -> str:
+def _create_map_content(input_dir: Path, gitignore_patterns: list[str], scope_dir: Path) -> str:
     """
-    Creates the full codebase map content: the file tree followed by per-file summaries.
+    Creates the codebase map content for scope_dir: the file tree followed by per-file summaries.
+    The whole project is still scanned for symbols, so calls into other folders are recognized.
     """
-    gitignore_patterns = _load_gitignore_patterns(input_dir)
     metadata = _get_project_metadata(input_dir, gitignore_patterns)
 
     content = ["# Codebase Structure & Summaries\n\n"]
     content.append("## File Map\n")
-    map_tree = _generate_simple_map(input_dir, gitignore_patterns)
+    map_tree = _generate_simple_map(input_dir, gitignore_patterns, scope_dir)
     content.append(f"```\n{map_tree}```\n\n")
     content.append("## Detailed Descriptions\n\n")
 
-    for path in _iter_files(input_dir, gitignore_patterns):
+    for path in _iter_files(input_dir, gitignore_patterns, scope_dir):
         file_content = ""
         if path.suffix in PYTHON_SUFFIXES:
             file_content = _parse_python(path, input_dir, metadata)
@@ -409,11 +698,17 @@ def _create_map_content(input_dir: Path) -> str:
 # --- Public MCP Tools ---
 
 @mcp.tool()
-def generate_codebase_map() -> str:
+def generate_codebase_map(path: str | None = None) -> str:
     """
     Generate a filemap and structuremap of the codebase.
-    Supports Python (via AST) and React/JS/TS (via regex).
+    Supports Python (via AST) and React/JS/TS (via regex): lists functions, classes and methods,
+    components, hooks, types, exports, local imports and docstring/JSDoc summaries.
     Use this tool to gain starting information about all the code in the codebase.
+    For large codebases, limit the map to one folder at a time with the path argument.
+
+    Args:
+        path (str, optional): A folder to limit the map to, relative to the input directory
+            (e.g., 'src/components'). Defaults to the whole input directory.
 
     Returns:
         str: The generated codebase structure map as a string, or an error message.
@@ -422,16 +717,25 @@ def generate_codebase_map() -> str:
         return f"Error: Input directory {INPUT_DIR.as_posix()} does not exist."
 
     try:
-        content = _create_map_content(INPUT_DIR)
-        return f"Codebase structure map of {INPUT_DIR.as_posix()}\n\n{content}"
+        gitignore_patterns = _load_gitignore_patterns(INPUT_DIR)
+        scope_dir, error = _resolve_scope(path, gitignore_patterns)
+        if error:
+            return error
+
+        content = _create_map_content(INPUT_DIR, gitignore_patterns, scope_dir)
+        return f"Codebase structure map of {scope_dir.as_posix()}\n\n{content}"
     except Exception as e:
         return f"Error: Generating codebase map failed:\n{e}\n{traceback.format_exc()}"
 
 @mcp.tool()
-def generate_file_map() -> str:
+def generate_file_map(path: str | None = None) -> str:
     """
     Generate the file tree map of the codebase.
     Useful for a quick overview of the directory structure without detailed summaries.
+
+    Args:
+        path (str, optional): A folder to limit the map to, relative to the input directory
+            (e.g., 'src/components'). Defaults to the whole input directory.
 
     Returns:
         str: The generated file tree map as a string, or an error message.
@@ -441,8 +745,12 @@ def generate_file_map() -> str:
 
     try:
         gitignore_patterns = _load_gitignore_patterns(INPUT_DIR)
-        map_tree = _generate_simple_map(INPUT_DIR, gitignore_patterns)
-        return f"File map of {INPUT_DIR.as_posix()}\n\n```\n{map_tree}```"
+        scope_dir, error = _resolve_scope(path, gitignore_patterns)
+        if error:
+            return error
+
+        map_tree = _generate_simple_map(INPUT_DIR, gitignore_patterns, scope_dir)
+        return f"File map of {scope_dir.as_posix()}\n\n```\n{map_tree}```"
     except Exception as e:
         return f"Error: Generating file map failed:\n{e}\n{traceback.format_exc()}"
 

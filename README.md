@@ -39,7 +39,7 @@ Most of the MCP servers use environment variables for configuration. These shoul
 
 #### generate-map-mcp
 - `INPUT_DIR`: The directory to scan for the codebase map. (Defaults to current working directory)
-- `GITIGNORE_PATH`: Path to the `.gitignore` file to use for excluding files. (Optional)
+- `GITIGNORE_PATH`: Path to the `.gitignore` file to use for excluding files. (Optional, defaults to `INPUT_DIR/.gitignore`)
 - `FORBIDDEN_PATHS`: List of folders and/or files the tool must never access, even within `INPUT_DIR`. See [Forbidden paths](#forbidden-paths). (Optional)
 
 #### git-diff-mcp
@@ -55,6 +55,7 @@ Most of the MCP servers use environment variables for configuration. These shoul
 
 #### search-tool-mcp
 - `INPUT_DIR`: The directory to perform searches in. (Defaults to current working directory)
+- `GITIGNORE_PATH`: Path to the `.gitignore` file to use for excluding files. (Optional, defaults to `INPUT_DIR/.gitignore`)
 - `FORBIDDEN_PATHS`: List of folders and/or files the tool must never access, even within `INPUT_DIR`. See [Forbidden paths](#forbidden-paths). (Optional)
 
 #### Forbidden paths
@@ -81,7 +82,9 @@ Limitations:
 
 `node_modules`, `.git`, `__pycache__`, `dist`, `build`, `.next`, `.venv`, `venv`, `env`, `.pytest_cache`, `.idea`, `.vscode`, `target`, `out`, `.mypy_cache`, `.ruff_cache`
 
-`generate-map-mcp` additionally skips files matched by the `.gitignore` file (see `GITIGNORE_PATH`).
+These folders are skipped without being entered, so even a large `node_modules` does not slow the tools down.
+
+Both tools additionally skip files matched by the `.gitignore` file (see `GITIGNORE_PATH`). `search-tool-mcp` also skips binary files.
 
 `safe-filesystem-mcp` has no ignored directories, because it only accesses the paths the AI explicitly asks for. To block it from folders such as `.git` or `.venv`, add them to its `FORBIDDEN_PATHS`.
 
@@ -144,8 +147,10 @@ This tool manages a context folder containing Markdown files, allowing for listi
 
 Generates a comprehensive structure map and summary of a codebase, supporting Python (via AST) and JS/TS (via regex).
 
-- **generate_codebase_map** Generates a structuremap of the codebase.
-- **generate_file_map** Generates the file tree map of the codebase without detailed summaries.
+- **generate_codebase_map** Generates a structuremap of the codebase, optionally limited to a subfolder (`path`). Lists for each file:
+  - Python: functions, classes and methods, docstring summaries, and calls to the project's own functions and classes.
+  - JS/TS: local imports, functions, React components and hooks, classes and methods, interfaces, types, enums, exported constants, default and named exports, re-exports and JSDoc summaries. Code in comments is ignored.
+- **generate_file_map** Generates the file tree map of the codebase without detailed summaries, optionally limited to a subfolder (`path`).
 - **get_codebase_map_config** Returns the input directory, ignored directories, forbidden paths, `.gitignore` patterns and included file types, to explain why a file may be missing from the maps.
 
 ### git-diff-mcp
@@ -185,6 +190,6 @@ Provides safe and robust file system operations, including metadata retrieval an
 
 Performs text or regex searches across files in a specified directory.
 
-- **search_text_in_files** Search for text or regex patterns from code files in the codebase.
-- **search_files_by_pattern** Searches for files and directories that match a glob-style pattern.
-- **get_search_config** Returns the input directory, ignored directories, forbidden paths and search limits, to explain why a file or match may be missing from the searches.
+- **search_text_in_files** Search for text or regex patterns from code files in the codebase. Can be limited to a folder or file (`path`) and to matching file names (`file_pattern`, e.g. `*.py`), and can show lines around each match (`context_lines`). Very long lines are shortened around the match.
+- **search_files_by_pattern** Searches for files and directories that match a glob-style pattern, such as `src/**/*.test.ts`.
+- **get_search_config** Returns the input directory, ignored directories, forbidden paths, `.gitignore` patterns and search limits, to explain why a file or match may be missing from the searches.

@@ -31,6 +31,12 @@ To use these MCP servers, you need to configure a `.mcp.json` file in your proje
 
 Most of the MCP servers use environment variables for configuration. These should be defined in your `.mcp.json` under the `env` key for each server.
 
+#### Shared by generate-map-mcp, search-tool-mcp, safe-filesystem-mcp and git-diff-mcp
+- `ALLOWED_DIR`: The project directory the tools can access. Relative paths given to the tools are resolved against it, so a path returned by one tool (e.g. `src/app.py` from a search) works as-is in the others. (Defaults to current working directory)
+- `FORBIDDEN_PATHS`: List of folders and/or files the tools must never access, even within `ALLOWED_DIR`. See [Forbidden paths](#forbidden-paths). (Optional)
+
+Use the same values for all four servers, so that the files the AI can find with the map and search tools are exactly the files it can read, edit and inspect with git. To focus the AI on part of the project, such as `src`, it can limit maps and searches with their `path` argument instead.
+
 #### commands-mcp
 - `COMMANDS_CONFIG`: Path to the JSON configuration file containing the command registry.
 
@@ -38,25 +44,21 @@ Most of the MCP servers use environment variables for configuration. These shoul
 - `CONTEXT_FOLDER_PATH`: Path to the folder containing the context Markdown files.
 
 #### generate-map-mcp
-- `INPUT_DIR`: The directory to scan for the codebase map. (Defaults to current working directory)
-- `GITIGNORE_PATH`: Path to the `.gitignore` file to use for excluding files. (Optional, defaults to `INPUT_DIR/.gitignore`)
-- `FORBIDDEN_PATHS`: List of folders and/or files the tool must never access, even within `INPUT_DIR`. See [Forbidden paths](#forbidden-paths). (Optional)
+- `ALLOWED_DIR`, `FORBIDDEN_PATHS`: See [above](#shared-by-generate-map-mcp-search-tool-mcp-safe-filesystem-mcp-and-git-diff-mcp).
+- `GITIGNORE_PATH`: Path to the `.gitignore` file to use for excluding files. (Optional, defaults to `ALLOWED_DIR/.gitignore`)
 
 #### git-diff-mcp
-- `ALLOWED_DIR`: The directory within which git history and changes can be inspected. Use the same value as for `safe-filesystem-mcp`. (Defaults to current working directory)
-- `FORBIDDEN_PATHS`: List of folders and/or files the tool must never show, even within `ALLOWED_DIR`. Use the same value as for `safe-filesystem-mcp`. See [Forbidden paths](#forbidden-paths). (Optional)
+- `ALLOWED_DIR`, `FORBIDDEN_PATHS`: See [above](#shared-by-generate-map-mcp-search-tool-mcp-safe-filesystem-mcp-and-git-diff-mcp).
 
 #### instructions-mcp
 - `PROJECT_INSTRUCTIONS_FILE`: Path to the project-specific instructions Markdown file.
 
 #### safe-filesystem-mcp
-- `ALLOWED_DIR`: The directory within which file operations are permitted. (Defaults to current working directory)
-- `FORBIDDEN_PATHS`: List of folders and/or files the tool must never access, even within `ALLOWED_DIR`. See [Forbidden paths](#forbidden-paths). (Optional)
+- `ALLOWED_DIR`, `FORBIDDEN_PATHS`: See [above](#shared-by-generate-map-mcp-search-tool-mcp-safe-filesystem-mcp-and-git-diff-mcp).
 
 #### search-tool-mcp
-- `INPUT_DIR`: The directory to perform searches in. (Defaults to current working directory)
-- `GITIGNORE_PATH`: Path to the `.gitignore` file to use for excluding files. (Optional, defaults to `INPUT_DIR/.gitignore`)
-- `FORBIDDEN_PATHS`: List of folders and/or files the tool must never access, even within `INPUT_DIR`. See [Forbidden paths](#forbidden-paths). (Optional)
+- `ALLOWED_DIR`, `FORBIDDEN_PATHS`: See [above](#shared-by-generate-map-mcp-search-tool-mcp-safe-filesystem-mcp-and-git-diff-mcp).
+- `GITIGNORE_PATH`: Path to the `.gitignore` file to use for excluding files. (Optional, defaults to `ALLOWED_DIR/.gitignore`)
 
 ### Running
 
@@ -157,7 +159,7 @@ The file reading and editing tools are designed to let local AI models read and 
 - **create_directory** Creates a new directory at the specified path.
 - **move_file** Moves or renames a file or directory.
 - **delete_file** Deletes a file or a directory.
-- **get_filesystem_config** Returns the allowed directory, forbidden paths and the working directory relative paths are resolved against, to explain why a path may be denied or not found.
+- **get_filesystem_config** Returns the allowed directory and forbidden paths, to explain why a path may be denied or not found.
 
 ### search-tool-mcp
 
@@ -173,7 +175,7 @@ Performs text or regex searches across files in a specified directory.
 
 `generate-map-mcp`, `search-tool-mcp`, `safe-filesystem-mcp` and `git-diff-mcp` accept a `FORBIDDEN_PATHS` list of sub-folders and individual files that are excluded from all tool operations. A forbidden folder also forbids everything inside it. Leave the value empty (or omit it) to forbid nothing.
 
-- Relative paths are resolved against `INPUT_DIR` / `ALLOWED_DIR`. Absolute paths are also accepted.
+- Relative paths are resolved against `ALLOWED_DIR`. Absolute paths are also accepted.
 - Separate paths with commas. Whitespace around each path is ignored:
   ```json
   "FORBIDDEN_PATHS": "folder/sub_folder/code-file.py, another_folder"
@@ -208,7 +210,7 @@ For the same reason, keep the `mcp-servers` scripts and the `COMMANDS_CONFIG` re
 
 ### Ignored directories
 
-`generate-map-mcp` and `search-tool-mcp` always skip folders with the following names, at any depth within `INPUT_DIR` (defined as `IGNORED_DIRS` in the scripts):
+`generate-map-mcp` and `search-tool-mcp` always skip folders with the following names, at any depth within `ALLOWED_DIR` (defined as `IGNORED_DIRS` in the scripts):
 
 `node_modules`, `.git`, `__pycache__`, `dist`, `build`, `.next`, `.venv`, `venv`, `env`, `.pytest_cache`, `.idea`, `.vscode`, `target`, `out`, `.mypy_cache`, `.ruff_cache`
 

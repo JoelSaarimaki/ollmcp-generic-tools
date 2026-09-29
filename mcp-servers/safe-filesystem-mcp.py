@@ -129,6 +129,13 @@ def _display_path(path: Path, base_dir: Path) -> str:
         return path.relative_to(base_dir).as_posix()
     return path.as_posix()
 
+def _resolve_path(path: str) -> Path:
+    """
+    Resolves a path given to a tool. Relative paths are resolved against ALLOWED_DIR, as in all servers.
+    """
+    p = Path(path)
+    return (p if p.is_absolute() else ALLOWED_DIR / p).resolve()
+
 def _is_path_allowed(path: Path) -> bool:
     """
     Checks if the given path is within ALLOWED_DIR and not forbidden.
@@ -490,7 +497,7 @@ def write_file(path: str, content: str, expected_sha256: str) -> str:
             if the file became much shorter.
     """
     try:
-        p = Path(path).resolve()
+        p = _resolve_path(path)
         if not _is_path_allowed(p):
             return _access_denied(p)
 
@@ -557,7 +564,7 @@ def edit_file(path: str, old_text: str, new_text: str, expected_sha256: str, rep
             lines, multiple_matches with their line numbers).
     """
     try:
-        p = Path(path).resolve()
+        p = _resolve_path(path)
         if not _is_path_allowed(p):
             return _text_error("access_denied", _access_denied_message(p))
 
@@ -579,7 +586,7 @@ def create_file(path: str, content: str) -> str:
         str: JSON response indicating success or error.
     """
     try:
-        p = Path(path).resolve()
+        p = _resolve_path(path)
         if not _is_path_allowed(p):
             return _access_denied(p)
 
@@ -638,7 +645,7 @@ def read_file_with_metadata(path: str, start_line: int | None = None, end_line: 
         str: The file's metadata followed by its content as plain text, or an error message.
     """
     try:
-        p = Path(path).resolve()
+        p = _resolve_path(path)
         if not _is_path_allowed(p):
             return _text_error("access_denied", _access_denied_message(p))
         if p.is_dir():
@@ -703,7 +710,7 @@ def read_image(path: str) -> list[str | Image] | str:
             or a JSON error message (e.g., unsupported_format or too_large).
     """
     try:
-        p = Path(path).resolve()
+        p = _resolve_path(path)
         if not _is_path_allowed(p):
             return _access_denied(p)
 
@@ -752,7 +759,7 @@ def get_file_stats(path: str) -> str:
         str: JSON string containing file metadata, or error message.
     """
     try:
-        p = Path(path).resolve()
+        p = _resolve_path(path)
         if not _is_path_allowed(p):
             return _access_denied(p)
         if not p.exists():
@@ -775,7 +782,7 @@ def list_directory(path: str) -> str:
         str: JSON string containing a list of entries, distinguishing between [FILE] and [DIR].
     """
     try:
-        p = Path(path).resolve()
+        p = _resolve_path(path)
         if not _is_path_allowed(p):
             return _access_denied(p)
         if not p.is_dir():
@@ -816,7 +823,7 @@ def create_directory(path: str) -> str:
         str: JSON success/error message.
     """
     try:
-        p = Path(path).resolve()
+        p = _resolve_path(path)
         if not _is_path_allowed(p):
             return _access_denied(p)
 
@@ -841,8 +848,8 @@ def move_file(source: str, destination: str) -> str:
         str: JSON success/error message.
     """
     try:
-        src = Path(source).resolve()
-        dst = Path(destination).resolve()
+        src = _resolve_path(source)
+        dst = _resolve_path(destination)
 
         if not _is_path_allowed(src):
             return _access_denied(src, "Source path")
@@ -873,7 +880,7 @@ def delete_file(path: str) -> str:
         str: JSON success/error message.
     """
     try:
-        p = Path(path).resolve()
+        p = _resolve_path(path)
         if not _is_path_allowed(p):
             return _access_denied(p)
         if _contains_forbidden(p):
@@ -894,8 +901,7 @@ def delete_file(path: str) -> str:
 def get_filesystem_config() -> str:
     """
     Returns the configuration that decides which paths the filesystem tools can access:
-    the allowed directory, forbidden paths and the working directory that relative paths
-    are resolved against.
+    the allowed directory, which relative paths are resolved against, and forbidden paths.
     Use this tool to find out why a path is denied or not found by the filesystem tools.
 
     Returns:
@@ -906,7 +912,6 @@ def get_filesystem_config() -> str:
             "success": True,
             "allowed_dir": ALLOWED_DIR.as_posix(),
             "allowed_dir_exists": ALLOWED_DIR.exists(),
-            "working_directory": Path.cwd().resolve().as_posix(),
             "ignored_dirs": [],
             "forbidden_paths": [_display_path(p, ALLOWED_DIR) for p in FORBIDDEN_PATHS],
             "protected_file_names": sorted(PROTECTED_FILE_NAMES),
@@ -916,7 +921,7 @@ def get_filesystem_config() -> str:
             "notes": [
                 "Files named in protected_file_names (the MCP server configuration) are always denied and hidden at any depth, even if forbidden_paths is empty.",
                 "Only paths within allowed_dir can be accessed.",
-                "Relative paths given to the tools are resolved against working_directory, not allowed_dir.",
+                "Relative paths given to the tools are resolved against allowed_dir.",
                 "Forbidden paths and everything inside forbidden folders are denied and hidden from list_directory.",
                 "Deleting or moving a folder that contains a forbidden path is denied.",
                 "There are no ignored directories and .gitignore is not applied, so folders such as .git are accessible unless forbidden."

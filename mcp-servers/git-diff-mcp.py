@@ -78,6 +78,13 @@ def _is_forbidden(path: Path) -> bool:
         return True
     return any(resolved.is_relative_to(forbidden) for forbidden in FORBIDDEN_PATHS)
 
+def _resolve_path(path: str) -> Path:
+    """
+    Resolves a path given to a tool. Relative paths are resolved against ALLOWED_DIR, as in all servers.
+    """
+    p = Path(path)
+    return (p if p.is_absolute() else ALLOWED_DIR / p).resolve()
+
 def _is_path_allowed(path: Path) -> bool:
     """
     Checks if the given path is within ALLOWED_DIR and not forbidden.
@@ -181,7 +188,7 @@ def _prepare(path: str | None) -> tuple[Path, Path, Path | None, str | None]:
     Resolves the path (defaulting to ALLOWED_DIR) and finds its working directory and repository root.
     Returns (path, working directory, repository root, error response); the error response is None on success.
     """
-    p = Path(path).resolve() if path else ALLOWED_DIR
+    p = _resolve_path(path) if path else ALLOWED_DIR
     if not _is_path_allowed(p):
         return p, p, None, _access_denied(p)
 
@@ -397,7 +404,7 @@ def is_git_repository(path: str | None = None) -> str:
         str: A JSON-formatted string indicating if it is a git repository.
     """
     try:
-        p = Path(path).resolve() if path else ALLOWED_DIR
+        p = _resolve_path(path) if path else ALLOWED_DIR
         if not _is_path_allowed(p):
             return _access_denied(p)
 
@@ -433,8 +440,8 @@ def is_git_repository(path: str | None = None) -> str:
 def get_git_config() -> str:
     """
     Returns the configuration that decides which files the git tools can see:
-    the allowed directory, its repository root, forbidden paths and the working directory
-    that relative paths are resolved against.
+    the allowed directory, which relative paths are resolved against, its repository root
+    and forbidden paths.
     Use this tool to find out why a path is denied or missing from the git tools' output.
 
     Returns:
@@ -447,7 +454,6 @@ def get_git_config() -> str:
             "allowed_dir": ALLOWED_DIR.as_posix(),
             "allowed_dir_exists": ALLOWED_DIR.exists(),
             "repository_root": repo_root.as_posix() if repo_root else None,
-            "working_directory": Path.cwd().resolve().as_posix(),
             "ignored_dirs": [],
             "forbidden_paths": [_display_path(p, ALLOWED_DIR) for p in FORBIDDEN_PATHS],
             "protected_file_names": sorted(PROTECTED_FILE_NAMES),
@@ -457,7 +463,7 @@ def get_git_config() -> str:
             "notes": [
                 "Files named in protected_file_names (the MCP server configuration) are always denied and hidden at any depth, even if forbidden_paths is empty.",
                 "Only paths within allowed_dir can be inspected.",
-                "Relative paths given to the tools are resolved against working_directory, not allowed_dir.",
+                "Relative paths given to the tools are resolved against allowed_dir.",
                 "Forbidden paths and everything inside forbidden folders are denied and left out of status and diff output.",
                 "Git's own .gitignore rules decide which untracked files are listed.",
                 "If allowed_dir is a subfolder of the repository, changes outside it are left out."

@@ -12,7 +12,7 @@ from mcp.server.mcpserver import MCPServer
 # --- Constants & Config ---
 mcp = MCPServer("Generate-Map-Server")
 
-INPUT_DIR = Path(os.getenv("INPUT_DIR", os.getcwd())).resolve()
+ALLOWED_DIR = Path(os.getenv("ALLOWED_DIR", os.getcwd())).resolve()
 GITIGNORE_PATH = os.getenv("GITIGNORE_PATH")
 PROTECTED_FILE_NAMES = {".mcp.json"}  # MCP server configuration, never accessible regardless of FORBIDDEN_PATHS
 IGNORED_DIRS = {
@@ -48,7 +48,7 @@ def _load_forbidden_paths(base_dir: Path) -> list[Path]:
         forbidden.append(p.resolve())
     return forbidden
 
-FORBIDDEN_PATHS = _load_forbidden_paths(INPUT_DIR)
+FORBIDDEN_PATHS = _load_forbidden_paths(ALLOWED_DIR)
 
 def _is_protected(path: Path) -> bool:
     """
@@ -91,17 +91,17 @@ def _display_path(path: Path, base_dir: Path) -> str:
         return path.relative_to(base_dir).as_posix()
     return path.as_posix()
 
-def _get_gitignore_path(input_dir: Path) -> Path:
+def _get_gitignore_path(base_dir: Path) -> Path:
     """
-    Returns GITIGNORE_PATH if set, otherwise input_dir/.gitignore.
+    Returns GITIGNORE_PATH if set, otherwise base_dir/.gitignore.
     """
-    return Path(GITIGNORE_PATH).resolve() if GITIGNORE_PATH else input_dir / ".gitignore"
+    return Path(GITIGNORE_PATH).resolve() if GITIGNORE_PATH else base_dir / ".gitignore"
 
-def _load_gitignore_patterns(input_dir: Path) -> list[str]:
+def _load_gitignore_patterns(base_dir: Path) -> list[str]:
     """
     Loads the patterns from the .gitignore file returned by _get_gitignore_path.
     """
-    gitignore_path = _get_gitignore_path(input_dir)
+    gitignore_path = _get_gitignore_path(base_dir)
 
     if not gitignore_path.exists():
         return []
@@ -118,7 +118,7 @@ def _load_gitignore_patterns(input_dir: Path) -> list[str]:
         pass
     return patterns
 
-def _is_ignored(path: Path, input_dir: Path, ignored_dirs: set[str], gitignore_patterns: list[str]) -> bool:
+def _is_ignored(path: Path, base_dir: Path, ignored_dirs: set[str], gitignore_patterns: list[str]) -> bool:
     """
     Checks if a path is excluded by FORBIDDEN_PATHS, ignored_dirs or .gitignore patterns.
     """
@@ -132,14 +132,14 @@ def _is_ignored(path: Path, input_dir: Path, ignored_dirs: set[str], gitignore_p
         return False
 
     try:
-        rel_path = path.relative_to(input_dir).as_posix()
+        rel_path = path.relative_to(base_dir).as_posix()
     except ValueError:
         return False
 
     for pattern in gitignore_patterns:
         if fnmatch.fnmatch(rel_path, pattern) or \
            fnmatch.fnmatch(f"{rel_path}/", pattern) or \
-           any(fnmatch.fnmatch(part, pattern) for part in path.relative_to(input_dir).parts):
+           any(fnmatch.fnmatch(part, pattern) for part in path.relative_to(base_dir).parts):
             return True
 
     return False
@@ -156,7 +156,7 @@ def _format_docstring(docstring: str) -> str:
 
     return f": *{summary}*" if summary else ""
 
-def _parse_python(filepath: Path, input_dir: Path, metadata: dict) -> str:
+def _parse_python(filepath: Path, base_dir: Path, metadata: dict) -> str:
     """
     Parses a Python file using AST and returns a markdown summary of its classes, functions and calls.
     """
@@ -166,7 +166,7 @@ def _parse_python(filepath: Path, input_dir: Path, metadata: dict) -> str:
     except (SyntaxError, OSError):
         return ""
 
-    rel_path = filepath.relative_to(input_dir)
+    rel_path = filepath.relative_to(base_dir)
     out = [f"### `{rel_path.as_posix()}`\n"]
 
     module_doc = ast.get_docstring(tree)
@@ -439,7 +439,7 @@ def _parse_export_names(names: str) -> list[tuple[str, str]]:
         pairs.append((local.strip(), (exported or local).strip()))
     return pairs
 
-def _parse_js_ts(filepath: Path, input_dir: Path) -> str:
+def _parse_js_ts(filepath: Path, base_dir: Path) -> str:
     """
     Parses a JS/TS/JSX/TSX file with regex and returns a markdown summary of its local imports,
     top-level functions, components, hooks, classes (with methods), interfaces, types, enums,
@@ -450,7 +450,7 @@ def _parse_js_ts(filepath: Path, input_dir: Path) -> str:
     except Exception:
         return ""
 
-    rel_path = filepath.relative_to(input_dir)
+    rel_path = filepath.relative_to(base_dir)
     out = [f"### `{rel_path.as_posix()}`\n"]
     if len(content) > MAX_JS_PARSE_BYTES:
         out.append("- (File too large to parse)\n")
@@ -579,23 +579,23 @@ def _parse_js_ts(filepath: Path, input_dir: Path) -> str:
 
     return "".join(out)
 
-def _iter_files(input_dir: Path, gitignore_patterns: list[str], start_dir: Path | None = None):
+def _iter_files(base_dir: Path, gitignore_patterns: list[str], start_dir: Path | None = None):
     """
-    Yields the files within start_dir (defaulting to input_dir) that are not ignored, in sorted order.
+    Yields the files within start_dir (defaulting to base_dir) that are not ignored, in sorted order.
     Ignored folders are skipped without being entered, which keeps large folders such as node_modules fast.
     """
-    for dirpath, dirnames, filenames in os.walk(start_dir or input_dir):
+    for dirpath, dirnames, filenames in os.walk(start_dir or base_dir):
         current_dir = Path(dirpath)
         dirnames[:] = sorted(
-            (d for d in dirnames if not _is_ignored(current_dir / d, input_dir, IGNORED_DIRS, gitignore_patterns)),
+            (d for d in dirnames if not _is_ignored(current_dir / d, base_dir, IGNORED_DIRS, gitignore_patterns)),
             key=str.lower
         )
         for name in sorted(filenames, key=str.lower):
             path = current_dir / name
-            if not _is_ignored(path, input_dir, IGNORED_DIRS, gitignore_patterns):
+            if not _is_ignored(path, base_dir, IGNORED_DIRS, gitignore_patterns):
                 yield path
 
-def _get_project_metadata(input_dir: Path, gitignore_patterns: list[str]) -> dict:
+def _get_project_metadata(base_dir: Path, gitignore_patterns: list[str]) -> dict:
     """
     Scans the project's own Python files for the names of its modules, classes and functions.
     """
@@ -605,7 +605,7 @@ def _get_project_metadata(input_dir: Path, gitignore_patterns: list[str]) -> dic
         "modules": set()
     }
 
-    for path in _iter_files(input_dir, gitignore_patterns):
+    for path in _iter_files(base_dir, gitignore_patterns):
         if path.suffix in PYTHON_SUFFIXES:
             module_name = path.stem
             metadata["modules"].add(module_name)
@@ -630,35 +630,35 @@ def _get_project_metadata(input_dir: Path, gitignore_patterns: list[str]) -> dic
 
 def _resolve_scope(path: str | None, gitignore_patterns: list[str]) -> tuple[Path, str | None]:
     """
-    Resolves the folder a map is limited to. Relative paths are resolved against INPUT_DIR.
+    Resolves the folder a map is limited to. Relative paths are resolved against ALLOWED_DIR.
     Returns the folder and an error message, which is None if the folder can be mapped.
     """
     if not path:
-        return INPUT_DIR, None
+        return ALLOWED_DIR, None
     p = Path(path)
     if not p.is_absolute():
-        p = INPUT_DIR / p
+        p = ALLOWED_DIR / p
     p = p.resolve()
-    if not p.is_relative_to(INPUT_DIR):
-        return p, f"Error: Path '{path}' is not within the input directory {INPUT_DIR.as_posix()}."
+    if not p.is_relative_to(ALLOWED_DIR):
+        return p, f"Error: Path '{path}' is not within the allowed directory {ALLOWED_DIR.as_posix()}."
     if not p.is_dir():
-        return p, f"Error: Path '{path}' is not a directory within the input directory {INPUT_DIR.as_posix()}."
-    if p != INPUT_DIR and _is_ignored(p, INPUT_DIR, IGNORED_DIRS, gitignore_patterns):
+        return p, f"Error: Path '{path}' is not a directory within the allowed directory {ALLOWED_DIR.as_posix()}."
+    if p != ALLOWED_DIR and _is_ignored(p, ALLOWED_DIR, IGNORED_DIRS, gitignore_patterns):
         return p, f"Error: Path '{path}' is ignored or forbidden. Use get_codebase_map_config to see why."
     return p, None
 
-def _generate_simple_map(input_dir: Path, gitignore_patterns: list[str], root_dir: Path | None = None) -> str:
+def _generate_simple_map(base_dir: Path, gitignore_patterns: list[str], root_dir: Path | None = None) -> str:
     """
-    Generates a directory tree string of the allowed files within root_dir (defaulting to input_dir).
+    Generates a directory tree string of the allowed files within root_dir (defaulting to base_dir).
     """
-    root_dir = root_dir or input_dir
+    root_dir = root_dir or base_dir
     lines = [f"Root: `{root_dir.as_posix()}`\n"]
 
     def _build_tree(current_dir: Path, prefix: str = ""):
         try:
             entries = []
             for entry in current_dir.iterdir():
-                if _is_ignored(entry, input_dir, IGNORED_DIRS, gitignore_patterns):
+                if _is_ignored(entry, base_dir, IGNORED_DIRS, gitignore_patterns):
                     continue
 
                 if entry.is_dir():
@@ -687,27 +687,27 @@ def _generate_simple_map(input_dir: Path, gitignore_patterns: list[str], root_di
     _build_tree(root_dir)
     return "".join(lines)
 
-def _create_map_content(input_dir: Path, gitignore_patterns: list[str], scope_dir: Path) -> str:
+def _create_map_content(base_dir: Path, gitignore_patterns: list[str], scope_dir: Path) -> str:
     """
     Creates the codebase map content for scope_dir: the file tree followed by per-file summaries.
     The whole project is still scanned for symbols, so calls into other folders are recognized.
     """
-    metadata = _get_project_metadata(input_dir, gitignore_patterns)
+    metadata = _get_project_metadata(base_dir, gitignore_patterns)
 
     content = ["# Codebase Structure & Summaries\n\n"]
     content.append("## File Map\n")
-    map_tree = _generate_simple_map(input_dir, gitignore_patterns, scope_dir)
+    map_tree = _generate_simple_map(base_dir, gitignore_patterns, scope_dir)
     content.append(f"```\n{map_tree}```\n\n")
     content.append("## Detailed Descriptions\n\n")
 
-    for path in _iter_files(input_dir, gitignore_patterns, scope_dir):
+    for path in _iter_files(base_dir, gitignore_patterns, scope_dir):
         file_content = ""
         if path.suffix in PYTHON_SUFFIXES:
-            file_content = _parse_python(path, input_dir, metadata)
+            file_content = _parse_python(path, base_dir, metadata)
         elif path.suffix in JS_TS_SUFFIXES:
-            file_content = _parse_js_ts(path, input_dir)
+            file_content = _parse_js_ts(path, base_dir)
         elif path.suffix in OTHER_SUFFIXES:
-            file_content = f"### `{path.relative_to(input_dir).as_posix()}`\n"
+            file_content = f"### `{path.relative_to(base_dir).as_posix()}`\n"
 
         if file_content:
             if len(content) > 0 and not content[-1].endswith("\n\n"):
@@ -729,22 +729,22 @@ def generate_codebase_map(path: str | None = None) -> str:
     For large codebases, limit the map to one folder at a time with the path argument.
 
     Args:
-        path (str, optional): A folder to limit the map to, relative to the input directory
-            (e.g., 'src/components'). Defaults to the whole input directory.
+        path (str, optional): A folder to limit the map to, relative to the allowed directory
+            (e.g., 'src/components'). Defaults to the whole allowed directory.
 
     Returns:
         str: The generated codebase structure map as a string, or an error message.
     """
-    if not INPUT_DIR.exists():
-        return f"Error: Input directory {INPUT_DIR.as_posix()} does not exist."
+    if not ALLOWED_DIR.exists():
+        return f"Error: Input directory {ALLOWED_DIR.as_posix()} does not exist."
 
     try:
-        gitignore_patterns = _load_gitignore_patterns(INPUT_DIR)
+        gitignore_patterns = _load_gitignore_patterns(ALLOWED_DIR)
         scope_dir, error = _resolve_scope(path, gitignore_patterns)
         if error:
             return error
 
-        content = _create_map_content(INPUT_DIR, gitignore_patterns, scope_dir)
+        content = _create_map_content(ALLOWED_DIR, gitignore_patterns, scope_dir)
         return f"Codebase structure map of {scope_dir.as_posix()}\n\n{content}"
     except Exception as e:
         return f"Error: Generating codebase map failed:\n{e}\n{traceback.format_exc()}"
@@ -756,22 +756,22 @@ def generate_file_map(path: str | None = None) -> str:
     Useful for a quick overview of the directory structure without detailed summaries.
 
     Args:
-        path (str, optional): A folder to limit the map to, relative to the input directory
-            (e.g., 'src/components'). Defaults to the whole input directory.
+        path (str, optional): A folder to limit the map to, relative to the allowed directory
+            (e.g., 'src/components'). Defaults to the whole allowed directory.
 
     Returns:
         str: The generated file tree map as a string, or an error message.
     """
-    if not INPUT_DIR.exists():
-        return f"Error: Input directory {INPUT_DIR.as_posix()} does not exist."
+    if not ALLOWED_DIR.exists():
+        return f"Error: Input directory {ALLOWED_DIR.as_posix()} does not exist."
 
     try:
-        gitignore_patterns = _load_gitignore_patterns(INPUT_DIR)
+        gitignore_patterns = _load_gitignore_patterns(ALLOWED_DIR)
         scope_dir, error = _resolve_scope(path, gitignore_patterns)
         if error:
             return error
 
-        map_tree = _generate_simple_map(INPUT_DIR, gitignore_patterns, scope_dir)
+        map_tree = _generate_simple_map(ALLOWED_DIR, gitignore_patterns, scope_dir)
         return f"File map of {scope_dir.as_posix()}\n\n```\n{map_tree}```"
     except Exception as e:
         return f"Error: Generating file map failed:\n{e}\n{traceback.format_exc()}"
@@ -780,7 +780,7 @@ def generate_file_map(path: str | None = None) -> str:
 def get_codebase_map_config() -> str:
     """
     Returns the configuration that decides which files the codebase map tools can see:
-    the input directory, ignored directories, forbidden paths, .gitignore patterns and
+    the allowed directory, ignored directories, forbidden paths, .gitignore patterns and
     the file types that are included in the maps.
     Use this tool to find out why a file is missing from generate_codebase_map or generate_file_map.
 
@@ -788,25 +788,25 @@ def get_codebase_map_config() -> str:
         str: A JSON-formatted string containing the configuration or an error message.
     """
     try:
-        gitignore_path = _get_gitignore_path(INPUT_DIR)
+        gitignore_path = _get_gitignore_path(ALLOWED_DIR)
         return json.dumps({
             "success": True,
-            "input_dir": INPUT_DIR.as_posix(),
-            "input_dir_exists": INPUT_DIR.exists(),
+            "allowed_dir": ALLOWED_DIR.as_posix(),
+            "allowed_dir_exists": ALLOWED_DIR.exists(),
             "ignored_dirs": sorted(IGNORED_DIRS),
-            "forbidden_paths": [_display_path(p, INPUT_DIR) for p in FORBIDDEN_PATHS],
+            "forbidden_paths": [_display_path(p, ALLOWED_DIR) for p in FORBIDDEN_PATHS],
             "protected_file_names": sorted(PROTECTED_FILE_NAMES),
             "gitignore": {
                 "applied": True,
                 "path": gitignore_path.as_posix(),
                 "found": gitignore_path.exists(),
-                "patterns": _load_gitignore_patterns(INPUT_DIR)
+                "patterns": _load_gitignore_patterns(ALLOWED_DIR)
             },
             "included_file_types": sorted(ALL_ALLOWED_SUFFIXES),
             "notes": [
                 "Files named in protected_file_names (the MCP server configuration) are always denied and hidden at any depth, even if forbidden_paths is empty.",
                 "Only files with an included file type are listed in the maps.",
-                "Folders named in ignored_dirs are skipped at any depth within input_dir.",
+                "Folders named in ignored_dirs are skipped at any depth within allowed_dir.",
                 "Forbidden paths and everything inside forbidden folders are skipped.",
                 "Files and folders matching the .gitignore patterns are skipped."
             ]

@@ -1,6 +1,8 @@
 # ollmcp-generic-tools
 
-Generic custom MCP servers for Ollmcp for Python and JS/TS development purposes.
+Generic custom MCP servers for [ollmcp](https://github.com/jonigl/mcp-client-for-ollama), for developing Python and JS/TS projects with a local AI model run by Ollama.
+
+The tools are designed for small local models with small context windows: every response is limited in size and says how to get the rest, the AI reads an outline first and then only the sections it needs, edits are checked against the file's hash and tolerate common copying mistakes, and the tools stay within one project folder that you choose.
 
 For the design principles behind the servers and the planned improvements, see [DEVELOPMENT.md](DEVELOPMENT.md).
 
@@ -14,18 +16,12 @@ For the design principles behind the servers and the planned improvements, see [
     ollama run gemma4:26b
     ```
 
-2.  **Install ollmcp**:
-    Install `ollmcp` via pip:
+2.  **Install ollmcp and the packages the servers use**:
+    The servers are developed and tested with Python 3.14 and need at least Python 3.10. In this repository's folder, run:
     ```bash
-    pip install ollmcp
+    python -m pip install -r requirements.txt
     ```
-
-3.  **Install the packages the servers use**:
-    The servers are developed and tested with Python 3.14 and need at least Python 3.10. They use the `mcp` package, `tree-sitter` with its JavaScript and TypeScript grammars for the outlines of JS/TS files, and `ollama` for `web-search-mcp`:
-    ```bash
-    pip install mcp ollama "tree-sitter>=0.26,<0.27" "tree-sitter-javascript>=0.25,<0.26" "tree-sitter-typescript>=0.23,<0.24"
-    ```
-    The tree-sitter packages are pinned to one minor version each, as the grammars must match the tree-sitter version.
+    [`requirements.txt`](requirements.txt) installs the `ollmcp` client and the packages the servers use: `mcp`, `tree-sitter` with its JavaScript and TypeScript grammars for the outlines of JS/TS files, and `ollama` for `web-search-mcp`. The tree-sitter packages are pinned to one minor version each, as the grammars must match the tree-sitter version.
 
 ### Configuration
 
@@ -47,7 +43,7 @@ The tools are configured with two files:
 }
 ```
 
-Add every server the same way (see this repository's [`.mcp.json`](.mcp.json)). The server scripts share code in `mcp-servers/mcp_common.py` (configuration and access checks) and `mcp-servers/mcp_outline.py` (the outline parsers), so keep all the scripts in the same folder. The scripts, the tools config file and the special directories (`_context`, `_instructions` and `_commands`) do **not** need to be located within your project folder.
+Add every server the same way (see this repository's [`.mcp.json`](.mcp.json)). ollmcp names the tools `<server key>.<tool>`, e.g. `codebase-mapper.get_outline` with the keys of this repository's `.mcp.json`; the example instructions in [`_instructions/app-instructions.md`](_instructions/app-instructions.md) use these names, so change them there if you use other keys. The server scripts share code in `mcp-servers/mcp_common.py` (configuration and access checks) and `mcp-servers/mcp_outline.py` (the outline parsers), so keep all the scripts in the same folder. The scripts, the tools config file and the special directories (`_context`, `_instructions` and `_commands`) do **not** need to be located within your project folder.
 
 ### Tools config file
 
@@ -91,9 +87,11 @@ Once configured, start `ollmcp` in your project root directory:
 ollmcp
 ```
 
+The AI only sees your project instructions (`read_only_files`) and earlier plans (`context_folder`) after it has read them. Start a session by asking it to call `read_context_file` without a filename, or add that instruction to ollmcp's system prompt (`/model-config` in ollmcp), e.g.: *At the start of a session, call context.read_context_file to read the project instructions and plans.*
+
 ### Testing
 
-The servers have an automated test suite in `tests/`. Run it from the repository root:
+The servers have an automated test suite in `tests/`. [`requirements-dev.txt`](requirements-dev.txt) installs `requirements.txt` and the test runner. Run the tests from the repository root:
 
 ```bash
 python -m pip install -r requirements-dev.txt
@@ -177,7 +175,7 @@ The AI then reads a section by its name, e.g. `read_file_with_metadata(path, sec
 Provides tools to inspect git history and differences for files within a repository.
 
 - **get_diff** Retrieves the differences of one file (`path` of a file), or of all changed files at once, optionally limited to a folder, with lists of the changed and new untracked files. Useful for reviewing all changes before committing.
-- **get_file_history** Retrieves the commit history and associated diffs for a specified file.
+- **get_file_history** Retrieves the commit history and associated diffs for a specified file or folder.
 - **get_git_status** Returns the results of `git status`. Also tells whether a folder is in a git repository: if not, the error is `not_a_repository`.
 
 ### safe-filesystem-mcp
@@ -198,7 +196,7 @@ The file reading and editing tools are designed to let local AI models read and 
 - File content is returned as plain text in a fenced code block, not inside JSON, so quotes, backslashes and line breaks appear exactly as in the file and can be copied into `edit_file` as-is.
 - `edit_file` tolerates common copying mistakes: line number prefixes and code block fence lines copied from `read_file_with_metadata` are removed, and trailing whitespace does not need to match. If the text is not found, the error shows the closest matching lines to copy.
 - Placeholder comments such as `// ... existing code ...` are rejected, as they would otherwise replace real code.
-- After every write to a Python, JS/TS or Markdown file (`edit_file`, `write_file`, `create_file`), the response shows the file's outline with line spans, lists the sections that were added, and warns about sections that are no longer in the file and about a Python file that no longer parses. An accidental overwrite or deletion is noticed right away, instead of relying on the AI to spot a missing entry.
+- After every write to a Python, JS/TS or Markdown file (`edit_file`, `write_file`, `create_file`), the response shows the file's outline with line spans, lists the sections that were added, and warns about sections that are no longer in the file, about a Python file that no longer parses, and about a new JS/TS syntax error. An accidental overwrite or deletion is noticed right away, instead of relying on the AI to spot a missing entry.
 
 ### search-tool-mcp
 
@@ -209,7 +207,7 @@ Performs text or regex searches across files in a specified directory.
 
 ### web-search-mcp
 
-Searches the web and reads web pages using Ollama's hosted [web search API](https://docs.ollama.com/capabilities/web-search). Requires `ollama_api_key` in the [tools config file](#tools-config-file) and the `ollama` Python package (`pip install ollama`). The queries and URLs are sent to ollama.com.
+Searches the web and reads web pages using Ollama's hosted [web search API](https://docs.ollama.com/capabilities/web-search). Requires `ollama_api_key` in the [tools config file](#tools-config-file); the `ollama` Python package is installed by `requirements.txt`. The queries and URLs are sent to ollama.com.
 
 - **web_search** Searches the web and returns the title, URL and content of the best matching pages (`max_results`, 1–10, default 3).
 - **web_fetch** Fetches a web page and returns its title, links and text content. The content is shown as-is in a code block, so code copied from a page is not JSON-escaped. Long pages are read in parts with `start_char`.
@@ -280,7 +278,7 @@ Both tools additionally skip files matched by the `.gitignore` file (see `gitign
 ollmcp shows a JSON response formatted as JSON, and any other response as Markdown if it contains enough Markdown-like patterns, otherwise as plain text. The text responses are written to read well both ways:
 
 - Header lines (file, SHA-256, notes, warnings) are a list, so that each stays on its own line.
-- File content, outlines, search matches and directory-like listings are fenced code blocks, so that they keep their lines, `#` comments do not become headings, and the code is highlighted by its file type (e.g. ` ```python `). The fence is longer than any run of backticks in the content, so Markdown files with code blocks are shown whole.
+- File content, outlines, search matches and directory-like listings are fenced code blocks, so that they keep their lines, `#` comments do not become headings, and the code is highlighted by its file type (e.g. `python` for `.py` files). The fence is longer than any run of backticks in the content, so Markdown files with code blocks are shown whole.
 - The parts are separated by blank lines.
 
 The code block fences are not part of the content, and `edit_file` removes them if the AI copies them into `old_text`.
@@ -292,7 +290,7 @@ Local models have small context windows, so every tool response is limited to `m
 | Tool | Limit | How the rest can be seen |
 |---|---|---|
 | `read_file_with_metadata` | 1000 lines or `max_output_chars` per read; lines over 2000 characters are shortened; files over 50 MB are not read | Next part with `start_line`; long lines can still be edited using a unique part of the shown text |
-| `edit_file` | Shows up to 40 changed lines after the edit | `read_file_with_metadata` from the given line |
+| `edit_file` | Shows up to 40 changed lines after the edit, within `max_output_chars` | `read_file_with_metadata` from the given line |
 | `edit_file`, `write_file`, `create_file` | The outline after a write is limited to 2500 characters, or `max_output_chars / 8` if smaller: then only top-level sections are shown, or the list is cut short | `get_outline` for the file |
 | `list_directory` | Up to 250 entries, fewer for small budgets; folders are listed first | `search_files_by_pattern` with a suggested pattern |
 | `get_outline` | `max_output_chars`: the detail is reduced step by step instead of cutting the outline; files over 1 MB are not outlined; folders with over 1000 files are listed by subfolder only | Suggested subfolders to outline with `path`, with their file counts, or one file with `path` |

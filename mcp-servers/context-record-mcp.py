@@ -2,12 +2,11 @@
 import os
 import traceback
 from pathlib import Path
-from typing import List, Optional
 
 from mcp.server.mcpserver import MCPServer
 
 # --- Constants & Config ---
-mcp = MCPServer("ContextFolderManager")
+mcp = MCPServer("Context-Record-Server")
 
 # The folder path is defined via an environment variable.
 CONTEXT_FOLDER_PATH = os.getenv("CONTEXT_FOLDER_PATH")
@@ -16,18 +15,12 @@ CONTEXT_FOLDER_PATH = os.getenv("CONTEXT_FOLDER_PATH")
 
 def _get_context_folder() -> Path:
     """
-    Returns the Path object for the context folder, 
-    raising a ValueError if the environment variable is not set.
-
-    Returns:
-        Path: The path to the context folder.
-
-    Raises:
-        ValueError: If CONTEXT_FOLDER_PATH is not set.
+    Returns the path to the context folder.
+    Raises ValueError if CONTEXT_FOLDER_PATH is not set.
     """
     if not CONTEXT_FOLDER_PATH:
         raise ValueError("Environment variable 'CONTEXT_FOLDER_PATH' is not set.")
-    
+
     return Path(CONTEXT_FOLDER_PATH)
 
 # --- Public MCP Tools ---
@@ -46,11 +39,11 @@ def list_context_files() -> str:
             return f"Error: Folder does not exist at {folder.as_posix()}"
         if not folder.is_dir():
             return f"Error: Path {folder.as_posix()} is not a directory."
-        
+
         files = [f.name for f in folder.glob("*.md")]
         if not files:
             return "No Markdown (.md) files found in the context folder."
-        
+
         return "\n".join(sorted(files))
     except Exception as e:
         return f"Error: Listing context files failed:\n{e}\n{traceback.format_exc()}"
@@ -69,12 +62,12 @@ def read_context_file(filename: str) -> str:
     try:
         folder = _get_context_folder()
         file_path = folder / filename
-        
+
         if not file_path.exists():
             return f"Error: File '{filename}' not found in {folder.as_posix()}"
         if not file_path.is_file():
             return f"Error: '{filename}' is not a file."
-            
+
         return file_path.read_text(encoding="utf-8")
     except Exception as e:
         return f"Error: Reading context file failed:\n{e}\n{traceback.format_exc()}"
@@ -94,12 +87,12 @@ def write_context_file(filename: str, content: str) -> str:
     try:
         folder = _get_context_folder()
         file_path = folder / filename
-        
+
         # Ensure the directory exists
         folder.mkdir(parents=True, exist_ok=True)
-        
-        file_path.write_text(content, encoding='utf-8')
-            
+
+        file_path.write_text(content, encoding="utf-8")
+
         return f"Successfully wrote to context file: {filename} (in {folder.as_posix()})"
     except Exception as e:
         return f"Error: Writing to context file failed:\n{e}\n{traceback.format_exc()}"
@@ -107,7 +100,7 @@ def write_context_file(filename: str, content: str) -> str:
 @mcp.tool()
 def append_to_context_file(filename: str, content: str) -> str:
     """
-    Appends content to a specific Markdown file in the context folder. 
+    Appends content to a specific Markdown file in the context folder.
     If the file doesn't exist, it will be created.
 
     Args:
@@ -120,16 +113,16 @@ def append_to_context_file(filename: str, content: str) -> str:
     try:
         folder = _get_context_folder()
         file_path = folder / filename
-        
+
         # Ensure the directory exists
         folder.mkdir(parents=True, exist_ok=True)
-        
-        with open(file_path, mode='a', encoding='utf-8') as f:
+
+        with open(file_path, mode="a", encoding="utf-8") as f:
             # Ensure we start on a new line if the file is not empty
             if file_path.exists() and file_path.stat().st_size > 0:
                 f.write("\n")
             f.write(content)
-            
+
         return f"Successfully appended to context file: {filename} (in {folder.as_posix()})"
     except Exception as e:
         return f"Error: Appending to context file failed:\n{e}\n{traceback.format_exc()}"
@@ -147,19 +140,19 @@ def read_all_context_files() -> str:
         folder = _get_context_folder()
         if not folder.exists():
             return f"Error: Folder does not exist at {folder.as_posix()}"
-            
-        md_files = sorted(list(folder.glob("*.md")))
+
+        md_files = sorted(folder.glob("*.md"))
         if not md_files:
             return "No Markdown files found in the context folder."
-            
+
         output = []
         for file_path in md_files:
-            output.append(f"================================================================================")
+            output.append("=" * 80)
             output.append(f"FILE: {file_path.name}")
-            output.append(f"================================================================================")
+            output.append("=" * 80)
             output.append(file_path.read_text(encoding="utf-8"))
-            output.append(f"\n") # Add extra newline after content
-            
+            output.append("\n")  # Add extra newline after content
+
         return "\n".join(output)
     except Exception as e:
         return f"Error: Reading all context files failed:\n{e}\n{traceback.format_exc()}"
@@ -178,12 +171,12 @@ def remove_context_file(filename: str) -> str:
     try:
         folder = _get_context_folder()
         file_path = folder / filename
-        
+
         if not file_path.exists():
             return f"Error: File '{filename}' not found in {folder.as_posix()}"
         if not file_path.is_file():
             return f"Error: '{filename}' is not a file."
-            
+
         file_path.unlink()
         return f"Successfully removed context file: {filename} (from {folder.as_posix()})"
     except Exception as e:

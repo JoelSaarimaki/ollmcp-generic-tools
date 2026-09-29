@@ -3,7 +3,7 @@ import json
 import subprocess
 import traceback
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 
@@ -12,16 +12,10 @@ mcp = MCPServer("Git-Diff-Server")
 
 # --- Internal Helpers ---
 
-def _run_git_command(args: List[str], cwd: Optional[str] = None) -> Dict[str, Any]:
+def _run_git_command(args: list[str], cwd: str | None = None) -> dict[str, Any]:
     """
-    Executes a git command and returns the result.
-
-    Args:
-        args (List[str]): The command arguments.
-        cwd (Optional[str]): The directory to run the command in.
-
-    Returns:
-        Dict[str, Any]: A dictionary containing success status, stdout, stderr, and command used.
+    Executes a git command in cwd and returns the success status, stdout, stderr,
+    command used and return code.
     """
     cmd = ["git"] + args
     try:
@@ -82,7 +76,7 @@ def get_file_diff(path: str, mode: str) -> str:
         args = ["diff", "HEAD", "--", path]
 
     result = _run_git_command(args)
-    
+
     # Handle case where file does not exist
     if not result["success"] and "not in the working tree" in result["stderr"]:
         return json.dumps({
@@ -118,7 +112,7 @@ def get_file_history(path: str, limit: int = 10) -> str:
     args = ["log", "-p", "-n", str(limit), "--", path]
 
     result = _run_git_command(args)
-    
+
     # Handle case where file does not exist
     if not result["success"] and "not in the working tree" in result["stderr"]:
         return json.dumps({
@@ -131,7 +125,7 @@ def get_file_history(path: str, limit: int = 10) -> str:
     return json.dumps(result, indent=2)
 
 @mcp.tool()
-def get_git_status(path: Optional[str] = None) -> str:
+def get_git_status(path: str | None = None) -> str:
     """
     Returns the results of 'git status'.
 
@@ -146,7 +140,7 @@ def get_git_status(path: Optional[str] = None) -> str:
     return json.dumps(result, indent=2)
 
 @mcp.tool()
-def is_git_repository(path: Optional[str] = None) -> str:
+def is_git_repository(path: str | None = None) -> str:
     """
     Checks if the current working directory or a specified directory is a Git repository.
 
@@ -157,17 +151,17 @@ def is_git_repository(path: Optional[str] = None) -> str:
         str: A JSON-formatted string indicating if it is a git repository.
     """
     target_path = path if path else "."
-    
+
     try:
         result = _run_git_command(["rev-parse", "--is-inside-work-tree"], cwd=target_path)
-        
+
         if result["success"] and "true" in result["stdout"].lower():
             return json.dumps({
                 "success": True,
                 "is_repository": True,
                 "path": str(Path(target_path).resolve())
             }, indent=2)
-        
+
         # If it's not a git repo, git returns non-zero and an error message in stderr.
         if not result["success"] and ("not a git repository" in result["stderr"].lower() or "not in a git repository" in result["stderr"].lower()):
             return json.dumps({
@@ -175,10 +169,10 @@ def is_git_repository(path: Optional[str] = None) -> str:
                 "is_repository": False,
                 "path": str(Path(target_path).resolve())
             }, indent=2)
-            
+
         # Otherwise, it's a real error (e.g. directory not found, permission denied, etc.)
         return json.dumps(result, indent=2)
-            
+
     except Exception as e:
         return json.dumps({
             "success": False,

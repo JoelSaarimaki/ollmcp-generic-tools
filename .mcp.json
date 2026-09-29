@@ -6,7 +6,8 @@
             ".\\mcp-servers\\generate-map-mcp.py"
           ],
           "env": {
-            "INPUT_DIR": ".\\"
+            "INPUT_DIR": ".\\",
+            "FORBIDDEN_PATHS": ""
           }
         },
         "search-tool": {
@@ -15,7 +16,8 @@
             ".\\mcp-servers\\search-tool-mcp.py"
           ],
           "env": {
-            "INPUT_DIR": ".\\"
+            "INPUT_DIR": ".\\",
+            "FORBIDDEN_PATHS": ""
           }
         },
         "instructions": {
@@ -51,7 +53,8 @@
             ".\\mcp-servers\\safe-filesystem-mcp.py"
           ],
           "env": {
-            "ALLOWED_DIR": ".\\"
+            "ALLOWED_DIR": ".\\",
+            "FORBIDDEN_PATHS": ""
           }
         },
         "git-diff": {

@@ -1,6 +1,7 @@
 # --- instructions-mcp.py ---
 import os
 import traceback
+
 from mcp.server.mcpserver import MCPServer
 
 # --- Constants & Config ---
@@ -26,16 +27,16 @@ def get_project_instructions() -> str:
     try:
         if not os.path.exists(INSTRUCTIONS_FILE_PATH):
             return f"Error: The instructions file '{INSTRUCTIONS_FILE_PATH}' does not exist."
-        
-        with open(INSTRUCTIONS_FILE_PATH, 'r', encoding='utf-8') as f:
+
+        with open(INSTRUCTIONS_FILE_PATH, "r", encoding="utf-8") as f:
             content = f.read()
-            
+
         if not content.strip():
             return "Warning: The instructions file is empty."
-            
+
         return content
     except Exception as e:
-        return f"Error: reading instructions file failed:\n{e}\n{traceback.format_exc()}"
+        return f"Error: Reading instructions file failed:\n{e}\n{traceback.format_exc()}"
 
 if __name__ == "__main__":
     mcp.run()

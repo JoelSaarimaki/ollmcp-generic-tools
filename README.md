@@ -40,15 +40,30 @@ Most of the MCP servers use environment variables for configuration. These shoul
 #### generate-map-mcp
 - `INPUT_DIR`: The directory to scan for the codebase map. (Defaults to current working directory)
 - `GITIGNORE_PATH`: Path to the `.gitignore` file to use for excluding files. (Optional)
+- `FORBIDDEN_PATHS`: List of folders and/or files the tool must never access, even within `INPUT_DIR`. See [Forbidden paths](#forbidden-paths). (Optional)
 
 #### instructions-mcp
 - `PROJECT_INSTRUCTIONS_FILE`: Path to the project-specific instructions Markdown file.
 
 #### safe-filesystem-mcp
 - `ALLOWED_DIR`: The directory within which file operations are permitted. (Defaults to current working directory)
+- `FORBIDDEN_PATHS`: List of folders and/or files the tool must never access, even within `ALLOWED_DIR`. See [Forbidden paths](#forbidden-paths). (Optional)
 
 #### search-tool-mcp
 - `INPUT_DIR`: The directory to perform searches in. (Defaults to current working directory)
+- `FORBIDDEN_PATHS`: List of folders and/or files the tool must never access, even within `INPUT_DIR`. See [Forbidden paths](#forbidden-paths). (Optional)
+
+#### Forbidden paths
+
+`generate-map-mcp`, `search-tool-mcp` and `safe-filesystem-mcp` accept a `FORBIDDEN_PATHS` list of sub-folders and individual files that are excluded from all tool operations. A forbidden folder also forbids everything inside it. Leave the value empty (or omit it) to forbid nothing.
+
+- Relative paths are resolved against `INPUT_DIR` / `ALLOWED_DIR`. Absolute paths are also accepted.
+- Separate paths with commas. Whitespace around each path is ignored:
+  ```json
+  "FORBIDDEN_PATHS": "folder/sub_folder/code-file.py, another_folder"
+  "FORBIDDEN_PATHS": ""
+  ```
+- In `safe-filesystem-mcp`, forbidden paths are hidden from `list_directory`, and deleting or moving a folder that contains a forbidden path is denied.
 
 ### Running
 

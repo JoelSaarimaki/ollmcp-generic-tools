@@ -1,17 +1,19 @@
 # --- safe-filesystem-mcp.py ---
-import hashlib
-import os
-import traceback
-import json
-import datetime
-import shutil
 import base64
-from dataclasses import dataclass, asdict
+import datetime
+import hashlib
+import json
+import os
+import shutil
+import traceback
+from dataclasses import asdict, dataclass
 from pathlib import Path
+
 from mcp.server.mcpserver import MCPServer
 
 # --- Constants & Config ---
-mcp = MCPServer("SafeWrite-Server")
+mcp = MCPServer("Safe-Filesystem-Server")
+
 ALLOWED_DIR = Path(os.getenv("ALLOWED_DIR", os.getcwd())).resolve()
 
 @dataclass
@@ -26,46 +28,99 @@ class FileMetadata:
 
 # --- Internal Helpers ---
 
+def _load_forbidden_paths(base_dir: Path) -> list[Path]:
+    """
+    Loads the forbidden folders and files from the FORBIDDEN_PATHS env var.
+    Paths are separated by commas, e.g. "folder/sub_folder/code-file.py, another_folder".
+    Relative paths are resolved against base_dir. An empty or unset value means no restrictions.
+    """
+    raw = os.getenv("FORBIDDEN_PATHS", "").strip()
+    if not raw:
+        return []
+
+    forbidden = []
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        p = Path(entry)
+        if not p.is_absolute():
+            p = base_dir / p
+        forbidden.append(p.resolve())
+    return forbidden
+
+FORBIDDEN_PATHS = _load_forbidden_paths(ALLOWED_DIR)
+
+def _is_forbidden(path: Path) -> bool:
+    """
+    Checks if the given path is a forbidden file or is located within a forbidden folder.
+    """
+    if not FORBIDDEN_PATHS:
+        return False
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return True
+    return any(resolved.is_relative_to(forbidden) for forbidden in FORBIDDEN_PATHS)
+
+def _contains_forbidden(path: Path) -> bool:
+    """
+    Checks if the given directory contains any forbidden files or folders.
+    Used to stop recursive operations (delete, move) from touching forbidden paths.
+    """
+    if not FORBIDDEN_PATHS:
+        return False
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return True
+    return any(forbidden.is_relative_to(resolved) for forbidden in FORBIDDEN_PATHS)
+
 def _is_path_allowed(path: Path) -> bool:
     """
-    Checks if the given path is within the ALLOWED_DIR.
+    Checks if the given path is within ALLOWED_DIR and not forbidden.
     """
     try:
-        return path.resolve().is_relative_to(ALLOWED_DIR)
-    except ValueError:
+        return path.resolve().is_relative_to(ALLOWED_DIR) and not _is_forbidden(path)
+    except (ValueError, OSError):
         return False
+
+def _access_denied(path: Path, label: str = "Path") -> str:
+    """
+    Returns the JSON access_denied response, stating why access to the given path was denied.
+    """
+    if _is_forbidden(path):
+        message = f"{label} is forbidden: {path}"
+    else:
+        message = f"{label} is not within the allowed directory: {ALLOWED_DIR}"
+    return json.dumps({"success": False, "error": "access_denied", "message": message}, indent=2)
 
 def _get_file_info(path: Path) -> FileMetadata:
     """
-    Reads file content and returns metadata: sha256, encoding, line_ending, size_bytes, and has_bom.
+    Reads a file and returns its metadata: sha256, encoding, line ending, size and BOM.
+    Raises FileNotFoundError if the file does not exist.
     """
     if not path.exists():
         raise FileNotFoundError(f"File not found: {path}")
 
-    with open(path, 'rb') as f:
+    with open(path, "rb") as f:
         raw_data = f.read()
-        
+
     sha256 = hashlib.sha256(raw_data).hexdigest()
     size_bytes = len(raw_data)
-    
+
     # Detect BOM
-    has_bom = raw_data.startswith(b'\xef\xbb\xbf')
+    has_bom = raw_data.startswith(b"\xef\xbb\xbf")
     decode_encoding = "utf-8-sig" if has_bom else "utf-8"
-    
+
     try:
-        content = raw_data.decode(decode_encoding)
+        raw_data.decode(decode_encoding)
     except UnicodeDecodeError:
         raise Exception(f"Could not decode file {path} using UTF-8.")
 
-    # Detect line endings
-    if b"\r\n" in raw_data:
-        line_ending = "CRLF"
-    elif b"\n" in raw_data:
-        line_ending = "LF"
-    else:
-        line_ending = "LF"  # Default
-        
-    # Get modification time
+    # Detect line endings, defaulting to LF
+    line_ending = "CRLF" if b"\r\n" in raw_data else "LF"
+
     mtime = os.path.getmtime(path)
     modified_at = datetime.datetime.fromtimestamp(mtime, tz=datetime.timezone.utc).isoformat()
 
@@ -81,80 +136,90 @@ def _get_file_info(path: Path) -> FileMetadata:
 
 def _safe_write_logic(path: Path, content: str, expected_sha256: str) -> str:
     """
-    Performs the safe write operation with hash validation and atomic replacement.
-    Returns metadata about the written file.
+    Validates the file hash, then writes the content atomically while keeping the
+    original line endings and BOM. Returns a JSON response with the new metadata.
     """
     if not path.exists():
-        return json.dumps({"success": False, "error": "file_not_found"})
+        return json.dumps({"success": False, "error": "file_not_found", "message": f"File not found: {path}"}, indent=2)
 
     # 1. Read metadata to validate
     try:
         info = _get_file_info(path)
-        current_sha256 = info.sha256
-        original_line_ending = info.line_ending
-        has_bom = info.has_bom
     except Exception as e:
-        return json.dumps({"success": False, "error": "read_error", "message": str(e)})
+        return json.dumps({"success": False, "error": "read_error", "message": str(e)}, indent=2)
 
-    # 2. Hash Validation
-    if current_sha256 != expected_sha256:
+    # 2. Hash validation
+    if info.sha256 != expected_sha256:
         return json.dumps({
-            "success": False, 
-            "error": "hash_mismatch", 
+            "success": False,
+            "error": "hash_mismatch",
             "message": "File changed since it was read.",
-            "current_sha256": current_sha256
-        })
+            "current_sha256": info.sha256
+        }, indent=2)
 
-    # 3. Prepare content (Restore original line endings and BOM)
-    # First, normalize all line endings to LF
+    # 3. Normalize all line endings to LF, then restore the original line endings
     normalized_content = content.replace("\r\n", "\n").replace("\r", "\n")
-    
-    if original_line_ending == "CRLF":
+    if info.line_ending == "CRLF":
         normalized_content = normalized_content.replace("\n", "\r\n")
 
-    # 4. Atomic Write
+    # 4. Atomic write
     temp_path = path.with_suffix(path.suffix + ".tmp")
     try:
         # Using 'utf-8-sig' if BOM is present handles writing the BOM automatically
-        write_encoding = "utf-8-sig" if has_bom else "utf-8"
-        
-        with open(temp_path, 'w', encoding=write_encoding, newline='') as f:
+        write_encoding = "utf-8-sig" if info.has_bom else "utf-8"
+
+        with open(temp_path, "w", encoding=write_encoding, newline="") as f:
             f.write(normalized_content)
             f.flush()
             os.fsync(f.fileno())
-        
-        # Replace original with temp
+
         os.replace(temp_path, path)
-        
-        # Get new metadata for response
+
         new_info = _get_file_info(path)
-        
-        return json.dumps({
-            "success": True,
-            "path": new_info.path,
-            "sha256": new_info.sha256,
-            "size_bytes": new_info.size_bytes,
-            "line_ending": new_info.line_ending,
-            "encoding": new_info.encoding,
-            "has_bom": new_info.has_bom,
-            "modified_at": new_info.modified_at
-        })
+        return json.dumps({"success": True, **asdict(new_info)}, indent=2)
     except Exception as e:
         if temp_path.exists():
             os.remove(temp_path)
-        return json.dumps({"success": False, "error": "write_error", "message": str(e)})
+        return json.dumps({"success": False, "error": "write_error", "message": str(e)}, indent=2)
+
+def _detect_neighbor_line_ending(directory: Path) -> tuple[str, str]:
+    """
+    Picks the majority line ending of the allowed files in the directory, defaulting to LF.
+    Returns the newline string and a note to add to the response message.
+    """
+    counts = {"CRLF": 0, "LF": 0}
+    if directory.exists():
+        for neighbor in directory.iterdir():
+            if neighbor.is_file() and _is_path_allowed(neighbor):
+                try:
+                    with open(neighbor, "rb") as f:
+                        chunk = f.read(4096)
+                        if b"\r\n" in chunk:
+                            counts["CRLF"] += 1
+                        elif b"\n" in chunk:
+                            counts["LF"] += 1
+                except Exception:
+                    continue
+
+    if counts["CRLF"] > counts["LF"]:
+        return "\r\n", ""
+    if counts["LF"] > counts["CRLF"]:
+        return "\n", ""
+    if counts["CRLF"] > 0:
+        return "\n", " (Note: Line ending tie detected among neighboring files. Defaulted to LF.)"
+    return "\n", " (Note: No neighboring files or no clear majority, defaulting to LF)"
 
 # --- Public MCP Tools ---
 
 @mcp.tool()
 def safe_write_file(path: str, content: str, expected_sha256: str) -> str:
     """
-    Safely updates an existing file. 
-    It checks if the file's current SHA-256 hash matches the expected_sha256 
+    Safely updates an existing file.
+    It checks if the file's current SHA-256 hash matches the expected_sha256
     to ensure no one else has modified it since you last read it.
 
-    IMPORTANT: If you receive a 'hash_mismatch' error, it means the file has 
-    changed on disk. You MUST call 'read_file_with_metadata' to get the 
+    IMPORTANT: If you receive a 'hash_mismatch' error, it means the file has
+    changed on disk. You MUST call 'read_file_with_metadata' to get the
     new content and the new SHA-256 before attempting to write again.
 
     Args:
@@ -168,14 +233,11 @@ def safe_write_file(path: str, content: str, expected_sha256: str) -> str:
     try:
         p = Path(path).resolve()
         if not _is_path_allowed(p):
-            return json.dumps({"success": False, "error": "access_denied", "message": f"Path is not within the allowed directory: {ALLOWED_DIR}"})
-        
-        # Call the internal logic
-        result = _safe_write_logic(p, content, expected_sha256)
-        return result
+            return _access_denied(p)
 
+        return _safe_write_logic(p, content, expected_sha256)
     except Exception as e:
-        return json.dumps({"success": False, "error": "safe_write_error", "message": str(e), "traceback": traceback.format_exc()})
+        return json.dumps({"success": False, "error": "safe_write_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
 
 @mcp.tool()
 def create_file(path: str, content: str) -> str:
@@ -193,84 +255,37 @@ def create_file(path: str, content: str) -> str:
     try:
         p = Path(path).resolve()
         if not _is_path_allowed(p):
-            return json.dumps({"success": False, "error": "access_denied", "message": f"Path is not within the allowed directory: {ALLOWED_DIR}"})
-        
+            return _access_denied(p)
+
         if p.exists():
-            return json.dumps({"success": False, "error": "file_exists", "message": "File already exists."})
+            return json.dumps({"success": False, "error": "file_exists", "message": "File already exists."}, indent=2)
 
-        # Determine target line ending
-        target_newline = "\n"
-        warning = ""
-        
-        # Check Neighbors
-        neighbor_le_counts = {"CRLF": 0, "LF": 0}
-        if p.parent.exists():
-            for neighbor in p.parent.iterdir():
-                if neighbor.is_file():
-                    try:
-                        with open(neighbor, 'rb') as f:
-                            chunk = f.read(4096) # Read a bit more to be sure
-                            if b"\r\n" in chunk:
-                                neighbor_le_counts["CRLF"] += 1
-                            elif b"\n" in chunk:
-                                neighbor_le_counts["LF"] += 1
-                    except:
-                        continue
-        
-        if neighbor_le_counts["CRLF"] > neighbor_le_counts["LF"]:
-            target_newline = "\r\n"
-        elif neighbor_le_counts["LF"] > neighbor_le_counts["CRLF"]:
-            target_newline = "\n"
-        elif neighbor_le_counts["CRLF"] == neighbor_le_counts["LF"] and neighbor_le_counts["CRLF"] > 0:
-            # Tied, use LF as per spec
-            target_newline = "\n"
-            warning = " (Note: Line ending tie detected among neighboring files. Defaulted to LF.)"
-        else:
-            # Default to LF
-            target_newline = "\n"
-            warning = " (Note: No neighboring files or no clear majority, defaulting to LF)"
+        target_newline, note = _detect_neighbor_line_ending(p.parent)
 
-        # Normalize content to the target newline
         normalized_content = content.replace("\r\n", "\n").replace("\r", "\n")
         if target_newline == "\r\n":
             normalized_content = normalized_content.replace("\n", "\r\n")
 
-        # Ensure parent directory exists
         p.parent.mkdir(parents=True, exist_ok=True)
 
-        # Write file
-        with open(p, 'w', encoding='utf-8', newline='') as f:
+        with open(p, "w", encoding="utf-8", newline="") as f:
             f.write(normalized_content)
 
-        # Get metadata for response
+        message = f"File created successfully.{note}"
         try:
             new_info = _get_file_info(p)
-            return json.dumps({
-                "success": True,
-                "path": new_info.path,
-                "sha256": new_info.sha256,
-                "size_bytes": new_info.size_bytes,
-                "line_ending": new_info.line_ending,
-                "encoding": new_info.encoding,
-                "has_bom": new_info.has_bom,
-                "modified_at": new_info.modified_at,
-                "message": f"File created successfully.{warning}"
-            })
-        except Exception as e:
+            return json.dumps({"success": True, **asdict(new_info), "message": message}, indent=2)
+        except Exception:
             # Fallback if metadata retrieval fails
-            return json.dumps({
-                "success": True, 
-                "message": f"File created successfully.{warning}"
-            })
-
+            return json.dumps({"success": True, "message": message}, indent=2)
     except Exception as e:
-        return json.dumps({"success": False, "error": "create_error", "message": str(e), "traceback": traceback.format_exc()})
+        return json.dumps({"success": False, "error": "create_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
 
 @mcp.tool()
 def read_file_with_metadata(path: str) -> str:
     """
     Reads a file and returns its content along with SHA-256 hash, encoding, line ending, and size.
-    
+
     MANDATORY WORKFLOW:
     1. Read the file with this tool.
     2. Modify the content locally.
@@ -288,18 +303,17 @@ def read_file_with_metadata(path: str) -> str:
     try:
         p = Path(path).resolve()
         if not _is_path_allowed(p):
-            return json.dumps({"error": "access_denied", "message": f"Path is not within the allowed directory: {ALLOWED_DIR}"})
+            return _access_denied(p)
+
         info = _get_file_info(p)
-        with open(p, 'r', encoding='utf-8-sig' if info.has_bom else 'utf-8') as f:
+        with open(p, "r", encoding="utf-8-sig" if info.has_bom else "utf-8") as f:
             content = f.read()
-        
-        response = asdict(info)
-        response['content'] = content
-        return json.dumps(response, ensure_ascii=False)
+
+        return json.dumps({"success": True, **asdict(info), "content": content}, indent=2, ensure_ascii=False)
     except FileNotFoundError as e:
-        return json.dumps({"error": "file_not_found", "message": str(e)})
+        return json.dumps({"success": False, "error": "file_not_found", "message": str(e)}, indent=2)
     except Exception as e:
-        return json.dumps({"error": "read_error", "message": str(e), "traceback": traceback.format_exc()})
+        return json.dumps({"success": False, "error": "read_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
 
 @mcp.tool()
 def read_image_as_base64(path: str) -> str:
@@ -316,32 +330,28 @@ def read_image_as_base64(path: str) -> str:
     try:
         p = Path(path).resolve()
         if not _is_path_allowed(p):
-            return json.dumps({"success": False, "error": "access_denied", "message": f"Path is not within the allowed directory: {ALLOWED_DIR}"})
-        
-        if not p.exists():
-            return json.dumps({"success": False, "error": "file_not_found", "message": f"File not found: {p}"})
+            return _access_denied(p)
 
-        with open(p, 'rb') as f:
+        if not p.exists():
+            return json.dumps({"success": False, "error": "file_not_found", "message": f"File not found: {p}"}, indent=2)
+
+        with open(p, "rb") as f:
             binary_data = f.read()
-            
-        base64_data = base64.b64encode(binary_data).decode('utf-8')
-        
-        # Get metadata (using a simplified version since we don't want to decode text)
+
+        base64_data = base64.b64encode(binary_data).decode("utf-8")
+
+        # Simplified metadata, since the content is not decoded as text
         stats = p.stat()
         info = {
             "path": str(p),
             "size_bytes": stats.st_size,
             "modified_at": datetime.datetime.fromtimestamp(stats.st_mtime, tz=datetime.timezone.utc).isoformat(),
-            "mime_type": "image/unknown" # In a real app, we'd use mimetypes lib
+            "mime_type": "image/unknown"
         }
 
-        return json.dumps({
-            "success": True,
-            "metadata": info,
-            "base64": base64_data
-        })
+        return json.dumps({"success": True, "metadata": info, "base64": base64_data}, indent=2)
     except Exception as e:
-        return json.dumps({"success": False, "error": "read_image_error", "message": str(e), "traceback": traceback.format_exc()})
+        return json.dumps({"success": False, "error": "read_image_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
 
 @mcp.tool()
 def get_file_stats(path: str) -> str:
@@ -358,14 +368,14 @@ def get_file_stats(path: str) -> str:
     try:
         p = Path(path).resolve()
         if not _is_path_allowed(p):
-            return json.dumps({"success": False, "error": "access_denied", "message": f"Path is not within the allowed directory: {ALLOWED_DIR}"})
+            return _access_denied(p)
         if not p.exists():
-            return json.dumps({"success": False, "error": "file_not_found", "message": f"File not found: {p}"})
-        
+            return json.dumps({"success": False, "error": "file_not_found", "message": f"File not found: {p}"}, indent=2)
+
         info = _get_file_info(p)
-        return json.dumps(asdict(info))
+        return json.dumps({"success": True, **asdict(info)}, indent=2)
     except Exception as e:
-        return json.dumps({"success": False, "error": "stats_error", "message": str(e), "traceback": traceback.format_exc()})
+        return json.dumps({"success": False, "error": "stats_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
 
 @mcp.tool()
 def list_directory(path: str) -> str:
@@ -381,21 +391,22 @@ def list_directory(path: str) -> str:
     try:
         p = Path(path).resolve()
         if not _is_path_allowed(p):
-            return json.dumps({"success": False, "error": "access_denied", "message": f"Path is not within the allowed directory: {ALLOWED_DIR}"})
+            return _access_denied(p)
         if not p.is_dir():
-            return json.dumps({"success": False, "error": "not_a_directory", "message": f"{p} is not a directory."})
+            return json.dumps({"success": False, "error": "not_a_directory", "message": f"{p} is not a directory."}, indent=2)
 
         entries = []
         for entry in p.iterdir():
+            if not _is_path_allowed(entry):
+                continue
             try:
                 info = entry.stat()
-                entry_data = {
+                entries.append({
                     "name": entry.name,
                     "type": "DIR" if entry.is_dir() else "FILE",
                     "size_bytes": info.st_size,
                     "modified_at": datetime.datetime.fromtimestamp(info.st_mtime, tz=datetime.timezone.utc).isoformat()
-                }
-                entries.append(entry_data)
+                })
             except Exception as e:
                 entries.append({
                     "name": entry.name,
@@ -403,9 +414,9 @@ def list_directory(path: str) -> str:
                     "error": str(e)
                 })
 
-        return json.dumps({"success": True, "entries": entries})
+        return json.dumps({"success": True, "entries": entries}, indent=2)
     except Exception as e:
-        return json.dumps({"success": False, "error": "list_error", "message": str(e), "traceback": traceback.format_exc()})
+        return json.dumps({"success": False, "error": "list_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
 
 @mcp.tool()
 def create_directory(path: str) -> str:
@@ -421,15 +432,15 @@ def create_directory(path: str) -> str:
     try:
         p = Path(path).resolve()
         if not _is_path_allowed(p):
-            return json.dumps({"success": False, "error": "access_denied", "message": f"Path is not within the allowed directory: {ALLOWED_DIR}"})
-        
+            return _access_denied(p)
+
         if p.exists() and not p.is_dir():
-            return json.dumps({"success": False, "error": "file_exists", "message": "A file already exists at this path."})
+            return json.dumps({"success": False, "error": "file_exists", "message": "A file already exists at this path."}, indent=2)
 
         p.mkdir(parents=True, exist_ok=True)
-        return json.dumps({"success": True, "message": f"Directory created: {p}"})
+        return json.dumps({"success": True, "message": f"Directory created: {p}"}, indent=2)
     except Exception as e:
-        return json.dumps({"success": False, "error": "create_dir_error", "message": str(e), "traceback": traceback.format_exc()})
+        return json.dumps({"success": False, "error": "create_dir_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
 
 @mcp.tool()
 def move_file(source: str, destination: str) -> str:
@@ -448,19 +459,21 @@ def move_file(source: str, destination: str) -> str:
         dst = Path(destination).resolve()
 
         if not _is_path_allowed(src):
-            return json.dumps({"success": False, "error": "access_denied", "message": f"Source path is not within the allowed directory: {ALLOWED_DIR}"})
+            return _access_denied(src, "Source path")
         if not _is_path_allowed(dst):
-            return json.dumps({"success": False, "error": "access_denied", "message": f"Destination path is not within the allowed directory: {ALLOWED_DIR}"})
+            return _access_denied(dst, "Destination path")
+        if _contains_forbidden(src):
+            return json.dumps({"success": False, "error": "access_denied", "message": f"Source path contains forbidden files or folders: {src}"}, indent=2)
 
         if not src.exists():
-            return json.dumps({"success": False, "error": "source_not_found", "message": f"Source not found: {src}"})
+            return json.dumps({"success": False, "error": "source_not_found", "message": f"Source not found: {src}"}, indent=2)
         if dst.exists():
-            return json.dumps({"success": False, "error": "destination_exists", "message": f"Destination already exists: {dst}"})
+            return json.dumps({"success": False, "error": "destination_exists", "message": f"Destination already exists: {dst}"}, indent=2)
 
         shutil.move(str(src), str(dst))
-        return json.dumps({"success": True, "message": f"Moved {src} to {dst}"})
+        return json.dumps({"success": True, "message": f"Moved {src} to {dst}"}, indent=2)
     except Exception as e:
-        return json.dumps({"success": False, "error": "move_error", "message": str(e), "traceback": traceback.format_exc()})
+        return json.dumps({"success": False, "error": "move_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
 
 @mcp.tool()
 def delete_file(path: str) -> str:
@@ -476,18 +489,20 @@ def delete_file(path: str) -> str:
     try:
         p = Path(path).resolve()
         if not _is_path_allowed(p):
-            return json.dumps({"success": False, "error": "access_denied", "message": f"Path is not within the allowed directory: {ALLOWED_DIR}"})
+            return _access_denied(p)
+        if _contains_forbidden(p):
+            return json.dumps({"success": False, "error": "access_denied", "message": f"Path contains forbidden files or folders: {p}"}, indent=2)
         if not p.exists():
-            return json.dumps({"success": False, "error": "not_found", "message": f"Path not found: {p}"})
+            return json.dumps({"success": False, "error": "not_found", "message": f"Path not found: {p}"}, indent=2)
 
         if p.is_dir():
             shutil.rmtree(p)
         else:
             p.unlink()
-        
-        return json.dumps({"success": True, "message": f"Deleted: {p}"})
+
+        return json.dumps({"success": True, "message": f"Deleted: {p}"}, indent=2)
     except Exception as e:
-        return json.dumps({"success": False, "error": "delete_error", "message": str(e), "traceback": traceback.format_exc()})
+        return json.dumps({"success": False, "error": "delete_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
 
 if __name__ == "__main__":
     mcp.run()

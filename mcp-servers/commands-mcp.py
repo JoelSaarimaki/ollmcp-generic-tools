@@ -5,7 +5,7 @@ import shlex
 import subprocess
 import traceback
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 
@@ -13,29 +13,26 @@ from mcp.server.mcpserver import MCPServer
 mcp = MCPServer("Commands-Server")
 
 CONFIG_PATH = os.getenv("COMMANDS_CONFIG")
-COMMAND_REGISTRY: Dict[str, Any] = {}
+COMMAND_REGISTRY: dict[str, Any] = {}
 
 if CONFIG_PATH:
     try:
         config_file = Path(CONFIG_PATH)
         if config_file.exists():
-            with open(config_file, 'r', encoding='utf-8') as f:
+            with open(config_file, "r", encoding="utf-8") as f:
                 COMMAND_REGISTRY = json.load(f)
     except Exception:
         COMMAND_REGISTRY = {}
 
 # --- Internal Helpers ---
 
-def _list_commands_logic() -> List[Dict[str, str]]:
+def _list_commands_logic() -> list[dict[str, str]]:
     """
-    Returns a list of available commands from the registry.
-
-    Returns:
-        List[Dict[str, str]]: A list of dictionaries, each containing 'name', 'template', and 'description'.
+    Returns the name, template and description of each command in the registry.
     """
     if not COMMAND_REGISTRY:
         return []
-    
+
     return [
         {
             "name": name,
@@ -45,16 +42,10 @@ def _list_commands_logic() -> List[Dict[str, str]]:
         for name, info in COMMAND_REGISTRY.items()
     ]
 
-def _execute_command_logic(command_key: str, argument: Optional[str] = None) -> Dict[str, Any]:
+def _execute_command_logic(command_key: str, argument: str | None = None) -> dict[str, Any]:
     """
-    Handles the lookup, formatting, and execution of a command.
-
-    Args:
-        command_key (str): The key of the command.
-        argument (Optional[str]): An optional argument for the command.
-
-    Returns:
-        Dict[str, Any]: A dictionary containing success status, stdout, stderr, and command used.
+    Looks up, formats and executes a command from the registry.
+    Returns the success status, stdout, stderr and the command used.
     """
     if command_key not in COMMAND_REGISTRY:
         available = list(COMMAND_REGISTRY.keys())
@@ -118,7 +109,7 @@ def list_available_commands() -> str:
     """
     try:
         commands = _list_commands_logic()
-        return json.dumps({"commands": commands}, indent=2)
+        return json.dumps({"success": True, "commands": commands}, indent=2)
     except Exception as e:
         return json.dumps({
             "success": False,
@@ -128,17 +119,17 @@ def list_available_commands() -> str:
         }, indent=2)
 
 @mcp.tool()
-def run_predefined_command(command_name: str, argument: Optional[str] = None) -> str:
+def run_predefined_command(command_name: str, argument: str | None = None) -> str:
     """
     Executes a specific console command from the allowed registry.
-    
+
     Args:
         command_name (str): The key of the command (from list_available_commands).
         argument (str, optional): An optional string argument required by some commands.
 
     Returns:
         str: A JSON-formatted string containing the execution results or an error message.
-    
+
     Usage Notes:
         Use 'list_available_commands' before calling this tool to ensure the command exists.
     """

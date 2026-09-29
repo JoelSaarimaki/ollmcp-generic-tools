@@ -169,7 +169,8 @@ Retrieves project-specific instructions from a designated Markdown file.
 
 Provides safe and robust file system operations, including metadata retrieval and atomic writes.
 
-- **safe_write_file** Safely updates an existing file with hash validation.
+- **write_file** Safely replaces the whole content of an existing file with hash validation.
+- **edit_file** Changes part of an existing file by replacing an exact piece of text, with hash validation. Keeps the file's line endings and BOM, and reports ambiguous or missing matches with line numbers.
 - **create_file** Creates a new file with the provided content.
 - **read_file_with_metadata** Reads a file and returns its content along with metadata (sha256, encoding, etc.).
 - **read_image_as_base64** Reads an image file and returns its content as a base64 encoded string.

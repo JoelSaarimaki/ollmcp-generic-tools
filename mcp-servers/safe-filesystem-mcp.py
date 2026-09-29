@@ -142,7 +142,7 @@ def _get_file_info(path: Path) -> FileMetadata:
         modified_at=modified_at
     )
 
-def _safe_write_logic(path: Path, content: str, expected_sha256: str) -> str:
+def _write_logic(path: Path, content: str, expected_sha256: str) -> str:
     """
     Validates the file hash, then writes the content atomically while keeping the
     original line endings and BOM. Returns a JSON response with the new metadata.
@@ -166,7 +166,7 @@ def _safe_write_logic(path: Path, content: str, expected_sha256: str) -> str:
         }, indent=2)
 
     # 3. Normalize all line endings to LF, then restore the original line endings
-    normalized_content = content.replace("\r\n", "\n").replace("\r", "\n")
+    normalized_content = _normalize_newlines(content)
     if info.line_ending == "CRLF":
         normalized_content = normalized_content.replace("\n", "\r\n")
 
@@ -189,6 +189,93 @@ def _safe_write_logic(path: Path, content: str, expected_sha256: str) -> str:
         if temp_path.exists():
             os.remove(temp_path)
         return json.dumps({"success": False, "error": "write_error", "message": str(e)}, indent=2)
+
+def _normalize_newlines(text: str) -> str:
+    """
+    Converts all line endings to LF.
+    """
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+def _line_number(content: str, index: int) -> int:
+    """
+    Returns the 1-based line number of the character at index.
+    """
+    return content.count("\n", 0, index) + 1
+
+def _find_whitespace_insensitive_match(content: str, old_text: str) -> int | None:
+    """
+    Returns the line number where old_text appears when the indentation and trailing whitespace
+    of each line are ignored, or None if it does not appear.
+    """
+    stripped_content = "\n".join(line.strip() for line in content.split("\n"))
+    stripped_old = "\n".join(line.strip() for line in old_text.split("\n")).strip("\n")
+    if not stripped_old:
+        return None
+    index = stripped_content.find(stripped_old)
+    return None if index == -1 else _line_number(stripped_content, index)
+
+def _edit_logic(path: Path, old_text: str, new_text: str, expected_sha256: str, replace_all: bool) -> str:
+    """
+    Validates the file hash, replaces old_text with new_text and writes the file with _write_logic.
+    Line endings are ignored when matching. old_text must match exactly once unless replace_all is set.
+    """
+    if not path.exists():
+        return json.dumps({"success": False, "error": "file_not_found", "message": f"File not found: {path}"}, indent=2)
+
+    try:
+        info = _get_file_info(path)
+    except Exception as e:
+        return json.dumps({"success": False, "error": "read_error", "message": str(e)}, indent=2)
+
+    if info.sha256 != expected_sha256:
+        return json.dumps({
+            "success": False,
+            "error": "hash_mismatch",
+            "message": "File changed since it was read.",
+            "current_sha256": info.sha256
+        }, indent=2)
+
+    old = _normalize_newlines(old_text)
+    new = _normalize_newlines(new_text)
+    if not old:
+        return json.dumps({"success": False, "error": "empty_old_text", "message": "old_text must not be empty. Use write_file to replace the whole file."}, indent=2)
+    if old == new:
+        return json.dumps({"success": False, "error": "no_change", "message": "old_text and new_text are identical."}, indent=2)
+
+    with open(path, "r", encoding="utf-8-sig" if info.has_bom else "utf-8", newline="") as f:
+        content = _normalize_newlines(f.read())
+
+    count = content.count(old)
+    if count == 0:
+        message = "old_text was not found in the file."
+        line = _find_whitespace_insensitive_match(content, old)
+        if line:
+            message += f" A match with different indentation or trailing whitespace starts at line {line}. Copy the text exactly as it appears in the file."
+        else:
+            message += " Read the file again and copy the text exactly as it appears in the file."
+        return json.dumps({"success": False, "error": "no_match", "message": message}, indent=2)
+
+    if count > 1 and not replace_all:
+        lines = []
+        index = content.find(old)
+        while index != -1:
+            lines.append(_line_number(content, index))
+            index = content.find(old, index + len(old))
+        return json.dumps({
+            "success": False,
+            "error": "multiple_matches",
+            "message": f"old_text matches {count} times, at lines {lines}. Include more surrounding lines in old_text to make it unique, or set replace_all to replace every match.",
+            "match_lines": lines
+        }, indent=2)
+
+    first_line = _line_number(content, content.find(old))
+    new_content = content.replace(old, new) if replace_all else content.replace(old, new, 1)
+
+    result = json.loads(_write_logic(path, new_content, expected_sha256))
+    if result.get("success"):
+        result["replacements"] = count if replace_all else 1
+        result["first_changed_line"] = first_line
+    return json.dumps(result, indent=2)
 
 def _detect_neighbor_line_ending(directory: Path) -> tuple[str, str]:
     """
@@ -220,11 +307,12 @@ def _detect_neighbor_line_ending(directory: Path) -> tuple[str, str]:
 # --- Public MCP Tools ---
 
 @mcp.tool()
-def safe_write_file(path: str, content: str, expected_sha256: str) -> str:
+def write_file(path: str, content: str, expected_sha256: str) -> str:
     """
-    Safely updates an existing file.
+    Safely updates an existing file by replacing its whole content.
     It checks if the file's current SHA-256 hash matches the expected_sha256
     to ensure no one else has modified it since you last read it.
+    To change only part of a file, use 'edit_file' instead.
 
     IMPORTANT: If you receive a 'hash_mismatch' error, it means the file has
     changed on disk. You MUST call 'read_file_with_metadata' to get the
@@ -243,9 +331,49 @@ def safe_write_file(path: str, content: str, expected_sha256: str) -> str:
         if not _is_path_allowed(p):
             return _access_denied(p)
 
-        return _safe_write_logic(p, content, expected_sha256)
+        return _write_logic(p, content, expected_sha256)
     except Exception as e:
-        return json.dumps({"success": False, "error": "safe_write_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
+        return json.dumps({"success": False, "error": "write_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
+
+@mcp.tool()
+def edit_file(path: str, old_text: str, new_text: str, expected_sha256: str, replace_all: bool = False) -> str:
+    """
+    Changes part of an existing file by replacing old_text with new_text.
+    Prefer this over write_file when changing only part of a file.
+    It checks if the file's current SHA-256 hash matches the expected_sha256
+    to ensure no one else has modified it since you last read it.
+
+    Copy old_text exactly from the file content returned by 'read_file_with_metadata',
+    including indentation. Line endings do not need to match. old_text must match exactly
+    once: include enough surrounding lines to make it unique, or set replace_all to True.
+    To delete text, use an empty new_text.
+
+    The response contains the file's new SHA-256. Use it as expected_sha256 for the next
+    edit to the same file, without reading the file again.
+
+    IMPORTANT: If you receive a 'hash_mismatch' error, it means the file has
+    changed on disk. You MUST call 'read_file_with_metadata' to get the
+    new content and the new SHA-256 before attempting to edit again.
+
+    Args:
+        path (str): Path to the file to edit.
+        old_text (str): The exact text to replace.
+        new_text (str): The text to replace it with.
+        expected_sha256 (str): The SHA-256 hash of the file as it was when last read or written.
+        replace_all (bool): If True, replaces every match of old_text. Defaults to False.
+
+    Returns:
+        str: JSON response with the new file metadata, the number of replacements and the first
+            changed line, or an error (e.g., hash_mismatch, no_match, multiple_matches).
+    """
+    try:
+        p = Path(path).resolve()
+        if not _is_path_allowed(p):
+            return _access_denied(p)
+
+        return _edit_logic(p, old_text, new_text, expected_sha256, replace_all)
+    except Exception as e:
+        return json.dumps({"success": False, "error": "edit_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
 
 @mcp.tool()
 def create_file(path: str, content: str) -> str:
@@ -270,7 +398,7 @@ def create_file(path: str, content: str) -> str:
 
         target_newline, note = _detect_neighbor_line_ending(p.parent)
 
-        normalized_content = content.replace("\r\n", "\n").replace("\r", "\n")
+        normalized_content = _normalize_newlines(content)
         if target_newline == "\r\n":
             normalized_content = normalized_content.replace("\n", "\r\n")
 
@@ -296,8 +424,9 @@ def read_file_with_metadata(path: str) -> str:
 
     MANDATORY WORKFLOW:
     1. Read the file with this tool.
-    2. Modify the content locally.
-    3. Use the returned SHA-256 when calling safe_write_file.
+    2. Decide on the change.
+    3. Use the returned SHA-256 when calling edit_file (to change part of the file)
+       or write_file (to replace the whole file).
 
     Never guess SHA-256 values.
     Never edit files without reading them first.

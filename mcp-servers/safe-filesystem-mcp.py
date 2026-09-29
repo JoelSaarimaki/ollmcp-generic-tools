@@ -24,13 +24,16 @@ from mcp_common import (
     PROTECTED_FILE_NAMES,
     READ_ONLY_FILES,
     access_denied_message,
-    prepare_tools,
+    code_block,
+    code_language,
     contains_forbidden,
     display_path,
     get_repo_root,
     is_path_allowed,
     load_gitignore_patterns,
-    resolve_path
+    prepare_tools,
+    resolve_path,
+    text_response
 )
 from mcp_outline import (
     OUTLINE_SUFFIXES,
@@ -52,8 +55,8 @@ EDIT_SNIPPET_CONTEXT_LINES = 3  # Lines shown around a change after an edit
 MAX_EDIT_SNIPPET_LINES = 40
 SHRINK_WARNING_RATIO = 0.5  # write_file warns if a file of 20+ lines shrinks below this ratio
 OUTLINE_AFTER_WRITE_CHARS = min(2500, MAX_OUTPUT_CHARS // 8)  # Room for the outline shown after a write
-CONTENT_START = "----- BEGIN CONTENT -----"
-CONTENT_END = "----- END CONTENT -----"
+# Fence lines of a code block copied into edit_file with the text, e.g. '```python', removed if the text does not match with them
+FENCE_LINE = re.compile(r"^ {0,3}`{3,}[\w+-]*[ \t]*$")
 # 'N| ' prefixes of read_file_with_metadata(line_numbers=True), removed if copied into edit_file
 LINE_NUMBER_PREFIX = re.compile(r"^ *\d+\| ?")
 # Comments that stand in for code, e.g. '// ... existing code ...', which would replace real code if written
@@ -269,14 +272,26 @@ def _shortened_lines_note(line_numbers: list[int]) -> str:
     return (f"Output limited: {subject} longer than {MAX_LINE_CHARS} characters and shown shortened, ending with '{SHORTENED_LINE_MARK.strip()}'."
             f" To edit such a line, use a unique part of the shown text as old_text in edit_file; the hidden rest of the line stays unchanged.")
 
-def _content_block(lines: list[str], first_line: int, line_numbers: bool = False) -> str:
+def _content_block(lines: list[str], first_line: int, language: str = "text", line_numbers: bool = False) -> str:
     """
-    Returns the lines between the content markers, optionally prefixed with 'N| ' line numbers.
+    Returns the lines as a fenced code block, optionally prefixed with 'N| ' line numbers.
     """
     if line_numbers:
         width = len(str(first_line + len(lines) - 1))
         lines = [f"{first_line + i:>{width}}| {line}" for i, line in enumerate(lines)]
-    return "\n".join([CONTENT_START, *lines, CONTENT_END])
+    return code_block("\n".join(lines), language)
+
+def _strip_fence_lines(text: str) -> str | None:
+    """
+    Removes the fence lines of a code block copied with the text, e.g. '```python' before it and '```'
+    after it, or returns None if the text does not start or end with one.
+    """
+    lines = text.split("\n")
+    start = 1 if lines and FENCE_LINE.match(lines[0]) else 0
+    end = len(lines) - 1 if len(lines) > start and FENCE_LINE.match(lines[-1]) else len(lines)
+    if start == 0 and end == len(lines):
+        return None
+    return "\n".join(lines[start:end])
 
 def _find_placeholder(new_text: str, original: str) -> str | None:
     """
@@ -339,10 +354,15 @@ def _apply_edit(content: str, old: str, new: str, replace_all: bool) -> tuple[st
     """
     note = ""
     if old not in content:
+        stripped = _strip_fence_lines(old)
+        if stripped and stripped in content:
+            old, new = stripped, _strip_fence_lines(new) or new
+            note = " Code block fence lines were removed from old_text."
+    if old not in content:
         stripped = _strip_line_numbers(old)
         if stripped and stripped in content:
             old, new = stripped, _strip_line_numbers(new) or new
-            note = " Line number prefixes were removed from old_text."
+            note += " Line number prefixes were removed from old_text."
 
     count = content.count(old)
     if count:
@@ -379,10 +399,10 @@ def _apply_edit(content: str, old: str, new: str, replace_all: bool) -> tuple[st
         actual, shortened = _shorten_lines(lines[start:start + len(old_lines)][:MAX_EDIT_SNIPPET_LINES], start + 1)
         actual = _fit_lines(actual, MAX_OUTPUT_CHARS - min(1500, MAX_OUTPUT_CHARS // 4))
         message += (f" Lines {start + 1}-{start + len(old_lines)} match when indentation is ignored."
-                    f" Copy them exactly as they appear in the file, including indentation:\n"
+                    f" Copy them exactly as they appear in the file, including indentation:\n\n"
                     f"{_content_block(actual, start + 1)}")
         if shortened or len(actual) < len(old_lines):
-            message += f"\nOutput limited: only part of these lines is shown. Read them with read_file_with_metadata(start_line={start + 1})."
+            message += f"\n\nOutput limited: only part of these lines is shown. Read them with read_file_with_metadata(start_line={start + 1})."
     else:
         message += " Read the file again with 'read_file_with_metadata' and copy the text exactly as it appears in the file."
     raise _EditError("no_match", message)
@@ -426,7 +446,7 @@ def _edit_logic(path: Path, old_text: str, new_text: str, expected_sha256: str, 
 
     report = _write_report(path, content, new_content)
     warnings = report["warnings"] if report else []
-    outline = ["Outline after the edit:", *report["outline"]] if report and report["outline"] else []
+    outline = ["Outline after the edit:", code_block("\n".join(report["outline"]))] if report and report["outline"] else []
     if report and report["added"]:
         outline.append(f"Added sections: {', '.join(report['added'][:20])}")
 
@@ -444,15 +464,12 @@ def _edit_logic(path: Path, old_text: str, new_text: str, expected_sha256: str, 
         limited.append(f"Output limited: the change continues after line {snippet_end}. Check the rest with read_file_with_metadata(path='{_rel(path)}', start_line={snippet_end + 1}) if needed.")
     if shortened:
         limited.append(_shortened_lines_note(shortened))
-    return "\n".join([
-        f"Edited {_rel(path)}: {replacements} {plural}, starting at line {first_line}.{note}",
-        f"New SHA-256: {result['sha256']} (use it as expected_sha256 for the next edit to this file)",
-        *warnings,
-        *limited,
-        f"Lines {snippet_start}-{snippet_end} of {len(new_lines)} after the edit:" if new_lines else "The file is now empty.",
-        _content_block(snippet, snippet_start) if new_lines else "",
-        *outline
-    ]).strip()
+    header = [f"Edited `{_rel(path)}`: {replacements} {plural}, starting at line {first_line}.{note}",
+              f"New SHA-256: {result['sha256']} (use it as expected_sha256 for the next edit to this file)",
+              *warnings, *limited]
+    changed = (f"Lines {snippet_start}-{snippet_end} of {len(new_lines)} after the edit:\n\n{_content_block(snippet, snippet_start, code_language(path))}"
+               if new_lines else "The file is now empty.")
+    return text_response(header, changed, *outline)
 
 def _detect_neighbor_line_ending(directory: Path) -> tuple[str, str]:
     """
@@ -597,8 +614,8 @@ def create_file(path: str, content: str) -> str:
 @mcp.tool()
 def read_file_with_metadata(path: str, start_line: int | None = None, end_line: int | None = None, line_numbers: bool = False, section: str = "") -> str:
     """
-    Reads a text file: its SHA-256, needed by edit_file and write_file, and its exact content between
-    '----- BEGIN CONTENT -----' and '----- END CONTENT -----'. Read only what you need: a class,
+    Reads a text file: its SHA-256, needed by edit_file and write_file, and its exact content in a
+    code block (the fence lines are not part of it). Read only what you need: a class,
     function or heading with section, or lines with start_line and end_line (e.g. a span from
     get_outline). Long files are read in parts of up to 1000 lines.
 
@@ -661,7 +678,7 @@ def read_file_with_metadata(path: str, start_line: int | None = None, end_line: 
         end = start + len(shown) - 1 if total else end
 
         encoding = "utf-8 with BOM" if info.has_bom else "utf-8"
-        header = [f"File: {info.path}", f"SHA-256: {info.sha256}"]
+        header = [f"File: `{info.path}`", f"SHA-256: {info.sha256}"]
         if not total:
             header.append("Lines: 0 (empty file)")
         else:
@@ -680,7 +697,7 @@ def read_file_with_metadata(path: str, start_line: int | None = None, end_line: 
         if line_numbers:
             header.append("Note: The 'N| ' line number prefixes are not part of the content. Do not copy them into edit_file.")
 
-        return "\n".join(header) + "\n" + _content_block(shown, start, line_numbers)
+        return text_response(header, _content_block(shown, start, code_language(p), line_numbers))
     except Exception as e:
         return _text_error("read_error", str(e))
 

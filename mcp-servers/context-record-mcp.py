@@ -8,7 +8,9 @@ from mcp_common import (
     CONTEXT_FOLDER,
     MAX_OUTPUT_CHARS,
     READ_ONLY_FILES,
-    prepare_tools
+    code_block,
+    prepare_tools,
+    text_response
 )
 from mcp_outline import (
     NAMES,
@@ -24,8 +26,6 @@ from mcp_outline import (
 # --- Constants & Config ---
 mcp = MCPServer("Context-Record-Server")
 
-CONTENT_START = "----- BEGIN CONTENT -----"
-CONTENT_END = "----- END CONTENT -----"
 OUTLINE_AFTER_WRITE_CHARS = min(2500, MAX_OUTPUT_CHARS // 8)  # Room for the outline shown after a write
 KEEP_SHORT_ADVICE = " Keep context files short: summarize long notes and split them into several files with write_context_file."
 READ_ONLY_ADVICE = " Tell the user that this read-only file is long and should be shortened."
@@ -121,8 +121,8 @@ def _file_outline(text: str, detail: int = NAMES) -> list[str]:
 def _content_response(name: str, text: str, read_only: bool, start_line: int | None = None,
                       end_line: int | None = None, section: str | None = None, max_chars: int = MAX_OUTPUT_CHARS) -> str:
     """
-    Returns lines of a file as plain text: a header with the line numbers shown, and the content between
-    the content markers. The lines are a section, a line range or the whole file, limited to max_chars.
+    Returns lines of a file as plain text: a header with the line numbers shown, and the content as a
+    code block. The lines are a section, a line range or the whole file, limited to max_chars.
     """
     lines = text.split("\n")[:count_lines(text)]
     total = len(lines)
@@ -156,7 +156,7 @@ def _content_response(name: str, text: str, read_only: bool, start_line: int | N
         shown.append(line)
     last = start + len(shown) - 1
 
-    header = [f"File: {name}" + (" (read-only)" if read_only else "")]
+    header = [f"File: `{name}`" + (" (read-only)" if read_only else "")]
     if not total:
         header.append("Lines: 0 (empty file)")
     else:
@@ -167,7 +167,7 @@ def _content_response(name: str, text: str, read_only: bool, start_line: int | N
         next_range = f"start_line={last + 1}" + (f", end_line={end}" if end < total else "")
         header.append(f"Output limited: lines {start}-{last} of {total} are shown, as the output is limited to {MAX_OUTPUT_CHARS} characters."
                       f" Read the next part with read_context_file('{name}', {next_range}).{READ_ONLY_ADVICE if read_only else KEEP_SHORT_ADVICE}")
-    return "\n".join(header + [CONTENT_START, *shown, CONTENT_END])
+    return text_response(header, code_block("\n".join(shown), "markdown"))
 
 def _list_context_files(folder: Path) -> list[Path]:
     """
@@ -193,23 +193,24 @@ def _file_title(name: str, text: str, read_only: bool) -> str:
     lines = count_lines(text)
     return f"{name} ({'read-only, ' if read_only else ''}{lines} {'line' if lines == 1 else 'lines'})"
 
-def _file_block(name: str, content: str) -> str:
+def _file_block(title: str, block: str) -> str:
     """
-    Returns a file's content with a header, as shown when all files are read.
+    Returns one file of a read of all files: its title as a list item, and its content or outline as a code block.
     """
-    return f"===== FILE: {name} =====\n{content.rstrip()}\n"
+    return text_response([f"File: {title}"], block)
 
 def _write_response(action: str, filename: str, before: str | None, after: str) -> str:
     """
     Returns the response of a write: the success message, warnings about removed headings and the new outline.
     """
-    lines = [f"Successfully {action} context file: {filename}"]
+    header = [f"Successfully {action} context file: {filename}"]
     report = outline_after_write(before, after, ".md", OUTLINE_AFTER_WRITE_CHARS)
+    outline = ""
     if report:
-        lines.extend(report["warnings"])
+        header.extend(report["warnings"])
         if report["outline"]:
-            lines.extend(["Outline after the write:", *report["outline"]])
-    return "\n".join(lines)
+            outline = f"Outline after the write:\n\n{code_block(chr(10).join(report['outline']))}"
+    return text_response(header, outline)
 
 def _read_all() -> str:
     """
@@ -232,19 +233,22 @@ def _read_all() -> str:
             # A read-only file that does not fit is shown as its first part, with how to read the rest,
             # sharing the rest of the budget equally with the read-only files after it
             share = (budget - used) // read_only_left - 200
-            block = _file_block(f"{name} (read-only)", text if len(text) <= share else _content_response(name, text, True, max_chars=share))
+            if len(text) <= share:
+                block = _file_block(f"`{name}` (read-only)", code_block(text.rstrip("\n"), "markdown"))
+            else:
+                block = _content_response(name, text, True, max_chars=share)
             read_only_left -= 1
         else:
-            block = _file_block(name, text)
+            block = _file_block(f"`{name}`", code_block(text.rstrip("\n"), "markdown"))
             if used + len(block) > budget:
                 outline = _file_outline(text)
-                block = _file_block(f"{name} (outline only, {count_lines(text)} lines)", "\n".join(outline or ["(no headings)"]))
+                block = _file_block(f"`{name}` (outline only, {count_lines(text)} lines)", code_block("\n".join(outline or ["(no headings)"])))
                 if used + len(block) > budget:
                     skipped.append(name)
                     continue
                 outlined.append(name)
         output.append(block)
-        used += len(block) + 1
+        used += len(block) + 2
 
     notes = []
     if outlined:
@@ -253,8 +257,8 @@ def _read_all() -> str:
     if skipped:
         notes.append(f"{len(skipped)} context files are not shown at all: {', '.join(skipped)}. Read them with read_context_file(filename).")
     if notes:
-        output.insert(0, f"Output limited: the output is limited to {MAX_OUTPUT_CHARS} characters. {' '.join(notes)}\n")
-    return "\n".join(output)
+        output.insert(0, text_response([f"Output limited: the output is limited to {MAX_OUTPUT_CHARS} characters. {' '.join(notes)}"]))
+    return "\n\n".join(output)
 
 # --- Public MCP Tools ---
 
@@ -284,10 +288,11 @@ def list_context_files() -> str:
                 break
         else:
             lines = fit_lines(lines, budget, "files")
+        header = []
         if detail != NAMES:
-            lines.insert(0, "Output limited: " + ("only the top-level headings are shown." if detail == TOP_LEVEL else "the headings are not shown.")
-                         + " Read a file to see its headings.")
-        return "\n".join(lines)
+            header.append("Output limited: " + ("only the top-level headings are shown." if detail == TOP_LEVEL else "the headings are not shown.")
+                          + " Read a file to see its headings.")
+        return text_response(header, code_block("\n".join(lines)))
     except ValueError as e:
         return f"Error: {e}"
     except Exception as e:

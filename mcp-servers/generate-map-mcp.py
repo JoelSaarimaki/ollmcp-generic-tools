@@ -9,11 +9,13 @@ from mcp_common import (
     IGNORED_DIRS,
     MAX_OUTPUT_CHARS,
     access_denied_message,
-    prepare_tools,
+    code_block,
     is_ignored,
     is_path_allowed,
     load_gitignore_patterns,
+    prepare_tools,
     resolve_path,
+    text_response,
     walk
 )
 from mcp_outline import (
@@ -188,7 +190,7 @@ def _outline_folder(scope_dir: Path, gitignore_patterns: list[str]) -> str:
     rel = scope_dir.relative_to(ALLOWED_DIR).as_posix()
     title = f"Outline of {'the allowed directory' if rel == '.' else rel} ({len(files)} {'file' if len(files) == 1 else 'files'})"
     if not files:
-        return f"{title}\nNo files found. Use get_config to see which files are ignored or forbidden."
+        return text_response([title, "No files found. Use get_config to see which files are ignored or forbidden."])
 
     if len(files) > MAX_OUTLINED_FILES:
         entries = [_read_entry(p) if p.parent == scope_dir else _FileEntry(p, p.relative_to(ALLOWED_DIR).as_posix(), 0) for p in files]
@@ -209,7 +211,7 @@ def _outline_folder(scope_dir: Path, gitignore_patterns: list[str]) -> str:
     if detail != SUMMARIES or lines[-1].startswith("... ("):
         reason = f"the folder has more than {MAX_OUTLINED_FILES} files" if len(files) > MAX_OUTLINED_FILES else f"the full outline is longer than {MAX_OUTPUT_CHARS} characters"
         header.append(f"Output limited: {LEVEL_NOTES.get(detail, 'the list is cut short')}, as {reason}. {_folder_suggestions(scope_dir, files)}")
-    return "\n".join(header + [""] + lines)
+    return text_response(header, code_block("\n".join(lines)))
 
 def _outline_file(path: Path, gitignore_patterns: list[str]) -> str:
     """
@@ -237,11 +239,11 @@ def _outline_file(path: Path, gitignore_patterns: list[str]) -> str:
             advice = f"Find the lines you need with search_text_in_files(path='{entry.rel}'), then read them with {read}, start_line=..., end_line=...)."
         else:
             advice = f"Outlines are only available for {', '.join(sorted(OUTLINE_SUFFIXES))} files. Read the file with {read})."
-        return f"{title}\n{advice}"
+        return text_response([title, advice])
     if entry.outline.error:
-        return f"{title}\nRead the file with {read}, start_line=..., end_line=...)."
+        return text_response([title, f"Read the file with {read}, start_line=..., end_line=...)."])
     if not entry.outline.sections and not entry.outline.notes:
-        return f"{title}\nNo sections found. Read the file with {read})."
+        return text_response([title, f"No sections found. Read the file with {read})."])
 
     budget = MAX_OUTPUT_CHARS - min(1500, MAX_OUTPUT_CHARS // 4)
     for detail in (FULL, SUMMARIES, NAMES, TOP_LEVEL):
@@ -255,7 +257,7 @@ def _outline_file(path: Path, gitignore_patterns: list[str]) -> str:
     if detail > SUMMARIES or lines[-1].startswith("... ("):
         header.append(f"Output limited: {LEVEL_NOTES.get(detail, 'the list is cut short')}, as the full outline is longer than {MAX_OUTPUT_CHARS} characters."
                       f" Read the parts you need with {read}, start_line=..., end_line=...).")
-    return "\n".join(header + [""] + lines)
+    return text_response(header, code_block("\n".join(lines)))
 
 # --- Public MCP Tools ---
 

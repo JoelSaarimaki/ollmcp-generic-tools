@@ -13,10 +13,10 @@ from mcp_common import (
     MAX_OUTPUT_CHARS,
     PROTECTED_FILE_NAMES,
     access_denied_message,
-    prepare_tools,
     display_path,
     get_repo_root,
     is_path_allowed,
+    prepare_tools,
     resolve_path
 )
 

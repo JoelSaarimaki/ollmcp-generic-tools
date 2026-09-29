@@ -8,7 +8,9 @@ from mcp.server.mcpserver import MCPServer
 from mcp_common import (
     MAX_OUTPUT_CHARS,
     OLLAMA_API_KEY,
-    prepare_tools
+    code_block,
+    prepare_tools,
+    text_response
 )
 
 # --- Constants & Config ---
@@ -19,8 +21,6 @@ REQUEST_TIMEOUT_SECONDS = 30
 MIN_RESULTS, MAX_RESULTS = 1, 10  # Limits of Ollama's web search API
 MAX_LISTED_LINKS = 50  # Links listed at most by web_fetch
 JSON_ESCAPE_RATIO = 0.9  # Share of the budget used for text inside JSON, as escaping line breaks and quotes adds characters
-CONTENT_START = "----- BEGIN CONTENT -----"
-CONTENT_END = "----- END CONTENT -----"
 
 # The key is given explicitly, so that the ollama library does not read OLLAMA_API_KEY from the environment
 CLIENT = Client(host=OLLAMA_HOST, headers={"authorization": f"Bearer {OLLAMA_API_KEY}"}, timeout=REQUEST_TIMEOUT_SECONDS) if OLLAMA_API_KEY else None
@@ -99,8 +99,7 @@ def web_search(query: str, max_results: int = 3) -> str:
 @mcp.tool()
 def web_fetch(url: str, start_char: int = 0) -> str:
     """
-    Fetches a web page: its title, links and text between '----- BEGIN CONTENT -----' and
-    '----- END CONTENT -----'. Long pages are read in parts.
+    Fetches a web page: its title, links and text in a code block. Long pages are read in parts.
 
     Args:
         url: The full URL, starting with http:// or https://.
@@ -121,19 +120,20 @@ def web_fetch(url: str, start_char: int = 0) -> str:
 
         header = [f"URL: {url.strip()}", f"Title: {page.title or '(none)'}"]
         links = list(page.links or []) if start_char == 0 else []
+        links_block = ""
         if links:
             listed = links[:MAX_LISTED_LINKS]
-            header.append(f"Links ({len(listed)} of {len(links)}):" if len(links) > len(listed) else f"Links ({len(links)}):")
-            header.extend(f"- {link}" for link in listed)
+            count = f"{len(listed)} of {len(links)}" if len(links) > len(listed) else f"{len(links)}"
+            links_block = f"Links ({count}):\n" + "\n".join(f"- {link}" for link in listed)
 
-        budget = max(1000, MAX_OUTPUT_CHARS - sum(len(line) + 1 for line in header) - min(1000, MAX_OUTPUT_CHARS // 8))
+        budget = max(1000, MAX_OUTPUT_CHARS - sum(len(line) + 3 for line in header) - len(links_block) - min(1000, MAX_OUTPUT_CHARS // 8))
         shown, end = _cut(content, start_char, budget)
         if start_char > 0 or end < len(content):
-            header.insert(2, f"Content: characters {start_char}-{end} of {len(content)}" + (" (partial)" if end < len(content) else ""))
+            header.append(f"Content: characters {start_char}-{end} of {len(content)}" + (" (partial)" if end < len(content) else ""))
         if end < len(content):
-            header.insert(3, f"Output limited: the page is too long to show at once. Read the next part with start_char={end}.")
+            header.append(f"Output limited: the page is too long to show at once. Read the next part with start_char={end}.")
 
-        return "\n".join(header) + f"\n{CONTENT_START}\n{shown}\n{CONTENT_END}"
+        return text_response(header, links_block, code_block(shown.rstrip("\n"), "markdown"))
     except Exception as e:
         return _text_error("fetch_error", f"Fetching the page failed: {e}\n{traceback.format_exc()}")
 

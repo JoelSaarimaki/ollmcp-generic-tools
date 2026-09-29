@@ -79,7 +79,7 @@ def test_protected_and_forbidden_files_are_hidden_from_maps_and_searches(protect
     tree = protected_project.load("map").get_outline()
     assert ".mcp.json" not in tree.lower() and "tools-config.json" not in tree and "secret" not in tree
     search = protected_project.load("search")
-    assert search.search_text_in_files(SECRET).startswith("No matches")
+    assert search.search_text_in_files(SECRET).startswith("- No matches")
     matches = search.search_files_by_pattern("*.json", recursive=True)
     assert "src/data.json" in matches and ".mcp.json" not in matches.lower() and "tools-config.json" not in matches
 

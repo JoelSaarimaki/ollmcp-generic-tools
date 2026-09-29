@@ -10,12 +10,14 @@ from mcp_common import (
     IGNORED_DIRS,
     MAX_OUTPUT_CHARS,
     access_denied_message,
-    prepare_tools,
+    code_block,
     display_path,
     is_ignored,
     is_path_allowed,
     load_gitignore_patterns,
+    prepare_tools,
     resolve_path,
+    text_response,
     walk
 )
 
@@ -175,11 +177,11 @@ def _format_list(items: list[str], location: str) -> str:
     """
     Formats a list of matching paths, capped at MAX_RESULTS.
     """
-    output = f"Found {len(items)} matches in {location}:\n\n"
+    header = [f"Found {len(items)} matches in {location}:"]
     if len(items) > MAX_RESULTS:
-        output += (f"Output limited: only the first {MAX_RESULTS} of {len(items)} matches are shown."
-                   f" Use a more specific pattern to see the rest, e.g. 'src/**/*.py' instead of '*.py' with recursive=True.\n\n")
-    return output + "\n".join(items[:MAX_RESULTS])
+        header.append(f"Output limited: only the first {MAX_RESULTS} of {len(items)} matches are shown."
+                      f" Use a more specific pattern to see the rest, e.g. 'src/**/*.py' instead of '*.py' with recursive=True.")
+    return text_response(header, code_block("\n".join(items[:MAX_RESULTS])))
 
 # --- Public MCP Tools ---
 
@@ -207,7 +209,7 @@ def search_text_in_files(query: str, case_sensitive: bool = False, path: str = "
             pattern = re.compile(query, flags)
         except re.error as e:
             pattern = re.compile(re.escape(query), flags)
-            literal_note = f"Note: '{query}' is not a valid regular expression ({e}), so it was searched for as literal text.\n"
+            literal_note = f"Note: '{query}' is not a valid regular expression ({e}), so it was searched for as literal text."
 
         gitignore_patterns = load_gitignore_patterns()
         scope, error = _resolve_scope(path, gitignore_patterns)
@@ -247,12 +249,12 @@ def search_text_in_files(query: str, case_sensitive: bool = False, path: str = "
                 shown_matches += is_match
             output.append("")
 
-        location = display_path(scope, ALLOWED_DIR) if scope != ALLOWED_DIR else ALLOWED_DIR.as_posix()
+        location = f"'{display_path(scope, ALLOWED_DIR)}'" if scope != ALLOWED_DIR else "the project"
         if not total_matches:
             filter_note = f" (files matching '{file_pattern}')" if file_pattern else ""
-            return f"{literal_note}No matches found for '{query}' in {location}{filter_note}"
+            return text_response([literal_note, f"No matches found for '{query}' in {location}{filter_note}"])
 
-        result = f"{literal_note}Found {total_matches} matches in {matched_files} files in {location}:\n\n"
+        header = [literal_note, f"Found {total_matches} matches in {matched_files} files in {location}:"]
         if shown_matches < total_matches:
             hints = []
             suggestion = _suggest_folder(scope, file_matches) if scope.is_dir() else None
@@ -263,9 +265,9 @@ def search_text_in_files(query: str, case_sensitive: bool = False, path: str = "
             if context_lines:
                 hints.append("fewer context_lines")
             hints.append("a more specific query")
-            result += (f"Output limited: only {shown_matches} of {total_matches} matches are shown, as the output is limited to {MAX_RESULTS} matches or {MAX_OUTPUT_CHARS} characters."
-                       f" Narrow the search with {', '.join(hints[:-1])} or {hints[-1]}.\n\n")
-        return result + "\n".join(output).rstrip()
+            header.append(f"Output limited: only {shown_matches} of {total_matches} matches are shown, as the output is limited to {MAX_RESULTS} matches or {MAX_OUTPUT_CHARS} characters."
+                       f" Narrow the search with {', '.join(hints[:-1])} or {hints[-1]}.")
+        return text_response(header, code_block("\n".join(output).rstrip()))
     except Exception as e:
         return f"Error: Searching text in files failed:\n{e}\n{traceback.format_exc()}"
 
@@ -302,7 +304,7 @@ def search_files_by_pattern(pattern: str, recursive: bool = False) -> str:
                 msg += ". Try setting recursive=True to search subdirectories."
             return msg
 
-        return _format_list(matches, ALLOWED_DIR.as_posix())
+        return _format_list(matches, "the project")
     except Exception as e:
         return f"Error: Searching files by pattern failed:\n{e}\n{traceback.format_exc()}"
 

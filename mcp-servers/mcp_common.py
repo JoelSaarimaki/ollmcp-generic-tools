@@ -10,6 +10,7 @@ Python adds a script's own folder to its import path.
 import fnmatch
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -25,6 +26,14 @@ DEFAULT_IGNORED_DIRS = {
     "node_modules", ".git", "__pycache__", "dist", "build", ".next",
     ".venv", "venv", "env", ".pytest_cache", ".idea", ".vscode",
     "target", "out", ".mypy_cache", ".ruff_cache"
+}
+
+# Languages of fenced code blocks by file type, for syntax highlighting where responses are shown as Markdown
+CODE_LANGUAGES = {
+    ".py": "python", ".js": "javascript", ".mjs": "javascript", ".cjs": "javascript", ".jsx": "jsx",
+    ".ts": "typescript", ".tsx": "tsx", ".md": "markdown", ".json": "json", ".css": "css", ".scss": "scss",
+    ".html": "html", ".xml": "xml", ".yml": "yaml", ".yaml": "yaml", ".toml": "toml", ".sql": "sql",
+    ".sh": "bash", ".ps1": "powershell", ".bat": "batch", ".cmd": "batch"
 }
 
 # --- Config Loading ---
@@ -331,3 +340,32 @@ def prepare_tools(server) -> None:
         return await call_tool(name, {key: value for key, value in (arguments or {}).items() if value is not None}, *args, **kwargs)
 
     manager.call_tool = call_tool_without_nulls
+
+# --- Response Formatting ---
+# ollmcp shows a text response as Markdown if it contains enough Markdown-like patterns, and otherwise
+# as plain text. Responses are written to read well both ways: header lines as a list, so that Markdown
+# does not join them into one paragraph, and file content and other line-based output in fenced code
+# blocks, so that it keeps its lines and '#' comments do not become headings.
+
+def code_language(path: Path | str) -> str:
+    """
+    Returns the language of a fenced code block for the file type of path, or 'text'.
+    """
+    return CODE_LANGUAGES.get(Path(path).suffix.lower(), "text")
+
+def code_block(text: str, language: str = "text") -> str:
+    """
+    Returns text as a fenced code block. The fence is longer than any run of backticks in the text,
+    so that text containing code blocks, such as a Markdown file, stays inside it.
+    """
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return f"{fence}{language}\n{text}\n{fence}"
+
+def text_response(header: list[str], *parts: str) -> str:
+    """
+    Returns a text response: the header lines as a list, followed by the parts (such as code blocks),
+    separated by blank lines. Empty lines and parts are left out.
+    """
+    blocks = ["\n".join(f"- {line}" for line in header if line)] + list(parts)
+    return "\n\n".join(block for block in blocks if block)

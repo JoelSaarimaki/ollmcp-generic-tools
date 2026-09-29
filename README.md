@@ -195,8 +195,8 @@ Provides safe and robust file system operations, including metadata retrieval an
 - **get_config** Returns the configuration shared by all servers (allowed directory, forbidden and protected paths, output limit) and what each server sees: the files the outline and searches skip, the git repository, the command registry and the context files. Helps the AI find out why a file is missing or a path is denied.
 
 The file reading and editing tools are designed to let local AI models read and edit files accurately:
-- File content is returned as plain text between `----- BEGIN CONTENT -----` and `----- END CONTENT -----` markers, not inside JSON, so quotes, backslashes and line breaks appear exactly as in the file and can be copied into `edit_file` as-is.
-- `edit_file` tolerates common copying mistakes: line number prefixes copied from `read_file_with_metadata` are removed, and trailing whitespace does not need to match. If the text is not found, the error shows the closest matching lines to copy.
+- File content is returned as plain text in a fenced code block, not inside JSON, so quotes, backslashes and line breaks appear exactly as in the file and can be copied into `edit_file` as-is.
+- `edit_file` tolerates common copying mistakes: line number prefixes and code block fence lines copied from `read_file_with_metadata` are removed, and trailing whitespace does not need to match. If the text is not found, the error shows the closest matching lines to copy.
 - Placeholder comments such as `// ... existing code ...` are rejected, as they would otherwise replace real code.
 - After every write to a Python, JS/TS or Markdown file (`edit_file`, `write_file`, `create_file`), the response shows the file's outline with line spans, lists the sections that were added, and warns about sections that are no longer in the file and about a Python file that no longer parses. An accidental overwrite or deletion is noticed right away, instead of relying on the AI to spot a missing entry.
 
@@ -212,7 +212,7 @@ Performs text or regex searches across files in a specified directory.
 Searches the web and reads web pages using Ollama's hosted [web search API](https://docs.ollama.com/capabilities/web-search). Requires `ollama_api_key` in the [tools config file](#tools-config-file) and the `ollama` Python package (`pip install ollama`). The queries and URLs are sent to ollama.com.
 
 - **web_search** Searches the web and returns the title, URL and content of the best matching pages (`max_results`, 1–10, default 3).
-- **web_fetch** Fetches a web page and returns its title, links and text content. The content is shown as-is between `----- BEGIN CONTENT -----` and `----- END CONTENT -----` markers, so code copied from a page is not JSON-escaped. Long pages are read in parts with `start_char`.
+- **web_fetch** Fetches a web page and returns its title, links and text content. The content is shown as-is in a code block, so code copied from a page is not JSON-escaped. Long pages are read in parts with `start_char`.
 
 Web pages can contain text written to mislead the AI (prompt injection). Review the AI's changes when it has read web content.
 
@@ -274,6 +274,16 @@ Both tools additionally skip files matched by the `.gitignore` file (see `gitign
 `safe-filesystem-mcp` has no ignored directories, because it only accesses the paths the AI explicitly asks for. To block it from folders such as `.git` or `.venv`, add them to its `forbidden_paths`.
 
 `git-diff-mcp` has no ignored directories either. Git's own `.gitignore` rules decide which untracked files it lists.
+
+### How responses look in the console
+
+ollmcp shows a JSON response formatted as JSON, and any other response as Markdown if it contains enough Markdown-like patterns, otherwise as plain text. The text responses are written to read well both ways:
+
+- Header lines (file, SHA-256, notes, warnings) are a list, so that each stays on its own line.
+- File content, outlines, search matches and directory-like listings are fenced code blocks, so that they keep their lines, `#` comments do not become headings, and the code is highlighted by its file type (e.g. ` ```python `). The fence is longer than any run of backticks in the content, so Markdown files with code blocks are shown whole.
+- The parts are separated by blank lines.
+
+The code block fences are not part of the content, and `edit_file` removes them if the AI copies them into `old_text`.
 
 ### Output limits
 

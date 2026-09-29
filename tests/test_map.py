@@ -112,7 +112,7 @@ def test_file_outline_shows_calls_into_the_rest_of_the_project(project):
     project.write("src/uses_external.py", "def caller():\n    external_helper()\n")
     outline = project.load("map")
     lines = outline.get_outline("src/app.py").split("\n")
-    assert lines[0] == "src/app.py (9 lines)"
+    assert lines[0] == "- src/app.py (9 lines)"
     assert lines[lines.index("1-3 own(): Own function.") + 1] == "  Calls: helper"
     assert "5-9 class Service: A service." in lines and "  7-9 run(): Runs it." in lines
     assert "    Instantiates: Service" in lines
@@ -125,7 +125,7 @@ def test_folder_outline_leaves_out_calls(project):
 def test_file_outline_of_an_unsupported_type(project):
     project.write("config.toml", "a = 1\n")
     response = project.load("map").get_outline("config.toml")
-    assert response.startswith("config.toml (1 line)") and "read_file_with_metadata" in response
+    assert response.startswith("- config.toml (1 line)") and "read_file_with_metadata" in response
 
 def test_file_outline_reports_a_syntax_error(project):
     project.write("broken.py", "def broken(:\n    pass\n")
@@ -206,4 +206,4 @@ def test_file_outline_points_to_the_right_tool(project):
 
 def test_file_outline_shows_a_js_syntax_error(project):
     project.write("src/app.ts", "export function a() {\n  return 1;\n}\nexport function b( {\n")
-    assert project.load("map").get_outline("src/app.ts").startswith("src/app.ts (4 lines, JS/TS syntax error near line 4)")
+    assert project.load("map").get_outline("src/app.ts").startswith("- src/app.ts (4 lines, JS/TS syntax error near line 4)")

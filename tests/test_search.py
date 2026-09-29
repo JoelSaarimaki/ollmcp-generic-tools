@@ -4,6 +4,8 @@ Tests for search-tool-mcp: text search and file pattern search.
 """
 import pytest
 
+from conftest import content_of
+
 @pytest.fixture
 def search_project(project):
     project.write("src/app.py", "def formatDate():\n    return formatDate\n")
@@ -46,7 +48,7 @@ def test_context_lines_are_shown_grep_style(project):
 def test_invalid_regex_is_searched_as_literal_text(project, query):
     project.write("a.py", f"x = {query}\nfoo\nitems\n")
     response = project.load("search").search_text_in_files(query)
-    assert response.startswith(f"Note: '{query}' is not a valid regular expression")
+    assert response.startswith(f"- Note: '{query}' is not a valid regular expression")
     assert "searched for as literal text" in response
     assert "Found 1 matches in 1 files" in response and f"a.py:1: x = {query}" in response
 
@@ -61,7 +63,7 @@ def test_valid_regex_is_used_as_a_regex(project):
     assert "Found 2 matches" in response and "Note:" not in response
 
 def test_no_matches_message(search_project):
-    assert search_project.load("search").search_text_in_files("zzz", file_pattern="*.py").startswith("No matches found for 'zzz'")
+    assert search_project.load("search").search_text_in_files("zzz", file_pattern="*.py").startswith("- No matches found for 'zzz'")
 
 def test_many_matches_are_limited_with_suggestions(project):
     for i in range(30):
@@ -81,5 +83,5 @@ def test_many_matches_are_limited_with_suggestions(project):
 ])
 def test_file_pattern_search(search_project, pattern, recursive, expected):
     response = search_project.load("search").search_files_by_pattern(pattern, recursive)
-    found = sorted(line for line in response.splitlines() if line and not line.startswith(("Found", "No files")))
+    found = sorted(content_of(response).splitlines()) if "```" in response else []
     assert found == sorted(expected)

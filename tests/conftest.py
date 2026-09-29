@@ -118,10 +118,10 @@ def start_server(server: str, config_path: Path | None) -> subprocess.CompletedP
                           env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 def content_of(response: str) -> str:
-    """Returns the text between the content markers of a read_file_with_metadata or edit_file response."""
-    match = re.search(r"----- BEGIN CONTENT -----\n(.*?)\n?----- END CONTENT -----", response, re.S)
-    assert match, f"No content block in response:\n{response}"
-    return match.group(1)
+    """Returns the content of the first fenced code block of a response, e.g. of read_file_with_metadata or edit_file."""
+    match = re.search(r"^(`{3,})[\w+-]*\n(.*?)\n\1$", response, re.S | re.M)
+    assert match, f"No code block in response:\n{response}"
+    return match.group(2)
 
 def sha_of(response: str) -> str:
     """Returns the SHA-256 shown in a read_file_with_metadata or edit_file response."""

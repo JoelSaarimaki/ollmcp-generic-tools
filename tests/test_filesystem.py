@@ -9,6 +9,8 @@ import pytest
 
 from conftest import content_of, sha_of, windows_only
 
+NL = "\n"
+
 # A file with CRLF line endings, a BOM, quotes, backslashes, a tab and trailing whitespace
 TRICKY = ('import os\r\n'
           '\r\n'
@@ -88,7 +90,7 @@ def test_long_lines_are_shortened_with_an_instruction(project):
 def test_edit_with_text_copied_from_the_read_response(fs, project):
     sha = sha_of(fs.read_file_with_metadata("app.py"))
     response = fs.edit_file("app.py", '    """Says "hello" to C:\\Users\\name."""', '    """Greets the user."""', sha)
-    assert response.startswith("Edited")
+    assert response.startswith("- Edited")
     assert '"""Greets the user."""' in content_of(response)
     raw = file_bytes(project)
     assert raw.startswith(b"\xef\xbb\xbf") and raw.count(b"\n") == raw.count(b"\r\n")  # BOM and CRLF kept
@@ -121,7 +123,7 @@ def test_edit_replace_all_and_chained_hash(fs):
     first = fs.edit_file("app.py", "return", "yield", sha, replace_all=True)
     assert "2 replacements" in first
     second = fs.edit_file("app.py", "import os", "import sys", sha_of(first))
-    assert second.startswith("Edited")
+    assert second.startswith("- Edited")
 
 @pytest.mark.parametrize("old, new, error", [
     ("", "x", "empty_old_text"),
@@ -269,7 +271,7 @@ def test_edit_shows_the_outline_and_warns_about_removed_sections(service):
     sha = sha_of(service.read_file_with_metadata("service.py"))
     response = service.edit_file("service.py", "    def stop(self):\n        return 2\n", "", sha)
     assert "Warning: these sections are no longer in the file: class Service > stop()." in response
-    assert response.endswith("Outline after the edit:\n1-5 class Service\n  4-5 start()\n9-10 main()")
+    assert response.endswith("Outline after the edit:\n\n```text\n1-5 class Service\n  4-5 start()\n9-10 main()\n```")
 
 def test_edit_reports_added_sections_without_a_warning(service):
     sha = sha_of(service.read_file_with_metadata("service.py"))
@@ -300,9 +302,9 @@ def test_create_file_shows_the_outline(project):
 
 def test_responses_show_paths_relative_to_the_allowed_directory(service):
     response = service.read_file_with_metadata("service.py")
-    assert response.startswith("File: service.py\n")
+    assert response.startswith("- File: `service.py`\n")
     edit = service.edit_file("service.py", "return 1", "return 3", sha_of(response))
-    assert edit.startswith("Edited service.py:")
+    assert edit.startswith("- Edited `service.py`:")
     assert json.loads(service.write_file("service.py", SERVICE, sha_of(edit)))["path"] == "service.py"
 
 def test_edit_response_stays_within_the_limit(project):
@@ -338,3 +340,27 @@ def test_rename_that_only_changes_letter_case(project):
     fs = project.load("filesystem")
     assert json.loads(fs.move_file("app.py", "App.py"))["success"]
     assert [p.name for p in project.root.iterdir() if p.suffix == ".py"] == ["App.py"]
+
+
+# --- Formatting for the console ---
+
+def test_content_is_a_code_block_that_contains_code_blocks(project):
+    text = "# Guide" + NL + NL + "```python" + NL + "print(1)" + NL + "```" + NL
+    project.write("guide.md", text)
+    response = project.load("filesystem").read_file_with_metadata("guide.md")
+    assert "````markdown" + NL in response  # a longer fence than the one inside
+    assert content_of(response) + NL == text
+
+def test_response_parts_are_separated_by_blank_lines(fs):
+    response = fs.read_file_with_metadata("app.py")
+    header, block = response.split(NL + NL, 1)
+    assert all(line.startswith("- ") for line in header.split(NL))
+    assert block.startswith("```python" + NL)
+
+def test_edit_ignores_copied_code_block_fences(project):
+    project.write("a.py", "x = 1" + NL + "y = 2" + NL)
+    fs = project.load("filesystem")
+    sha = sha_of(fs.read_file_with_metadata("a.py"))
+    response = fs.edit_file("a.py", "```python" + NL + "x = 1" + NL + "```", "```python" + NL + "x = 3" + NL + "```", sha)
+    assert "Code block fence lines were removed" in response
+    assert (project.root / "a.py").read_text() == "x = 3" + NL + "y = 2" + NL

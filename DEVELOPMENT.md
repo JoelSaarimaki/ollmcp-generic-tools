@@ -76,9 +76,15 @@ Configuration:
 - **JS/TS outlines** include namespaces and modules (`namespace N {}`, `declare module "x" {}`, `declare global {}`) with their contents, and every form of default export (`export default` of any value, `export = f`, `export { a as default }`, `module.exports = function/class/name`). Overloads, and getter/setter pairs, form one section only when declared one after the other.
 - **JS/TS uses tree-sitter** (`tree-sitter`, `tree-sitter-javascript`, `tree-sitter-typescript`), which replaced a regex parser in 2026-09. The regex parser needed a special case for every construct (type arguments, object return types, apostrophes in JSX text, regex literals, statements continued on the next line) and kept producing wrong spans, which matter now that section reads and the outline after writes depend on them. `.ts` files use the TypeScript grammar, `.tsx` its TSX variant and other files the JavaScript grammar, which includes JSX. tree-sitter also outlines files with syntax errors and reports the first one (`Outline.syntax_error`).
 
+### Responses in the console
+
+- **ollmcp renders a non-JSON response as Markdown when it counts more than 7 Markdown-like patterns** (backticks, `#` lines, list markers, `*`), and otherwise as plain text (`_count_markdown_patterns` in its `utils/tool_display.py`). File content almost always crossed that threshold, and Markdown then joined the header lines into one paragraph, turned `# comments` into headings and ran the `----- BEGIN CONTENT -----` markers into the text.
+- **Text responses are therefore written for both modes** with `text_response()` and `code_block()` in `mcp_common.py`: header lines as a list, content and other line-based output (outlines, search matches, listings) in fenced code blocks with the file's language (`code_language()`), and blank lines between the parts. The list markers and fences count as Markdown patterns themselves, so in practice the responses are consistently rendered as Markdown. The fence is longer than any backtick run in the content.
+- Models know code fences well; `edit_file` removes copied fence lines from `old_text` like copied line numbers. Short single-line responses (errors, `Successfully removed ...`) stay plain sentences.
+
 ### Local-model-friendly reading and editing
 
-- **`read_file_with_metadata` and `edit_file` return plain text**, not JSON: a short metadata header and the exact content between `----- BEGIN CONTENT -----` and `----- END CONTENT -----`. JSON escaping made models copy `\n` and `\"` into `edit_file`. Errors of these two tools are `Error (<code>): <message>`. `web_fetch` uses the same format, as code is often copied from web pages.
+- **`read_file_with_metadata` and `edit_file` return plain text**, not JSON: a short metadata header and the exact content in a fenced code block. JSON escaping made models copy `\n` and `\"` into `edit_file`. Errors of these two tools are `Error (<code>): <message>`. `web_fetch` uses the same format, as code is often copied from web pages.
 - **`edit_file` tolerates common copying mistakes**: copied `N| ` line number prefixes are removed, trailing whitespace does not need to match, and when nothing matches, the error shows the lines that match with different indentation so they can be copied exactly. Multiple matches are reported with their line numbers.
 - **Hash-checked writes**: every edit needs the SHA-256 from the last read or edit, and the edit response shows the changed lines and the new hash, so edits can be chained without re-reading.
 - **Placeholder comments** (`// ... existing code ...`, `# rest of the code`, etc.) are rejected in `edit_file` and `write_file` unless the original already contains one. `write_file` warns if a file of 20+ lines shrinks below half.
@@ -112,7 +118,7 @@ Every tool definition is sent with every request, so tools that duplicate others
 
 ## How changes have been verified
 
-The automated test suite in `tests/` (pytest, 297 tests, about a minute) covers every server. Run it from the repository root:
+The automated test suite in `tests/` (pytest, 300 tests, about a minute) covers every server. Run it from the repository root:
 
 ```bash
 python -m pip install -r requirements-dev.txt

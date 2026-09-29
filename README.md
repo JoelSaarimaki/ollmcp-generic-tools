@@ -45,6 +45,7 @@ Use the same values for all four servers, so that the files the AI can find with
 
 #### context-record-mcp
 - `CONTEXT_FOLDER_PATH`: Path to the folder containing the context Markdown files.
+- `READ_ONLY_FILES`: List of files maintained by you, such as project instructions, that the AI can read but not change or remove, separated by commas (e.g. `".\\_instructions\\app-instructions.md"`). They can be located anywhere, and are read by their file name. (Optional)
 
 #### generate-map-mcp
 - `ALLOWED_DIR`, `FORBIDDEN_PATHS`: See [above](#shared-by-generate-map-mcp-search-tool-mcp-safe-filesystem-mcp-and-git-diff-mcp).
@@ -52,9 +53,6 @@ Use the same values for all four servers, so that the files the AI can find with
 
 #### git-diff-mcp
 - `ALLOWED_DIR`, `FORBIDDEN_PATHS`: See [above](#shared-by-generate-map-mcp-search-tool-mcp-safe-filesystem-mcp-and-git-diff-mcp).
-
-#### instructions-mcp
-- `PROJECT_INSTRUCTIONS_FILE`: Path to the project-specific instructions Markdown file.
 
 #### safe-filesystem-mcp
 - `ALLOWED_DIR`, `FORBIDDEN_PATHS`: See [above](#shared-by-generate-map-mcp-search-tool-mcp-safe-filesystem-mcp-and-git-diff-mcp).
@@ -103,18 +101,22 @@ To keep the AI from running anything other than the defined commands:
 - Arguments that start with `-`, or contain line breaks, are rejected so the AI cannot add unintended options.
 - On Windows, if the program is a batch file (`.bat` / `.cmd`, e.g. `npm`), arguments containing `& | < > ^ % ! " ( )` are rejected.
 - Commands cannot read input, so interactive prompts end immediately instead of hanging.
-- A command succeeds only if it exits with code 0, and output longer than 20 000 characters per stream is truncated in the middle.
+- A command succeeds only if it exits with code 0, and long output is cut from the middle (see [Output limits](#output-limits)).
 
 ### context-record-mcp
 
 This tool manages a context folder containing Markdown files, allowing for listing, reading, writing, appending, and removing context files. File names must be plain `.md` names such as `notes.md`: names with folders (`../x.md`, `sub/x.md`) or other extensions are rejected, so the tools cannot reach files outside the context folder.
 
-- **list_context_files** Lists all Markdown files in the context folder.
-- **read_context_file** Reads the content of a specific Markdown file in the context folder.
+It also gives the AI your project instructions: list them in `READ_ONLY_FILES`, and they are listed and read first, marked `(read-only)`, while writing, appending to or removing them is refused. A context file with the same name as a read-only file is hidden and cannot be created, so it cannot take the instructions' place.
+
+- **list_context_files** Lists all Markdown files in the context folder and the read-only files.
+- **read_context_file** Reads the content of a specific Markdown file in the context folder, or of a read-only file.
 - **write_context_file** Creates a new Markdown file or overwrites an existing one in the context folder.
 - **append_to_context_file** Appends content to a specific Markdown file in the context folder.
-- **read_all_context_files** Reads the content of all Markdown files in the context folder at once.
+- **read_all_context_files** Reads the read-only files and all Markdown files in the context folder at once. Meant to be called at the start of a session.
 - **remove_context_file** Removes a specific Markdown file from the context folder.
+
+Read-only only applies to `context-record-mcp`. If the instructions file is inside the project, `safe-filesystem-mcp` can still change it: add its folder (e.g. `_instructions`) to `FORBIDDEN_PATHS` to prevent that. `context-record-mcp` does not use `FORBIDDEN_PATHS`, so it can still read the file.
 
 ### generate-map-mcp
 
@@ -124,7 +126,7 @@ Generates a comprehensive structure map and summary of a codebase, supporting Py
   - Python: functions, classes and methods, docstring summaries, and calls to the project's own functions and classes.
   - JS/TS: local imports, functions, React components and hooks, classes and methods, interfaces, types, enums, exported constants, default and named exports, re-exports and JSDoc summaries. Code in comments is ignored.
 - **generate_file_map** Generates the file tree map of the codebase without detailed summaries, optionally limited to a subfolder (`path`).
-- **get_codebase_map_config** Returns the input directory, ignored directories, forbidden paths, `.gitignore` patterns and included file types, to explain why a file may be missing from the maps.
+- **get_codebase_map_config** Returns the allowed directory, ignored directories, forbidden paths, `.gitignore` patterns and included file types, to explain why a file may be missing from the maps.
 
 ### git-diff-mcp
 
@@ -133,15 +135,8 @@ Provides tools to inspect git history and differences for files within a reposit
 - **get_file_diff** Retrieves the differences for a specified file.
 - **get_all_changes_diff** Retrieves the differences for all changed files at once, with a list of changed and new untracked files. Useful for reviewing all changes before committing.
 - **get_file_history** Retrieves the commit history and associated diffs for a specified file.
-- **get_git_status** Returns the results of `git status`.
-- **is_git_repository** Checks if the allowed directory or a specified directory is a Git repository.
+- **get_git_status** Returns the results of `git status`. Also tells whether a folder is in a git repository: if not, the error is `not_a_repository`.
 - **get_git_config** Returns the allowed directory, its repository root and forbidden paths, to explain why a path may be denied or missing from the output.
-
-### instructions-mcp
-
-Retrieves project-specific instructions from a designated Markdown file.
-
-- **get_project_instructions** Returns the content of the project-specific instructions markdown file.
 
 ### safe-filesystem-mcp
 
@@ -157,7 +152,6 @@ The file reading and editing tools are designed to let local AI models read and 
 - `edit_file` tolerates common copying mistakes: line number prefixes copied from `read_file_with_metadata` are removed, and trailing whitespace does not need to match. If the text is not found, the error shows the closest matching lines to copy.
 - Placeholder comments such as `// ... existing code ...` are rejected, as they would otherwise replace real code.
 - **read_image** Reads a PNG, JPEG, GIF or WebP image (up to 10 MB) and returns it as an image the AI can see, along with its metadata. Requires a vision-capable model; with other models, ollmcp skips the image and shows a warning.
-- **get_file_stats** Retrieves metadata about a file without reading its content.
 - **list_directory** Lists all files and directories within the specified path.
 - **create_directory** Creates a new directory at the specified path.
 - **move_file** Moves or renames a file or directory.
@@ -241,7 +235,7 @@ Local models have small context windows, so every tool response is limited to `M
 | `get_file_diff`, `get_file_history`, `get_git_status` | `MAX_OUTPUT_CHARS` | Read the file instead, a smaller `limit`, or a `path` |
 | `get_all_changes_diff` | `MAX_OUTPUT_CHARS`; up to 200 changed and 200 untracked files are listed | `get_file_diff` for the files listed in `changed_files`, or a `path` |
 | `run_predefined_command` | `MAX_OUTPUT_CHARS`, split between stdout and stderr; the middle of long output is cut, as errors are usually at the end | A narrower command, such as tests for a single file |
-| `read_all_context_files` | `MAX_OUTPUT_CHARS`; whole files are left out | `read_context_file` for the listed files |
-| `read_context_file`, `get_project_instructions` | `MAX_OUTPUT_CHARS` | Keep these files short |
+| `read_all_context_files` | `MAX_OUTPUT_CHARS`; read-only files always come first, then whole context files are left out | `read_context_file` for the listed files |
+| `read_context_file` | `MAX_OUTPUT_CHARS` | Keep context and read-only files short |
 
 The example [`_instructions/app-instructions.md`](_instructions/app-instructions.md) tells the AI to follow these messages instead of repeating the same call, and never to assume that a limited response is the whole result. Include a similar instruction in your own project instructions.

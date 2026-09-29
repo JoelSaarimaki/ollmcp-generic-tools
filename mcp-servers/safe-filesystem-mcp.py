@@ -795,30 +795,6 @@ def read_image(path: str) -> list[str | Image] | str:
         return json.dumps({"success": False, "error": "read_image_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
 
 @mcp.tool()
-def get_file_stats(path: str) -> str:
-    """
-    Retrieves metadata about a file without reading its content.
-    This is useful for checking if a file has changed before deciding to read it.
-
-    Args:
-        path (str): Path to the file.
-
-    Returns:
-        str: JSON string containing file metadata, or error message.
-    """
-    try:
-        p = _resolve_path(path)
-        if not _is_path_allowed(p):
-            return _access_denied(p)
-        if not p.exists():
-            return json.dumps({"success": False, "error": "file_not_found", "message": f"File not found: {p}"}, indent=2)
-
-        info = _get_file_info(p)
-        return json.dumps({"success": True, **asdict(info)}, indent=2)
-    except Exception as e:
-        return json.dumps({"success": False, "error": "stats_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
-
-@mcp.tool()
 def list_directory(path: str) -> str:
     """
     Lists all files and directories within the specified path, folders first.

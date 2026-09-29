@@ -20,15 +20,6 @@
             "FORBIDDEN_PATHS": ""
           }
         },
-        "instructions": {
-          "command": "python",
-          "args": [
-            ".\\mcp-servers\\instructions-mcp.py"
-          ],
-          "env": {
-            "PROJECT_INSTRUCTIONS_FILE": ".\\_instructions\\app-instructions.md"
-          }
-        },
         "commands": {
           "command": "python",
           "args": [
@@ -44,7 +35,8 @@
             ".\\mcp-servers\\context-record-mcp.py"
           ],
           "env": {
-            "CONTEXT_FOLDER_PATH": ".\\_context"
+            "CONTEXT_FOLDER_PATH": ".\\_context",
+            "READ_ONLY_FILES": ".\\_instructions\\app-instructions.md"
           }
         },
         "filesystem": {

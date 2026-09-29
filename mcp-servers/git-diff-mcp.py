@@ -405,6 +405,8 @@ def get_file_history(path: str, limit: int = 10) -> str:
 def get_git_status(path: str | None = None) -> str:
     """
     Returns the results of 'git status'.
+    Also use this to check whether a folder is in a git repository: if it is not,
+    the error is 'not_a_repository'.
 
     Args:
         path (str, optional): The directory to run the command in. Defaults to the allowed directory.
@@ -422,50 +424,6 @@ def get_git_status(path: str | None = None) -> str:
         return json.dumps(result, indent=2)
     except Exception as e:
         return json.dumps({"success": False, "error": "status_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
-
-@mcp.tool()
-def is_git_repository(path: str | None = None) -> str:
-    """
-    Checks if the allowed directory or a specified directory is a Git repository.
-
-    Args:
-        path (str, optional): The directory to check. Defaults to the allowed directory.
-
-    Returns:
-        str: A JSON-formatted string indicating if it is a git repository.
-    """
-    try:
-        p = _resolve_path(path) if path else ALLOWED_DIR
-        if not _is_path_allowed(p):
-            return _access_denied(p)
-
-        result = _run_git_command(["rev-parse", "--is-inside-work-tree"], cwd=p)
-
-        if result["success"] and "true" in result["stdout"].lower():
-            return json.dumps({
-                "success": True,
-                "is_repository": True,
-                "path": str(p)
-            }, indent=2)
-
-        # If it's not a git repo, git returns non-zero and an error message in stderr.
-        if not result["success"] and ("not a git repository" in result["stderr"].lower() or "not in a git repository" in result["stderr"].lower()):
-            return json.dumps({
-                "success": True,
-                "is_repository": False,
-                "path": str(p)
-            }, indent=2)
-
-        # Otherwise, it's a real error (e.g. directory not found, permission denied, etc.)
-        return json.dumps(result, indent=2)
-
-    except Exception as e:
-        return json.dumps({
-            "success": False,
-            "error": "wrapper_failed",
-            "message": str(e),
-            "traceback": traceback.format_exc()
-        }, indent=2)
 
 @mcp.tool()
 def get_git_config() -> str:

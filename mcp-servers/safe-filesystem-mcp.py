@@ -1,5 +1,4 @@
 # --- safe-filesystem-mcp.py ---
-import base64
 import datetime
 import hashlib
 import json
@@ -9,12 +8,13 @@ import traceback
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Image, MCPServer
 
 # --- Constants & Config ---
 mcp = MCPServer("Safe-Filesystem-Server")
 
 ALLOWED_DIR = Path(os.getenv("ALLOWED_DIR", os.getcwd())).resolve()
+MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10MB limit
 
 @dataclass
 class FileMetadata:
@@ -189,6 +189,21 @@ def _write_logic(path: Path, content: str, expected_sha256: str) -> str:
         if temp_path.exists():
             os.remove(temp_path)
         return json.dumps({"success": False, "error": "write_error", "message": str(e)}, indent=2)
+
+def _detect_image_format(data: bytes) -> str | None:
+    """
+    Returns the image format ('png', 'jpeg', 'gif' or 'webp') based on the file's first bytes,
+    or None if the data is not a supported image.
+    """
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "jpeg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "gif"
+    if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return "webp"
+    return None
 
 def _normalize_newlines(text: str) -> str:
     """
@@ -453,40 +468,54 @@ def read_file_with_metadata(path: str) -> str:
         return json.dumps({"success": False, "error": "read_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
 
 @mcp.tool()
-def read_image_as_base64(path: str) -> str:
+def read_image(path: str) -> list[str | Image] | str:
     """
-    Reads an image file and returns its content as a base64 encoded string.
-    Useful for visual analysis of UI components or assets.
+    Reads an image file and returns it as an image you can see, along with its metadata.
+    Useful for visual analysis of UI components, screenshots or assets.
+    Supports PNG, JPEG, GIF and WebP images. Viewing the image requires a vision-capable model.
+    For SVG images, use 'read_file_with_metadata' instead, as they are text files.
 
     Args:
         path (str): Path to the image file.
 
     Returns:
-        str: JSON string containing the base64 string, file metadata, or error message.
+        list | str: The image and a JSON string with its path, format, size and modification time,
+            or a JSON error message (e.g., unsupported_format or too_large).
     """
     try:
         p = Path(path).resolve()
         if not _is_path_allowed(p):
             return _access_denied(p)
 
-        if not p.exists():
+        if not p.is_file():
             return json.dumps({"success": False, "error": "file_not_found", "message": f"File not found: {p}"}, indent=2)
 
-        with open(p, "rb") as f:
-            binary_data = f.read()
-
-        base64_data = base64.b64encode(binary_data).decode("utf-8")
-
-        # Simplified metadata, since the content is not decoded as text
         stats = p.stat()
-        info = {
-            "path": str(p),
-            "size_bytes": stats.st_size,
-            "modified_at": datetime.datetime.fromtimestamp(stats.st_mtime, tz=datetime.timezone.utc).isoformat(),
-            "mime_type": "image/unknown"
-        }
+        if stats.st_size > MAX_IMAGE_BYTES:
+            return json.dumps({
+                "success": False,
+                "error": "too_large",
+                "message": f"Image is {stats.st_size} bytes, larger than the {MAX_IMAGE_BYTES} byte limit."
+            }, indent=2)
 
-        return json.dumps({"success": True, "metadata": info, "base64": base64_data}, indent=2)
+        with open(p, "rb") as f:
+            data = f.read()
+
+        image_format = _detect_image_format(data)
+        if not image_format:
+            message = "Not a supported image. Supported formats: PNG, JPEG, GIF and WebP."
+            if p.suffix.lower() == ".svg":
+                message += " SVG images are text files, so read them with 'read_file_with_metadata'."
+            return json.dumps({"success": False, "error": "unsupported_format", "message": message}, indent=2)
+
+        metadata = json.dumps({
+            "success": True,
+            "path": str(p),
+            "mime_type": f"image/{image_format}",
+            "size_bytes": stats.st_size,
+            "modified_at": datetime.datetime.fromtimestamp(stats.st_mtime, tz=datetime.timezone.utc).isoformat()
+        }, indent=2, ensure_ascii=False)
+        return [metadata, Image(data=data, format=image_format)]
     except Exception as e:
         return json.dumps({"success": False, "error": "read_image_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
 

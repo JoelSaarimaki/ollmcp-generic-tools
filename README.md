@@ -173,7 +173,7 @@ Provides safe and robust file system operations, including metadata retrieval an
 - **edit_file** Changes part of an existing file by replacing an exact piece of text, with hash validation. Keeps the file's line endings and BOM, and reports ambiguous or missing matches with line numbers.
 - **create_file** Creates a new file with the provided content.
 - **read_file_with_metadata** Reads a file and returns its content along with metadata (sha256, encoding, etc.).
-- **read_image_as_base64** Reads an image file and returns its content as a base64 encoded string.
+- **read_image** Reads a PNG, JPEG, GIF or WebP image (up to 10 MB) and returns it as an image the AI can see, along with its metadata. Requires a vision-capable model; with other models, ollmcp skips the image and shows a warning.
 - **get_file_stats** Retrieves metadata about a file without reading its content.
 - **list_directory** Lists all files and directories within the specified path.
 - **create_directory** Creates a new directory at the specified path.

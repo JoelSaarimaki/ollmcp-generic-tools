@@ -7,7 +7,8 @@ from mcp_common import (
     CONFIG_PATH,
     CONTEXT_FOLDER,
     MAX_OUTPUT_CHARS,
-    READ_ONLY_FILES
+    READ_ONLY_FILES,
+    compact_tool_schemas
 )
 from mcp_outline import (
     NAMES,
@@ -194,15 +195,15 @@ def _file_title(name: str, text: str, read_only: bool) -> str:
 
 def _file_block(name: str, content: str) -> str:
     """
-    Returns a file's content with a header, as shown by read_all_context_files.
+    Returns a file's content with a header, as shown when all files are read.
     """
-    return "\n".join(["=" * 80, f"FILE: {name}", "=" * 80, content, "\n"])
+    return f"===== FILE: {name} =====\n{content.rstrip()}\n"
 
-def _write_response(action: str, filename: str, folder: Path, before: str | None, after: str) -> str:
+def _write_response(action: str, filename: str, before: str | None, after: str) -> str:
     """
     Returns the response of a write: the success message, warnings about removed headings and the new outline.
     """
-    lines = [f"Successfully {action} context file: {filename} (in {folder.as_posix()})"]
+    lines = [f"Successfully {action} context file: {filename}"]
     report = outline_after_write(before, after, ".md", OUTLINE_AFTER_WRITE_CHARS)
     if report:
         lines.extend(report["warnings"])
@@ -210,17 +211,58 @@ def _write_response(action: str, filename: str, folder: Path, before: str | None
             lines.extend(["Outline after the write:", *report["outline"]])
     return "\n".join(lines)
 
+def _read_all() -> str:
+    """
+    Returns the read-only files followed by all context files. Read-only files are never left out;
+    context files are included whole while they fit in MAX_OUTPUT_CHARS, then as their outlines.
+    """
+    folder = _get_context_folder()
+    files = _all_files(folder)
+    if not files:
+        if not folder.exists():
+            return f"Error: Folder does not exist at {folder.as_posix()}"
+        return "No Markdown files found in the context folder."
+
+    budget = MAX_OUTPUT_CHARS - min(1000, MAX_OUTPUT_CHARS // 4)
+    output, outlined, skipped, used = [], [], [], 0
+    read_only_left = len(READ_ONLY_BY_NAME)
+    for name, path, read_only in files:
+        text = _read_text(path)
+        if read_only:
+            # A read-only file that does not fit is shown as its first part, with how to read the rest,
+            # sharing the rest of the budget equally with the read-only files after it
+            share = (budget - used) // read_only_left - 200
+            block = _file_block(f"{name} (read-only)", text if len(text) <= share else _content_response(name, text, True, max_chars=share))
+            read_only_left -= 1
+        else:
+            block = _file_block(name, text)
+            if used + len(block) > budget:
+                outline = _file_outline(text)
+                block = _file_block(f"{name} (outline only, {count_lines(text)} lines)", "\n".join(outline or ["(no headings)"]))
+                if used + len(block) > budget:
+                    skipped.append(name)
+                    continue
+                outlined.append(name)
+        output.append(block)
+        used += len(block) + 1
+
+    notes = []
+    if outlined:
+        notes.append(f"{len(outlined)} context files are too long to include and are shown as their headings with line spans: {', '.join(outlined)}."
+                     " Read the sections you need with read_context_file(filename, section=...).")
+    if skipped:
+        notes.append(f"{len(skipped)} context files are not shown at all: {', '.join(skipped)}. Read them with read_context_file(filename).")
+    if notes:
+        output.insert(0, f"Output limited: the output is limited to {MAX_OUTPUT_CHARS} characters. {' '.join(notes)}\n")
+    return "\n".join(output)
+
 # --- Public MCP Tools ---
 
 @mcp.tool()
 def list_context_files() -> str:
     """
-    Lists the read-only files maintained by the user (such as project instructions), marked
-    '(read-only)', and all Markdown files in the context folder, with their headings and line
-    spans. Read a heading's section with read_context_file(filename, section=...).
-
-    Returns:
-        str: The files with their outlines, or an error message.
+    Lists the read-only files (e.g. project instructions) and the context files (plans and notes),
+    with their headings and line spans.
     """
     try:
         folder = _get_context_folder()
@@ -252,21 +294,21 @@ def list_context_files() -> str:
         return f"Error: Listing context files failed:\n{e}\n{traceback.format_exc()}"
 
 @mcp.tool()
-def read_context_file(filename: str, section: str | None = None, start_line: int | None = None, end_line: int | None = None) -> str:
+def read_context_file(filename: str = "", section: str = "", start_line: int | None = None, end_line: int | None = None) -> str:
     """
-    Reads a Markdown file in the context folder, or a read-only file, shown between content markers.
-    To read only part of it, give a heading as section, or start_line and end_line.
+    Reads a context file (plans and notes) or a read-only file (e.g. project instructions).
+    Without filename, reads all of them: do this at the start of a session.
 
     Args:
-        filename (str): The name of the file (e.g., 'example.md').
-        section (str, optional): A heading listed by list_context_files (e.g., 'Next steps').
-        start_line (int, optional): The first line to read. Defaults to 1.
-        end_line (int, optional): The last line to read. Defaults to the end of the file.
-
-    Returns:
-        str: The lines read, or an error message.
+        filename: e.g. 'plan.md'. Defaults to all files.
+        section: A heading to read, as listed by list_context_files.
+        start_line: The first line to read.
+        end_line: The last line to read.
     """
     try:
+        if not filename:
+            return _read_all()
+
         read_only = READ_ONLY_BY_NAME.get(filename.lower())
         if read_only:
             return _content_response(read_only.name, _read_text(read_only), True, start_line, end_line, section)
@@ -285,18 +327,15 @@ def read_context_file(filename: str, section: str | None = None, start_line: int
         return f"Error: Reading context file failed:\n{e}\n{traceback.format_exc()}"
 
 @mcp.tool()
-def write_context_file(filename: str, content: str) -> str:
+def write_context_file(filename: str, content: str, append: bool = False) -> str:
     """
-    Creates a new Markdown file or overwrites an existing one in the context folder.
-    Read-only files cannot be written. The response shows the file's new headings with their
-    line spans, and warns if headings of the old content are gone.
+    Writes a Markdown file in the context folder, or adds content to its end. Read-only files cannot
+    be changed. The response shows the file's headings and warns if headings were removed.
 
     Args:
-        filename (str): The name of the file to write to (e.g., 'example.md').
-        content (str): The content to write.
-
-    Returns:
-        str: A success message with the new outline, or an error message.
+        filename: e.g. 'plan.md'.
+        content: The content to write.
+        append: Add content to the end of the file instead of replacing it. Defaults to False.
     """
     try:
         _check_writable(filename)
@@ -307,114 +346,23 @@ def write_context_file(filename: str, content: str) -> str:
         folder.mkdir(parents=True, exist_ok=True)
 
         after = _normalize_newlines(content)
+        if append and before:
+            after = f"{before}\n{after}"  # The appended content starts on a new line
         _write_text(file_path, after)
 
-        return _write_response("wrote to", filename, folder, before, after)
+        return _write_response("appended to" if append else "wrote to", filename, before, after)
     except ValueError as e:
         return f"Error: {e}"
     except Exception as e:
         return f"Error: Writing to context file failed:\n{e}\n{traceback.format_exc()}"
 
 @mcp.tool()
-def append_to_context_file(filename: str, content: str) -> str:
-    """
-    Appends content to a specific Markdown file in the context folder.
-    If the file doesn't exist, it will be created. Read-only files cannot be appended to.
-
-    Args:
-        filename (str): The name of the file to append to (e.g., 'example.md').
-        content (str): The content to append.
-
-    Returns:
-        str: A success message with the file's outline, or an error message.
-    """
-    try:
-        _check_writable(filename)
-        folder, file_path = _get_context_file(filename)
-        before = _read_text(file_path) if file_path.is_file() else None
-
-        # Ensure the directory exists
-        folder.mkdir(parents=True, exist_ok=True)
-
-        # The appended content starts on a new line if the file is not empty
-        after = f"{before}\n{_normalize_newlines(content)}" if before else _normalize_newlines(content)
-        _write_text(file_path, after)
-
-        return _write_response("appended to", filename, folder, before, after)
-    except ValueError as e:
-        return f"Error: {e}"
-    except Exception as e:
-        return f"Error: Appending to context file failed:\n{e}\n{traceback.format_exc()}"
-
-@mcp.tool()
-def read_all_context_files() -> str:
-    """
-    Call this at the start of a session: it returns the project instructions and other
-    read-only files maintained by the user, followed by all Markdown files in the context
-    folder with the existing plans and records. Files that do not fit are shown as their
-    headings with line spans: read the sections you need with read_context_file.
-
-    Returns:
-        str: The concatenated content of all files, or an error message.
-    """
-    try:
-        folder = _get_context_folder()
-        files = _all_files(folder)
-        if not files:
-            if not folder.exists():
-                return f"Error: Folder does not exist at {folder.as_posix()}"
-            return "No Markdown files found in the context folder."
-
-        # Read-only files come first and are never left out. Context files are then included whole
-        # while they fit in MAX_OUTPUT_CHARS, then as outlines, leaving room for the note.
-        budget = MAX_OUTPUT_CHARS - min(1000, MAX_OUTPUT_CHARS // 4)
-        output, outlined, skipped, used = [], [], [], 0
-        read_only_left = len(READ_ONLY_BY_NAME)
-        for name, path, read_only in files:
-            text = _read_text(path)
-            if read_only:
-                # A read-only file that does not fit is shown as its first part, with how to read the rest,
-                # sharing the rest of the budget equally with the read-only files after it
-                share = (budget - used) // read_only_left - 200
-                block = _file_block(f"{name} (read-only)", text if len(text) <= share else _content_response(name, text, True, max_chars=share))
-                read_only_left -= 1
-            else:
-                block = _file_block(name, text)
-                if used + len(block) > budget:
-                    outline = _file_outline(text)
-                    block = _file_block(f"{name} (outline only, {count_lines(text)} lines)", "\n".join(outline or ["(no headings)"]))
-                    if used + len(block) > budget:
-                        skipped.append(name)
-                        continue
-                    outlined.append(name)
-            output.append(block)
-            used += len(block) + 1
-
-        notes = []
-        if outlined:
-            notes.append(f"{len(outlined)} context files are too long to include and are shown as their headings with line spans: {', '.join(outlined)}."
-                         " Read the sections you need with read_context_file(filename, section=...).")
-        if skipped:
-            notes.append(f"{len(skipped)} context files are not shown at all: {', '.join(skipped)}. Read them with read_context_file.")
-        if notes:
-            output.insert(0, f"Output limited: the output is limited to {MAX_OUTPUT_CHARS} characters. {' '.join(notes)}\n")
-
-        return "\n".join(output)
-    except ValueError as e:
-        return f"Error: {e}"
-    except Exception as e:
-        return f"Error: Reading all context files failed:\n{e}\n{traceback.format_exc()}"
-
-@mcp.tool()
 def remove_context_file(filename: str) -> str:
     """
-    Removes a specific Markdown file from the context folder. Read-only files cannot be removed.
+    Removes a context file. Read-only files cannot be removed.
 
     Args:
-        filename (str): The name of the file to remove (e.g., 'example.md').
-
-    Returns:
-        str: A success message or an error message.
+        filename: e.g. 'plan.md'.
     """
     try:
         _check_writable(filename)
@@ -426,11 +374,13 @@ def remove_context_file(filename: str) -> str:
             return f"Error: '{filename}' is not a file."
 
         file_path.unlink()
-        return f"Successfully removed context file: {filename} (from {folder.as_posix()})"
+        return f"Successfully removed context file: {filename}"
     except ValueError as e:
         return f"Error: {e}"
     except Exception as e:
         return f"Error: Removing context file failed:\n{e}\n{traceback.format_exc()}"
+
+compact_tool_schemas(mcp)
 
 if __name__ == "__main__":
     mcp.run()

@@ -9,6 +9,7 @@ from mcp_common import (
     IGNORED_DIRS,
     MAX_OUTPUT_CHARS,
     access_denied_message,
+    compact_tool_schemas,
     is_ignored,
     is_path_allowed,
     load_gitignore_patterns,
@@ -163,7 +164,7 @@ def _folder_suggestions(scope_dir: Path, files: list[Path]) -> str:
     instructions.append("See all sections of one file with get_outline(path='<file path>').")
     return " ".join(instructions)
 
-def _resolve_target(path: str | None, gitignore_patterns: list[str]) -> tuple[Path, str | None]:
+def _resolve_target(path: str, gitignore_patterns: list[str]) -> tuple[Path, str | None]:
     """
     Resolves the folder or file to outline. Relative paths are resolved against ALLOWED_DIR.
     Returns the path and an error message, which is None if the path can be outlined.
@@ -259,21 +260,14 @@ def _outline_file(path: Path, gitignore_patterns: list[str]) -> str:
 # --- Public MCP Tools ---
 
 @mcp.tool()
-def get_outline(path: str | None = None) -> str:
+def get_outline(path: str = "") -> str:
     """
-    Returns an outline with line spans. For a folder: every file with its line count, and the classes,
-    functions and Markdown headings in it. For a file: all its sections with their summaries and, in
-    Python, the project's own functions each function calls.
-    Start here to find the code you need, then read only that part with
-    read_file_with_metadata(path, section=...) or with start_line and end_line.
-    Large folders are shown with less detail: follow the 'Output limited' message to see more.
+    Returns an outline with line spans: for a folder, its files with their classes, functions and
+    headings; for a file, all its sections with summaries. Start here, then read only what you need
+    with read_file_with_metadata(path, section=...). Large folders are shown with less detail.
 
     Args:
-        path (str, optional): A folder or file, relative to the allowed directory (e.g. 'src' or
-            'src/app.py'). Defaults to the whole allowed directory.
-
-    Returns:
-        str: The outline as plain text, or an error message.
+        path: A folder or file, e.g. 'src' or 'src/app.py'. Defaults to the whole project.
     """
     if not ALLOWED_DIR.exists():
         return f"Error: Allowed directory {ALLOWED_DIR.as_posix()} does not exist."
@@ -288,6 +282,8 @@ def get_outline(path: str | None = None) -> str:
         return _outline_file(target, gitignore_patterns)
     except Exception as e:
         return f"Error: Generating outline failed:\n{e}\n{traceback.format_exc()}"
+
+compact_tool_schemas(mcp)
 
 if __name__ == "__main__":
     mcp.run()

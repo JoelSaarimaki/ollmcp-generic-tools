@@ -303,3 +303,20 @@ def get_repo_root(directory: Path) -> Path | None:
     if result.returncode != 0:
         return None
     return Path(result.stdout.strip()).resolve()
+
+def compact_tool_schemas(server) -> None:
+    """
+    Shortens the parameter schemas of a server's tools, as they are sent to the model with every request:
+    removes the titles generated from the parameter names, and turns 'anyOf: [type, null]' of optional
+    parameters into the type. Arguments are still validated from the function signatures.
+    Uses the server's tool manager, as MCPServer has no option for this.
+    """
+    for tool in server._tool_manager.list_tools():
+        schema = tool.parameters
+        schema.pop("title", None)
+        for prop in schema.get("properties", {}).values():
+            prop.pop("title", None)
+            types = [option for option in prop.get("anyOf", []) if option.get("type") != "null"]
+            if "anyOf" in prop and len(types) == 1:
+                del prop["anyOf"]
+                prop.update(types[0])

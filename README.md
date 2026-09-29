@@ -145,10 +145,8 @@ This tool manages a context folder containing Markdown files, allowing for listi
 It also gives the AI your project instructions: list them in `read_only_files`, and they are listed and read first, marked `(read-only)`, while writing, appending to or removing them is refused. A context file with the same name as a read-only file is hidden and cannot be created, so it cannot take the instructions' place.
 
 - **list_context_files** Lists the read-only files and all Markdown files in the context folder, with their line counts and headings with line spans.
-- **read_context_file** Reads a Markdown file in the context folder, or a read-only file: the whole file, the section of one heading (`section`), or a range of lines (`start_line`, `end_line`). Long files are read in parts.
-- **write_context_file** Creates a new Markdown file or overwrites an existing one in the context folder. The response shows the new headings with their line spans, and warns if headings of the old content are gone.
-- **append_to_context_file** Appends content to a specific Markdown file in the context folder, and shows its headings with their line spans.
-- **read_all_context_files** Reads the read-only files and all Markdown files in the context folder at once. Context files that do not fit are shown as their headings with line spans, to be read by section with `read_context_file`. Meant to be called at the start of a session.
+- **read_context_file** Reads a Markdown file in the context folder, or a read-only file: the whole file, the section of one heading (`section`), or a range of lines (`start_line`, `end_line`). Long files are read in parts. Without `filename`, it reads the read-only files and all context files at once, which is meant for the start of a session; context files that do not fit are then shown as their headings with line spans, to be read by section.
+- **write_context_file** Creates a new Markdown file or overwrites an existing one in the context folder, or adds to its end with `append=True`. The response shows the new headings with their line spans, and warns if headings of the old content are gone.
 - **remove_context_file** Removes a specific Markdown file from the context folder.
 
 Read-only only applies to `context-record-mcp`. If the instructions file is inside the project, `safe-filesystem-mcp` can still change it: add its folder (e.g. `_instructions`) to `forbidden_paths` to prevent that. `context-record-mcp` does not use `forbidden_paths`, so it can still read the file.
@@ -178,8 +176,7 @@ The AI then reads a section by its name, e.g. `read_file_with_metadata(path, sec
 
 Provides tools to inspect git history and differences for files within a repository.
 
-- **get_file_diff** Retrieves the differences for a specified file.
-- **get_all_changes_diff** Retrieves the differences for all changed files at once, with a list of changed and new untracked files. Useful for reviewing all changes before committing.
+- **get_diff** Retrieves the differences of one file (`path` of a file), or of all changed files at once, optionally limited to a folder, with lists of the changed and new untracked files. Useful for reviewing all changes before committing.
 - **get_file_history** Retrieves the commit history and associated diffs for a specified file.
 - **get_git_status** Returns the results of `git status`. Also tells whether a folder is in a git repository: if not, the error is `not_a_repository`.
 
@@ -193,8 +190,7 @@ Provides safe and robust file system operations, including metadata retrieval an
 - **read_file_with_metadata** Reads a text file and returns its exact content along with metadata (sha256, line count, encoding, etc.). Can read a class, function or Markdown heading by its name (`section`, e.g. `App.run` or `Install`) or a range of lines (`start_line`, `end_line`) with optional line numbers, and reads long files in parts of up to 1000 lines.
 - **read_image** Reads a PNG, JPEG, GIF or WebP image (up to 10 MB) and returns it as an image the AI can see, along with its metadata. Requires a vision-capable model; with other models, ollmcp skips the image and shows a warning.
 - **list_directory** Lists all files and directories within the specified path.
-- **create_directory** Creates a new directory at the specified path.
-- **move_file** Moves or renames a file or directory.
+- **move_file** Moves or renames a file or directory, creating missing destination folders. There is no separate tool for creating folders: `create_file` and `move_file` create the folders they need.
 - **delete_file** Deletes a file or a directory.
 - **get_config** Returns the configuration shared by all servers (allowed directory, forbidden and protected paths, output limit) and what each server sees: the files the outline and searches skip, the git repository, the command registry and the context files. Helps the AI find out why a file is missing or a path is denied.
 
@@ -292,10 +288,10 @@ Local models have small context windows, so every tool response is limited to `m
 | `get_outline` | `max_output_chars`: the detail is reduced step by step instead of cutting the outline; files over 1 MB are not outlined; folders with over 1000 files are listed by subfolder only | Suggested subfolders to outline with `path`, with their file counts, or one file with `path` |
 | `search_text_in_files` | 100 matches or `max_output_chars`; lines over 300 characters are shortened | A suggested `path` with the most matches, `file_pattern`, fewer `context_lines` |
 | `search_files_by_pattern` | 100 matches | A more specific pattern |
-| `get_file_diff`, `get_file_history`, `get_git_status` | `max_output_chars` | Read the file instead, a smaller `limit`, or a `path` |
-| `get_all_changes_diff` | `max_output_chars`; up to 200 changed and 200 untracked files are listed | `get_file_diff` for the files listed in `changed_files`, or a `path` |
+| `get_diff` of a file, `get_file_history`, `get_git_status` | `max_output_chars` | Read the file instead, a smaller `limit`, or a `path` |
+| `get_diff` of all changes | `max_output_chars`; up to 200 changed and 200 untracked files are listed | `get_diff` with the `path` of a file listed in `changed_files`, or of a folder |
 | `run_predefined_command` | `max_output_chars`, split between stdout and stderr; the middle of long output is cut, as errors are usually at the end | A narrower command, such as tests for a single file |
-| `read_all_context_files` | `max_output_chars`; read-only files always come first, then context files that do not fit are shown as their headings with line spans, or left out | `read_context_file` with `section` or `start_line` for the listed files |
+| `read_context_file` without `filename` | `max_output_chars`; read-only files always come first, then context files that do not fit are shown as their headings with line spans, or left out | `read_context_file` with `section` or `start_line` for the listed files |
 | `read_context_file` | `max_output_chars` per read | Next part with `start_line`; keep context and read-only files short |
 | `list_context_files` | `max_output_chars`: only top-level headings, or only the file names, are shown | `read_context_file` |
 | `web_search` | `max_output_chars`, shared equally by the results | `web_fetch` for a whole page |

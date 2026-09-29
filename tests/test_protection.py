@@ -97,12 +97,12 @@ def test_protected_and_forbidden_files_are_left_out_of_git_output(protected_proj
             f.write("changed\n")
     protected_project.configure(forbidden_paths=["secret"], max_output_chars=40000)  # a valid change to the config file
     git = protected_project.load("git")
-    changes = json.loads(git.get_all_changes_diff("head"))
+    changes = json.loads(git.get_diff("head"))
     assert changes["changed_files"] == ["M\tsrc/app.py"]
     assert SECRET not in changes["diff"]
     status = json.loads(git.get_git_status())["stdout"]
     assert "src/app.py" in status and ".mcp.json" not in status.lower() and "secret" not in status and "tools-config" not in status
-    assert denied(git.get_file_diff(".mcp.json", "head"))
+    assert denied(git.get_diff("head", ".mcp.json"))
     assert denied(git.get_file_history("secret/keys.txt"))
 
 # --- Context ---

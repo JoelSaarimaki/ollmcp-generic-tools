@@ -15,16 +15,16 @@ Most design decisions follow from the target model being small and local:
 
 ## Current state
 
-Seven servers, 27 tools. All servers share `mcp-servers/mcp_common.py` and read one config file; the map, filesystem and context servers also use the outline parsers in `mcp-servers/mcp_outline.py`.
+Seven servers, 23 tools. All servers share `mcp-servers/mcp_common.py` and read one config file; the map, filesystem and context servers also use the outline parsers in `mcp-servers/mcp_outline.py`.
 
 | Server | Tools |
 |---|---|
-| `safe-filesystem-mcp` | `read_file_with_metadata`, `edit_file`, `write_file`, `create_file`, `read_image`, `list_directory`, `create_directory`, `move_file`, `delete_file`, `get_config` |
+| `safe-filesystem-mcp` | `read_file_with_metadata`, `edit_file`, `write_file`, `create_file`, `read_image`, `list_directory`, `move_file`, `delete_file`, `get_config` |
 | `generate-map-mcp` | `get_outline` |
 | `search-tool-mcp` | `search_text_in_files`, `search_files_by_pattern` |
-| `git-diff-mcp` | `get_file_diff`, `get_all_changes_diff`, `get_file_history`, `get_git_status` |
+| `git-diff-mcp` | `get_diff`, `get_file_history`, `get_git_status` |
 | `commands-mcp` | `list_available_commands`, `run_predefined_command` |
-| `context-record-mcp` | `list_context_files`, `read_context_file`, `write_context_file`, `append_to_context_file`, `read_all_context_files`, `remove_context_file` |
+| `context-record-mcp` | `list_context_files`, `read_context_file`, `write_context_file`, `remove_context_file` |
 | `web-search-mcp` | `web_search`, `web_fetch` |
 
 Configuration:
@@ -70,7 +70,7 @@ Configuration:
 - **Reduce detail instead of cutting.** A folder outline that does not fit drops, in order: summaries, sections below the top level, all sections (files with section counts remain), and finally files in subfolders (subfolders with file counts remain). Every level still covers the whole folder, and the response names the level and suggests subfolders. Folders with more than 1000 files go straight to the last level without reading the files. A single file's outline drops calls, then summaries, then nested sections, and is only cut short as a last resort.
 - **Full relative paths instead of a tree with connectors**, so that a path can be copied into the other tools as-is.
 - **Reading by name** (`section`), because small models copy line numbers wrongly and line numbers go stale after an edit, while a name resolves against the current file. A name matches the full name (`App.run`, `Guide > Install`) or the name alone, first exactly and then ignoring letter case; an outline line copied as the name (`18-60 class App`, `## Install`, `run()`) also works. Several matches return the candidates with their spans instead of guessing.
-- **Outline after every write** to a Python, JS/TS or Markdown file (`edit_file`, `write_file`, `create_file`, `write_context_file`, `append_to_context_file`), with the sections removed and added compared to the outline before the write. An explicit "no longer in the file" warning is more reliable than expecting a small model to notice a missing entry. A Python file that parsed before but not after the write is also warned about, which catches broken indentation early, and so is a new JS/TS syntax error (only a new one, so that syntax the grammar does not know is not reported after every write). Blocks of top-level statements are not compared, as their names change with every new constant.
+- **Outline after every write** to a Python, JS/TS or Markdown file (`edit_file`, `write_file`, `create_file`, `write_context_file`), with the sections removed and added compared to the outline before the write. An explicit "no longer in the file" warning is more reliable than expecting a small model to notice a missing entry. A Python file that parsed before but not after the write is also warned about, which catches broken indentation early, and so is a new JS/TS syntax error (only a new one, so that syntax the grammar does not know is not reported after every write). Blocks of top-level statements are not compared, as their names change with every new constant.
 - **Spans**: Python from the first decorator to `end_lineno`, top-level statements between definitions grouped as blocks (`docstring, imports, assignments: A, B`); JS/TS from the JSDoc (and decorators) to the end of the declaration's syntax tree node, overloads and getter/setter pairs spanning all their declarations; Markdown from the heading to the line before the next heading of the same or a higher level, without trailing blank lines, skipping code blocks and front matter.
 - The parsers are in their own module, `mcp_outline.py`, which reads no config and no files.
 - **JS/TS uses tree-sitter** (`tree-sitter`, `tree-sitter-javascript`, `tree-sitter-typescript`), which replaced a regex parser in 2026-09. The regex parser needed a special case for every construct (type arguments, object return types, apostrophes in JSX text, regex literals, statements continued on the next line) and kept producing wrong spans, which matter now that section reads and the outline after writes depend on them. `.ts` files use the TypeScript grammar, `.tsx` its TSX variant and other files the JavaScript grammar, which includes JSX. tree-sitter also outlines files with syntax errors and reports the first one (`Outline.syntax_error`).
@@ -95,12 +95,13 @@ Configuration:
 
 ### Tool count
 
-Every tool definition is sent with every request, so tools that duplicate others were removed: `get_file_stats` (covered by the read and the hash check), `is_git_repository` (`get_git_status` returns `not_a_repository`), `instructions-mcp` (now `read_only_files` in `context-record-mcp`), `generate_codebase_map` and `generate_file_map` (now `get_outline`), the four per-server config tools (now `get_config`) and `read_image_as_base64` (replaced by `read_image`).
+Every tool definition is sent with every request, so tools that duplicate others were removed: `get_file_stats` (covered by the read and the hash check), `is_git_repository` (`get_git_status` returns `not_a_repository`), `instructions-mcp` (now `read_only_files` in `context-record-mcp`), `generate_codebase_map` and `generate_file_map` (now `get_outline`), `get_file_diff` and `get_all_changes_diff` (now `get_diff`), `read_all_context_files` (now `read_context_file` without a filename), `append_to_context_file` (now `write_context_file(append=True)`), `create_directory` (`create_file` and `move_file` create missing folders), the four per-server config tools (now `get_config`) and `read_image_as_base64` (replaced by `read_image`).
 
 ### Code conventions
 
 - Files start with `# --- file.py ---`, then stdlib imports, then `from mcp.server.mcpserver import ...`, `from mcp_common import (...)` and, if needed, `from mcp_outline import (...)`. Sections: `Constants & Config` (`mcp = MCPServer("<Name>-Server")` first), `Internal Helpers`, `Public MCP Tools`.
-- Helpers are `_`-prefixed with short summary docstrings; only `@mcp.tool()` functions get full `Args:`/`Returns:` sections, because only those are read by the AI. Public names in `mcp_common.py` have no prefix.
+- Helpers are `_`-prefixed with short summary docstrings. Public names in `mcp_common.py` have no prefix.
+- **Tool docstrings are sent to the model with every request**, so they are short: what the tool does and what the model must get right, then `Args:` with one short line per parameter (no types, which are in the schema) and `Returns:` only if the response is not obvious. Guidance that errors give when it is needed (e.g. read again after `hash_mismatch`) is not repeated in descriptions. Optional strings default to `""` instead of `None`, and every server calls `compact_tool_schemas(mcp)` from `mcp_common.py` before `mcp.run()`, which removes the generated titles and `anyOf: [type, null]` from the schemas. `test_tool_definitions_stay_small` fails if the definitions grow past 10 500 characters.
 - Shared code lives in `mcp_common.py`, and the parsers and outline functions in `mcp_outline.py`; servers never re-implement the path checks, config loading, walking or parsing.
 - Built-in generics and `X | None`, double quotes, no bare `except:`.
 - Text tools return `Error: <Action> failed:\n{e}\n{traceback}`; JSON tools always include `"success"` and use `indent=2, ensure_ascii=False`. Error codes are snake_case: a specific condition (`file_not_found`, `hash_mismatch`) or `<action>_error` for an unexpected exception (`read_error`, `search_error`).
@@ -110,7 +111,7 @@ Every tool definition is sent with every request, so tools that duplicate others
 
 ## How changes have been verified
 
-The automated test suite in `tests/` (pytest, 277 tests, about a minute) covers every server. Run it from the repository root:
+The automated test suite in `tests/` (pytest, 281 tests, about a minute) covers every server. Run it from the repository root:
 
 ```bash
 python -m pip install -r requirements-dev.txt
@@ -135,14 +136,9 @@ Add tests for every new tool or fixed bug.
 
 ## What should still be done
 
-In recommended order. Item 1 was found by measuring the running tools on 2026-09-29.
+In recommended order.
 
-1. **Reduce the tool definitions.** They cost about 5 400 tokens (21 800 characters) with every request, two thirds of an 8k context. The largest are `edit_file` (2 300 characters), `read_file_with_metadata` (2 100), `search_text_in_files` (1 700) and `write_file` (1 400). Tighten the longest descriptions and merge tools (27 → 23):
-   - `read_context_file` + `read_all_context_files` → `read_context_file(filename=None)`
-   - `write_context_file` + `append_to_context_file` → `write_context_file(..., append=False)`
-   - `get_file_diff` + `get_all_changes_diff` → `get_diff(mode, path=None)` for a file or a folder
-   - remove `create_directory` (`create_file` creates missing folders)
-   - keep `list_directory` (sizes and dates add information).
+1. **Test with a local model on real tasks** (fix a bug, add a feature, rename something), compared with other tools such as the MCP reference servers. The test suite shows that the tools behave as designed, not that a small model finishes tasks better with them.
 2. **Add a repo-wide commit log**, e.g. `get_recent_commits(limit, path=None)` and a way to show one commit. Git history is currently only available per file.
 3. **Allow a working folder per command**: an optional `cwd` key in the command registry, relative to `allowed_dir`, for monorepos.
 4. **Add `find_definition(name)`** using the parsers in `mcp_outline.py`, returning the file and line span where a function or class is defined, so that it can be read with `section`. Regex search finds every use of a name, and a section read needs the file to be known.

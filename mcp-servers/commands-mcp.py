@@ -12,7 +12,8 @@ from mcp.server.mcpserver import MCPServer
 from mcp_common import (
     ALLOWED_DIR,
     COMMANDS_CONFIG,
-    MAX_OUTPUT_CHARS
+    MAX_OUTPUT_CHARS,
+    compact_tool_schemas
 )
 
 # --- Constants & Config ---
@@ -218,11 +219,7 @@ def _execute_command_logic(command_key: str, argument: str | None = None) -> dic
 @mcp.tool()
 def list_available_commands() -> str:
     """
-    Returns a list of all allowed console commands and their descriptions.
-    Use this tool to discover what commands can be run with 'run_predefined_command'.
-
-    Returns:
-        str: A JSON-formatted string containing the list of commands or an error message.
+    Lists the commands run_predefined_command can run, with what each one is for.
     """
     try:
         commands = _list_commands_logic()
@@ -236,21 +233,14 @@ def list_available_commands() -> str:
         }, indent=2, ensure_ascii=False)
 
 @mcp.tool()
-def run_predefined_command(command_name: str, argument: str | None = None) -> str:
+def run_predefined_command(command_name: str, argument: str = "") -> str:
     """
-    Executes a specific console command from the allowed registry, in the project directory.
-    Use 'list_available_commands' first to see which commands exist.
-    The command succeeds only if it exits with code 0. Long output is cut from the middle:
-    then output_limited is set and tells how to see more.
+    Runs a command listed by list_available_commands, in the project folder. It succeeds only with
+    exit code 0. Long output is cut from the middle.
 
     Args:
-        command_name (str): The name of the command (from list_available_commands).
-        argument (str, optional): An optional string argument required by some commands.
-            It is passed to the command as a single argument and must not start with '-'.
-
-    Returns:
-        str: A JSON-formatted string containing the success status, exit code, stdout and stderr,
-            or an error message (e.g., timeout or invalid_argument).
+        command_name: The command's name.
+        argument: The argument, for commands that take one. It must not start with '-'.
     """
     try:
         result = _execute_command_logic(command_name, argument)
@@ -262,6 +252,8 @@ def run_predefined_command(command_name: str, argument: str | None = None) -> st
             "message": str(e),
             "traceback": traceback.format_exc()
         }, indent=2, ensure_ascii=False)
+
+compact_tool_schemas(mcp)
 
 if __name__ == "__main__":
     mcp.run()

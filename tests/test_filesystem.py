@@ -319,3 +319,9 @@ def test_edit_warns_when_a_ts_file_gets_a_syntax_error(project):
     fs = project.load("filesystem")
     response = fs.edit_file("app.ts", "  return 1;\n}", "  return 1;", sha_of(fs.read_file_with_metadata("app.ts")))
     assert "Warning: JS/TS syntax error near line" in response
+
+def test_move_creates_missing_destination_folders(project):
+    project.write("a.txt", "x")
+    fs = project.load("filesystem")
+    assert json.loads(fs.move_file("a.txt", "new/deep/a.txt"))["success"]
+    assert (project.root / "new/deep/a.txt").read_text() == "x"

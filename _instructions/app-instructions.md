@@ -3,7 +3,7 @@
 ## Tools
 
 - **codebase-mapper.get_outline**: Use this tool to get an outline of the codebase (files, classes, functions and headings with their line spans) before you start working on the project. Then read only the sections you need with **filesystem.read_file_with_metadata** and its `section`, `start_line` and `end_line` arguments.
-- **context.read_all_context_files**: Use this tool to understand the already existing plans and records of the project.
+- **context.read_context_file**: Call it without a filename at the start of a session to read the project instructions and the already existing plans and records of the project.
 - **filesystem.get_config**: Use this tool when a tool does not find a file or denies a path, to see which files the tools can access.
 
 ## Documents in the root folder

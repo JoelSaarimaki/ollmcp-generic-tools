@@ -15,24 +15,26 @@ from conftest import REPO_DIR, SERVER_FILES, SERVERS_DIR
 
 EXPECTED_TOOLS = {
     "filesystem": ["write_file", "edit_file", "create_file", "read_file_with_metadata", "read_image",
-                   "list_directory", "create_directory", "move_file", "delete_file", "get_config"],
+                   "list_directory", "move_file", "delete_file", "get_config"],
     "map": ["get_outline"],
     "search": ["search_text_in_files", "search_files_by_pattern"],
-    "git": ["get_file_diff", "get_all_changes_diff", "get_file_history", "get_git_status"],
+    "git": ["get_diff", "get_file_history", "get_git_status"],
     "commands": ["list_available_commands", "run_predefined_command"],
-    "context": ["list_context_files", "read_context_file", "write_context_file", "append_to_context_file",
-                "read_all_context_files", "remove_context_file"],
+    "context": ["list_context_files", "read_context_file", "write_context_file", "remove_context_file"],
     "web": ["web_search", "web_fetch"],
 }
 
-def list_tools(command: str, args: list[str], env: dict[str, str], cwd) -> list[str]:
+def list_tool_definitions(command: str, args: list[str], env: dict[str, str], cwd) -> list:
     async def run():
         params = StdioServerParameters(command=command, args=args, env={**os.environ, **env}, cwd=str(cwd))
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                return [tool.name for tool in (await session.list_tools()).tools]
+                return (await session.list_tools()).tools
     return asyncio.run(run())
+
+def list_tools(command: str, args: list[str], env: dict[str, str], cwd) -> list[str]:
+    return [tool.name for tool in list_tool_definitions(command, args, env, cwd)]
 
 @pytest.mark.parametrize("server", SERVER_FILES)
 def test_server_starts_over_stdio(project, server):
@@ -49,3 +51,15 @@ def test_repository_configuration_starts_every_server():
         command = sys.executable if cfg["command"] == "python" else cfg["command"]
         started[name] = list_tools(command, cfg["args"], cfg["env"], REPO_DIR)
     assert sum(len(tools) for tools in started.values()) == sum(len(tools) for tools in EXPECTED_TOOLS.values())
+
+# Tool definitions are sent to the model with every request, so they must stay small
+MAX_TOOL_DEFINITION_CHARS = 10500
+
+def test_tool_definitions_stay_small():
+    servers = json.loads((REPO_DIR / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]
+    tools = [tool for cfg in servers.values()
+             for tool in list_tool_definitions(sys.executable, cfg["args"], cfg["env"], REPO_DIR)]
+    schemas = [json.dumps(tool.input_schema) for tool in tools]
+    assert not any('"title"' in schema or '"anyOf"' in schema for schema in schemas)
+    total = sum(len(tool.description or "") for tool in tools) + sum(len(schema) for schema in schemas)
+    assert total <= MAX_TOOL_DEFINITION_CHARS, f"The tool definitions take {total} characters"

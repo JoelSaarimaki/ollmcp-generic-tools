@@ -10,6 +10,7 @@ from mcp_common import (
     IGNORED_DIRS,
     MAX_OUTPUT_CHARS,
     access_denied_message,
+    compact_tool_schemas,
     display_path,
     is_ignored,
     is_path_allowed,
@@ -29,7 +30,7 @@ BINARY_CHECK_BYTES = 8192  # Files with a null byte in this many first bytes are
 
 # --- Internal Helpers ---
 
-def _resolve_scope(path: str | None, gitignore_patterns: list[str]) -> tuple[Path, str | None]:
+def _resolve_scope(path: str, gitignore_patterns: list[str]) -> tuple[Path, str | None]:
     """
     Resolves the folder or file a search is limited to. Relative paths are resolved against ALLOWED_DIR.
     Returns the path and an error message, which is None if the path can be searched.
@@ -183,27 +184,20 @@ def _format_list(items: list[str], location: str) -> str:
 # --- Public MCP Tools ---
 
 @mcp.tool()
-def search_text_in_files(query: str, case_sensitive: bool = False, path: str | None = None, file_pattern: str | None = None, context_lines: int = 0) -> str:
+def search_text_in_files(query: str, case_sensitive: bool = False, path: str = "", file_pattern: str = "", context_lines: int = 0) -> str:
     """
-    Search for text or regex patterns from code files in the codebase.
-    This tool performs a recursive search through all text files in the project, skipping
-    binary files, ignored folders (such as node_modules) and files matched by .gitignore.
-    Very long lines are shortened around the match.
+    Searches the project's text files for a regex, skipping ignored folders and .gitignored files.
+    A query that is not a valid regex, such as 'foo(', is searched for as literal text.
 
     Args:
-        query (str): The text or regex pattern to search for. If it is not a valid regex
-            (e.g. 'foo(' or 'a[0'), it is searched for as literal text.
-        case_sensitive (bool): Whether the search should be case-sensitive. The default is False
-        path (str, optional): A folder or file to limit the search to, relative to the allowed
-            directory (e.g., 'src/components'). Defaults to the whole allowed directory.
-        file_pattern (str, optional): A glob pattern the file path must end with (e.g., '*.py',
-            '*.test.ts' or 'tests/*.py'). Defaults to all files.
-        context_lines (int): The number of lines to show before and after each match, up to 5.
-            Defaults to 0.
+        query: The regex or text.
+        case_sensitive: Match upper and lower case exactly. Defaults to False.
+        path: A folder or file to search in. Defaults to the whole project.
+        file_pattern: A glob the file path must match, e.g. '*.py' or 'tests/*.ts'.
+        context_lines: Lines to show around each match, up to 5. Defaults to 0.
 
     Returns:
-        str: The matching lines as 'path:line: text' (context lines as 'path-line- text'),
-            grouped by file, with the total number of matches and files, or an error message.
+        Matches as 'path:line: text', context lines as 'path-line- text'.
     """
     try:
         flags = 0 if case_sensitive else re.IGNORECASE
@@ -278,18 +272,12 @@ def search_text_in_files(query: str, case_sensitive: bool = False, path: str | N
 @mcp.tool()
 def search_files_by_pattern(pattern: str, recursive: bool = False) -> str:
     """
-    Searches for files and directories that match a glob-style pattern.
-    Ignored folders (such as node_modules) and files matched by .gitignore are skipped.
-    Directories are listed with a trailing '/'.
+    Finds files and folders by a glob pattern relative to the project, e.g. '*.ts', 'src/utils/*.py'
+    or 'src/**/*.test.ts' ('**' matches any number of folders). Folders end with '/'.
 
     Args:
-        pattern (str): A glob pattern relative to the allowed directory (e.g., `*.ts`, `src/utils/*.py`,
-            `README*` or `src/**/*.test.ts`). `**` matches any number of folders.
-        recursive (bool): If True, the pattern is matched in all subdirectories too (equivalent to rglob).
-            Defaults to False.
-
-    Returns:
-        str: A string list of matching file paths or an error message.
+        pattern: The glob pattern.
+        recursive: Also match in all subfolders, e.g. '*.py' anywhere. Defaults to False.
     """
     try:
         glob = pattern.strip().replace("\\", "/").removeprefix("./")
@@ -317,6 +305,8 @@ def search_files_by_pattern(pattern: str, recursive: bool = False) -> str:
         return _format_list(matches, ALLOWED_DIR.as_posix())
     except Exception as e:
         return f"Error: Searching files by pattern failed:\n{e}\n{traceback.format_exc()}"
+
+compact_tool_schemas(mcp)
 
 if __name__ == "__main__":
     mcp.run()

@@ -24,6 +24,7 @@ from mcp_common import (
     PROTECTED_FILE_NAMES,
     READ_ONLY_FILES,
     access_denied_message,
+    compact_tool_schemas,
     contains_forbidden,
     display_path,
     get_repo_root,
@@ -485,27 +486,16 @@ def _detect_neighbor_line_ending(directory: Path) -> tuple[str, str]:
 @mcp.tool()
 def write_file(path: str, content: str, expected_sha256: str) -> str:
     """
-    Safely updates an existing file by replacing its whole content.
-    It checks if the file's current SHA-256 hash matches the expected_sha256
-    to ensure no one else has modified it since you last read it.
-    To change only part of a file, use 'edit_file' instead.
-
-    The content must be the complete new file. Never use placeholder comments such as
-    '// ... existing code ...': the content is written literally, so they are rejected.
-
-    IMPORTANT: If you receive a 'hash_mismatch' error, it means the file has
-    changed on disk. You MUST call 'read_file_with_metadata' to get the
-    new content and the new SHA-256 before attempting to write again.
+    Replaces the whole content of an existing file. To change only part of a file, use edit_file.
+    content is written literally: never use placeholders such as '// ... existing code ...'.
 
     Args:
-        path (str): Path to the file to update.
-        content (str): The complete new content of the file.
-        expected_sha256 (str): The SHA-256 hash of the file as it was when last read.
+        path: The file to replace.
+        content: The complete new content.
+        expected_sha256: The SHA-256 from the last read or edit of the file.
 
     Returns:
-        str: JSON response indicating success or error (e.g., hash_mismatch). For code and Markdown
-            files it includes the new outline with line spans and the sections that were removed or
-            added: check that no section was removed by mistake.
+        JSON with the new SHA-256 and, for code and Markdown files, the new outline and removed sections.
     """
     try:
         p = resolve_path(path)
@@ -540,40 +530,21 @@ def write_file(path: str, content: str, expected_sha256: str) -> str:
 @mcp.tool()
 def edit_file(path: str, old_text: str, new_text: str, expected_sha256: str, replace_all: bool = False) -> str:
     """
-    Changes part of an existing file by replacing old_text with new_text.
-    Prefer this over write_file when changing only part of a file.
-    It checks if the file's current SHA-256 hash matches the expected_sha256
-    to ensure no one else has modified it since you last read it.
-
-    Copy old_text exactly from the file content returned by 'read_file_with_metadata',
-    including indentation, and without line number prefixes. Line endings and trailing
-    whitespace do not need to match. old_text must match exactly once: include a few
-    surrounding lines to make it unique, or set replace_all to True.
-    To delete lines, use an empty new_text.
-
-    new_text is written literally: never use placeholder comments such as
-    '// ... existing code ...' in it. Keep old_text short, covering only the lines you change.
-
-    The response shows the changed lines after the edit, the file's new SHA-256 and, for code and
-    Markdown files, the new outline with line spans and a warning if a section was removed.
-    Use the new SHA-256 as expected_sha256 for the next edit to the same file,
-    without reading the file again.
-
-    IMPORTANT: If you receive a 'hash_mismatch' error, it means the file has
-    changed on disk. You MUST call 'read_file_with_metadata' to get the
-    new content and the new SHA-256 before attempting to edit again.
+    Replaces old_text with new_text in an existing file. Prefer this over write_file.
+    Copy old_text exactly from read_file_with_metadata, including indentation, without line number
+    prefixes. It must match once: add surrounding lines, or set replace_all. An empty new_text deletes.
+    new_text is written literally: never use placeholders such as '// ... existing code ...'.
 
     Args:
-        path (str): Path to the file to edit.
-        old_text (str): The exact text to replace.
-        new_text (str): The text to replace it with.
-        expected_sha256 (str): The SHA-256 hash of the file as it was when last read or written.
-        replace_all (bool): If True, replaces every match of old_text. Defaults to False.
+        path: The file to edit.
+        old_text: The exact text to replace.
+        new_text: The replacement text.
+        expected_sha256: The SHA-256 from the last read or edit of the file.
+        replace_all: Replace every match. Defaults to False.
 
     Returns:
-        str: Plain text with the number of replacements, the new SHA-256 and the changed lines
-            after the edit, or an error (e.g., hash_mismatch, no_match with the closest matching
-            lines, multiple_matches with their line numbers).
+        The changed lines, the new SHA-256 (use it for the next edit without reading again) and the
+        file's outline, or an error such as no_match with the closest matching lines.
     """
     try:
         p = resolve_path(path)
@@ -587,15 +558,11 @@ def edit_file(path: str, old_text: str, new_text: str, expected_sha256: str, rep
 @mcp.tool()
 def create_file(path: str, content: str) -> str:
     """
-    Creates a new file with the provided content.
-    Fails if the file already exists.
+    Creates a new file, and any missing folders. Fails if the file exists.
 
     Args:
-        path (str): Path to the new file.
-        content (str): Content to write to the file.
-
-    Returns:
-        str: JSON response indicating success or error, with the outline of code and Markdown files.
+        path: The new file.
+        content: Its content.
     """
     try:
         p = resolve_path(path)
@@ -628,37 +595,19 @@ def create_file(path: str, content: str) -> str:
         return json.dumps({"success": False, "error": "create_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
-def read_file_with_metadata(path: str, start_line: int | None = None, end_line: int | None = None, line_numbers: bool = False, section: str | None = None) -> str:
+def read_file_with_metadata(path: str, start_line: int | None = None, end_line: int | None = None, line_numbers: bool = False, section: str = "") -> str:
     """
-    Reads a text file and returns its exact content along with its SHA-256 hash, line count,
-    line ending, encoding and size. The content is shown as-is between the lines
-    '----- BEGIN CONTENT -----' and '----- END CONTENT -----'.
-
-    Long files are returned in parts of up to 1000 lines: the response then says which
-    start_line to use to read the next part. Read only what you need: a class, function or
-    Markdown heading by its name with section, or lines with start_line and end_line, e.g. a
-    line span from get_outline or around a line number found with a search tool.
-
-    MANDATORY WORKFLOW:
-    1. Read the file with this tool.
-    2. Decide on the change.
-    3. Use the returned SHA-256 when calling edit_file (to change part of the file)
-       or write_file (to replace the whole file, only after reading the whole file).
-
-    Never guess SHA-256 values.
-    Never edit files without reading them first.
+    Reads a text file: its SHA-256, needed by edit_file and write_file, and its exact content between
+    '----- BEGIN CONTENT -----' and '----- END CONTENT -----'. Read only what you need: a class,
+    function or heading with section, or lines with start_line and end_line (e.g. a span from
+    get_outline). Long files are read in parts of up to 1000 lines.
 
     Args:
-        path (str): Path to the file.
-        start_line (int, optional): The first line to read, starting from 1. Defaults to 1.
-        end_line (int, optional): The last line to read. Defaults to the end of the file.
-        line_numbers (bool): If True, prefixes each line with its number as 'N| '. The prefixes
-            are not part of the content. Defaults to False.
-        section (str, optional): The name of a class, function or Markdown heading to read, as shown
-            by get_outline, e.g. 'App.run', 'run' or 'Install'. Used instead of start_line and end_line.
-
-    Returns:
-        str: The file's metadata followed by its content as plain text, or an error message.
+        path: The file.
+        start_line: The first line to read. Defaults to 1.
+        end_line: The last line to read. Defaults to the end of the file.
+        line_numbers: Prefix lines with 'N| ', which is not part of the content. Defaults to False.
+        section: A name from get_outline, e.g. 'App.run' or 'Install', instead of start_line and end_line.
     """
     try:
         p = resolve_path(path)
@@ -738,17 +687,10 @@ def read_file_with_metadata(path: str, start_line: int | None = None, end_line: 
 @mcp.tool()
 def read_image(path: str) -> list[str | Image] | str:
     """
-    Reads an image file and returns it as an image you can see, along with its metadata.
-    Useful for visual analysis of UI components, screenshots or assets.
-    Supports PNG, JPEG, GIF and WebP images. Viewing the image requires a vision-capable model.
-    For SVG images, use 'read_file_with_metadata' instead, as they are text files.
+    Shows a PNG, JPEG, GIF or WebP image, if you can see images. Read SVG files with read_file_with_metadata.
 
     Args:
-        path (str): Path to the image file.
-
-    Returns:
-        list | str: The image and a JSON string with its path, format, size and modification time,
-            or a JSON error message (e.g., unsupported_format or too_large).
+        path: The image file.
     """
     try:
         p = resolve_path(path)
@@ -790,14 +732,10 @@ def read_image(path: str) -> list[str | Image] | str:
 @mcp.tool()
 def list_directory(path: str) -> str:
     """
-    Lists all files and directories within the specified path, folders first.
-    Very large directories are listed partially.
+    Lists the files and folders in a folder, with their sizes and modification times.
 
     Args:
-        path (str): The directory to list.
-
-    Returns:
-        str: JSON string containing a list of entries, distinguishing between [FILE] and [DIR].
+        path: The folder.
     """
     try:
         p = resolve_path(path)
@@ -842,40 +780,13 @@ def list_directory(path: str) -> str:
         return json.dumps({"success": False, "error": "list_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
-def create_directory(path: str) -> str:
-    """
-    Creates a new directory at the specified path. Supports creating parent directories.
-
-    Args:
-        path (str): The path of the directory to create.
-
-    Returns:
-        str: JSON success/error message.
-    """
-    try:
-        p = resolve_path(path)
-        if not is_path_allowed(p):
-            return _access_denied(p)
-
-        if p.exists() and not p.is_dir():
-            return json.dumps({"success": False, "error": "file_exists", "message": "A file already exists at this path."}, indent=2, ensure_ascii=False)
-
-        p.mkdir(parents=True, exist_ok=True)
-        return json.dumps({"success": True, "message": f"Directory created: {_rel(p)}"}, indent=2, ensure_ascii=False)
-    except Exception as e:
-        return json.dumps({"success": False, "error": "create_dir_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
-
-@mcp.tool()
 def move_file(source: str, destination: str) -> str:
     """
-    Moves or renames a file or directory from the source to the destination.
+    Moves or renames a file or folder. Missing destination folders are created.
 
     Args:
-        source (str): Current path of the file/directory.
-        destination (str): New path of the file/directory.
-
-    Returns:
-        str: JSON success/error message.
+        source: The current path.
+        destination: The new path.
     """
     try:
         src = resolve_path(source)
@@ -893,6 +804,7 @@ def move_file(source: str, destination: str) -> str:
         if dst.exists():
             return json.dumps({"success": False, "error": "destination_exists", "message": f"Destination already exists: {_rel(dst)}"}, indent=2, ensure_ascii=False)
 
+        dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(src), str(dst))
         return json.dumps({"success": True, "message": f"Moved {_rel(src)} to {_rel(dst)}"}, indent=2, ensure_ascii=False)
     except Exception as e:
@@ -901,13 +813,10 @@ def move_file(source: str, destination: str) -> str:
 @mcp.tool()
 def delete_file(path: str) -> str:
     """
-    Deletes a file or a directory (and its contents if it's a directory).
+    Deletes a file, or a folder with everything in it.
 
     Args:
-        path (str): Path to the file/directory to be deleted.
-
-    Returns:
-        str: JSON success/error message.
+        path: The file or folder.
     """
     try:
         p = resolve_path(path)
@@ -930,13 +839,8 @@ def delete_file(path: str) -> str:
 @mcp.tool()
 def get_config() -> str:
     """
-    Returns the configuration shared by all MCP servers: the allowed directory, forbidden and protected
-    paths and the output limit, followed by what each server sees: the files the outline and searches skip,
-    the git repository, the command registry and the context files.
-    Use this tool to find out why a file is missing, a path is denied or a tool does not find something.
-
-    Returns:
-        str: A JSON-formatted string containing the configuration or an error message.
+    Shows the settings all servers share and what each one sees: allowed and forbidden paths, ignored
+    folders, the git repository, commands and context files. Use it when a file is not found or a path is denied.
     """
     try:
         gitignore_patterns = load_gitignore_patterns()
@@ -1001,6 +905,8 @@ def get_config() -> str:
         }, indent=2, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"success": False, "error": "config_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
+
+compact_tool_schemas(mcp)
 
 if __name__ == "__main__":
     mcp.run()

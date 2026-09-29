@@ -7,7 +7,8 @@ from ollama import Client
 from mcp.server.mcpserver import MCPServer
 from mcp_common import (
     MAX_OUTPUT_CHARS,
-    OLLAMA_API_KEY
+    OLLAMA_API_KEY,
+    compact_tool_schemas
 )
 
 # --- Constants & Config ---
@@ -59,17 +60,12 @@ def _cut(text: str, start: int, limit: int) -> tuple[str, int]:
 @mcp.tool()
 def web_search(query: str, max_results: int = 3) -> str:
     """
-    Searches the web and returns the title, URL and content of the best matching pages.
-    Use this to find current information, documentation or answers that are not in the project.
-    To read a whole page from the results, use web_fetch with its URL.
+    Searches the web and returns the title, URL and content of the best matches.
+    Read a whole page with web_fetch.
 
     Args:
-        query (str): The search query.
-        max_results (int, optional): The number of results, from 1 to 10. Defaults to 3.
-
-    Returns:
-        str: A JSON-formatted string containing the results or an error message. If output_limited
-            is set, the content of the results was cut short: read a whole page with web_fetch.
+        query: The search query.
+        max_results: 1 to 10. Defaults to 3.
     """
     if CLIENT is None:
         return _json_error("not_configured", NOT_CONFIGURED)
@@ -103,18 +99,12 @@ def web_search(query: str, max_results: int = 3) -> str:
 @mcp.tool()
 def web_fetch(url: str, start_char: int = 0) -> str:
     """
-    Fetches a web page and returns its title, its text content and the links on it.
-    The content is shown between the lines '----- BEGIN CONTENT -----' and '----- END CONTENT -----'.
-
-    Long pages are returned in parts: the response then says which start_char to use to read the next part.
+    Fetches a web page: its title, links and text between '----- BEGIN CONTENT -----' and
+    '----- END CONTENT -----'. Long pages are read in parts.
 
     Args:
-        url (str): The full URL of the page, starting with http:// or https://.
-        start_char (int, optional): The character position to start reading the content from. Defaults to 0.
-            Links are only listed in the first part.
-
-    Returns:
-        str: The page title, URL, links and content, or an error starting with 'Error (<code>):'.
+        url: The full URL, starting with http:// or https://.
+        start_char: Where to continue reading. Defaults to 0.
     """
     if CLIENT is None:
         return _text_error("not_configured", NOT_CONFIGURED)
@@ -146,6 +136,8 @@ def web_fetch(url: str, start_char: int = 0) -> str:
         return "\n".join(header) + f"\n{CONTENT_START}\n{shown}\n{CONTENT_END}"
     except Exception as e:
         return _text_error("fetch_error", f"Fetching the page failed: {e}\n{traceback.format_exc()}")
+
+compact_tool_schemas(mcp)
 
 if __name__ == "__main__":
     mcp.run()

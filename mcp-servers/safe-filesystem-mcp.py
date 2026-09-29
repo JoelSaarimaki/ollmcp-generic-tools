@@ -17,8 +17,13 @@ mcp = MCPServer("Safe-Filesystem-Server")
 ALLOWED_DIR = Path(os.getenv("ALLOWED_DIR", os.getcwd())).resolve()
 PROTECTED_FILE_NAMES = {".mcp.json"}  # MCP server configuration, never accessible regardless of FORBIDDEN_PATHS
 MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10MB limit
-MAX_READ_LINES = 1000  # Longer files are read in parts, to protect the context window
-MAX_READ_CHARS = 60000
+# Largest response size in characters (about 4 characters per token). Lower it for models with small context windows.
+MAX_OUTPUT_CHARS = max(2000, int(os.getenv("MAX_OUTPUT_CHARS") or 40000))
+MAX_READ_LINES = 1000  # Longer files are read in parts
+MAX_LINE_CHARS = 2000  # Longer lines (e.g. minified code) are shown shortened, ending with SHORTENED_LINE_MARK
+SHORTENED_LINE_MARK = " [...]"
+MAX_TEXT_FILE_BYTES = 50 * 1024 * 1024  # Larger text files are not read
+MAX_LIST_ENTRIES = 250
 EDIT_SNIPPET_CONTEXT_LINES = 3  # Lines shown around a change after an edit
 MAX_EDIT_SNIPPET_LINES = 40
 SHRINK_WARNING_RATIO = 0.5  # write_file warns if a file of 20+ lines shrinks below this ratio
@@ -304,6 +309,31 @@ def _split_lines(content: str) -> list[str]:
     lines = content.split("\n")
     return lines[:-1] if lines and lines[-1] == "" else lines
 
+def _shorten_lines(lines: list[str], first_line: int) -> tuple[list[str], list[int]]:
+    """
+    Shortens lines longer than MAX_LINE_CHARS, ending them with SHORTENED_LINE_MARK.
+    Returns the lines and the line numbers of the shortened lines.
+    """
+    shortened = []
+    result = []
+    for i, line in enumerate(lines):
+        if len(line) > MAX_LINE_CHARS:
+            shortened.append(first_line + i)
+            line = line[:MAX_LINE_CHARS] + SHORTENED_LINE_MARK
+        result.append(line)
+    return result, shortened
+
+def _shortened_lines_note(line_numbers: list[int]) -> str:
+    """
+    Returns the instruction shown when lines were shortened, or an empty string.
+    """
+    if not line_numbers:
+        return ""
+    listed = ", ".join(str(n) for n in line_numbers[:10]) + (", ..." if len(line_numbers) > 10 else "")
+    subject = f"line {listed} is" if len(line_numbers) == 1 else f"lines {listed} are"
+    return (f"Output limited: {subject} longer than {MAX_LINE_CHARS} characters and shown shortened, ending with '{SHORTENED_LINE_MARK.strip()}'."
+            f" To edit such a line, use a unique part of the shown text as old_text in edit_file; the hidden rest of the line stays unchanged.")
+
 def _content_block(lines: list[str], first_line: int, line_numbers: bool = False) -> str:
     """
     Returns the lines between the content markers, optionally prefixed with 'N| ' line numbers.
@@ -387,10 +417,12 @@ def _apply_edit(content: str, old: str, new: str, replace_all: bool) -> tuple[st
     near = _find_line_matches(lines, old_lines, str.strip) if old_lines else []
     if near:
         start = near[0]
-        actual = lines[start:start + len(old_lines)]
-        message += (f" Lines {start + 1}-{start + len(actual)} match when indentation is ignored."
+        actual, shortened = _shorten_lines(lines[start:start + len(old_lines)][:MAX_EDIT_SNIPPET_LINES], start + 1)
+        message += (f" Lines {start + 1}-{start + len(old_lines)} match when indentation is ignored."
                     f" Copy them exactly as they appear in the file, including indentation:\n"
                     f"{_content_block(actual, start + 1)}")
+        if shortened or len(old_lines) > MAX_EDIT_SNIPPET_LINES:
+            message += f"\nOutput limited: only part of these lines is shown. Read them with read_file_with_metadata(start_line={start + 1})."
     else:
         message += " Read the file again with 'read_file_with_metadata' and copy the text exactly as it appears in the file."
     raise _EditError("no_match", message)
@@ -436,11 +468,18 @@ def _edit_logic(path: Path, old_text: str, new_text: str, expected_sha256: str, 
     snippet_start = max(1, first_line - EDIT_SNIPPET_CONTEXT_LINES)
     snippet_end = min(len(new_lines), last_line + EDIT_SNIPPET_CONTEXT_LINES, snippet_start + MAX_EDIT_SNIPPET_LINES - 1)
     plural = "replacement" if replacements == 1 else "replacements"
+    snippet, shortened = _shorten_lines(new_lines[snippet_start - 1:snippet_end], snippet_start)
+    limited = []
+    if last_line + EDIT_SNIPPET_CONTEXT_LINES > snippet_end and snippet_end < len(new_lines):
+        limited.append(f"Output limited: the change continues after line {snippet_end}. Check the rest with read_file_with_metadata(start_line={snippet_end + 1}) if needed.")
+    if shortened:
+        limited.append(_shortened_lines_note(shortened))
     return "\n".join([
         f"Edited {path}: {replacements} {plural}, starting at line {first_line}.{note}",
         f"New SHA-256: {result['sha256']} (use it as expected_sha256 for the next edit to this file)",
+        *limited,
         f"Lines {snippet_start}-{snippet_end} of {len(new_lines)} after the edit:" if new_lines else "The file is now empty.",
-        _content_block(new_lines[snippet_start - 1:snippet_end], snippet_start) if new_lines else ""
+        _content_block(snippet, snippet_start) if new_lines else ""
     ]).rstrip()
 
 def _detect_neighbor_line_ending(directory: Path) -> tuple[str, str]:
@@ -653,6 +692,10 @@ def read_file_with_metadata(path: str, start_line: int | None = None, end_line: 
         if not p.exists():
             return _text_error("file_not_found", f"File not found: {p}")
 
+        size = p.stat().st_size
+        if size > MAX_TEXT_FILE_BYTES:
+            return _text_error("too_large", f"File is {size} bytes, larger than the {MAX_TEXT_FILE_BYTES} byte limit for reading text files. Find the relevant lines with search_text_in_files instead.")
+
         info = _get_file_info(p)
         lines = _split_lines(_read_text(p, info.has_bom))
         total = len(lines)
@@ -664,16 +707,18 @@ def read_file_with_metadata(path: str, start_line: int | None = None, end_line: 
         if end < start and total:
             return _text_error("invalid_range", f"end_line must not be smaller than start_line ({start}).")
 
-        # Keep large reads within MAX_READ_LINES and MAX_READ_CHARS
-        limited_end = min(end, start + MAX_READ_LINES - 1)
+        # Keep the read within MAX_READ_LINES and MAX_OUTPUT_CHARS, leaving room for the header
+        shown, shortened = _shorten_lines(lines[start - 1:min(end, start + MAX_READ_LINES - 1)], start)
+        budget = MAX_OUTPUT_CHARS - min(1500, MAX_OUTPUT_CHARS // 4)
         chars = 0
-        for i in range(start - 1, limited_end):
-            chars += len(lines[i]) + 1
-            if chars > MAX_READ_CHARS and i > start - 1:
-                limited_end = i
+        for i, line in enumerate(shown):
+            chars += len(line) + (len(str(end)) + 3 if line_numbers else 1)
+            if chars > budget and i > 0:
+                shown = shown[:i]
                 break
-        truncated = limited_end < end
-        end = limited_end
+        shortened = [n for n in shortened if n < start + len(shown)]
+        truncated = start + len(shown) - 1 < end
+        end = start + len(shown) - 1 if total else end
 
         encoding = "utf-8 with BOM" if info.has_bom else "utf-8"
         header = [f"File: {info.path}", f"SHA-256: {info.sha256}"]
@@ -684,13 +729,16 @@ def read_file_with_metadata(path: str, start_line: int | None = None, end_line: 
             header.append(f"Lines: {start}-{end} of {total}" + (" (partial)" if partial else ""))
         header.append(f"Line ending: {info.line_ending} | Encoding: {encoding} | Size: {info.size_bytes} bytes | Modified: {info.modified_at}")
         if truncated:
-            header.append(f"Note: The file is too long to read at once. Read the next part with start_line={end + 1}.")
+            header.append(f"Output limited: lines {start}-{end} of {total} are shown, as one read is limited to {MAX_READ_LINES} lines or {MAX_OUTPUT_CHARS} characters."
+                          f" Read the next part with start_line={end + 1}, or read only the lines you need with start_line and end_line (e.g. around a line number found with search_text_in_files).")
+        if shortened:
+            header.append(_shortened_lines_note(shortened))
         if total and (start > 1 or end < total):
             header.append("Note: This is only part of the file. Change it with edit_file: write_file would replace the whole file with only this part.")
         if line_numbers:
             header.append("Note: The 'N| ' line number prefixes are not part of the content. Do not copy them into edit_file.")
 
-        return "\n".join(header) + "\n" + _content_block(lines[start - 1:end], start, line_numbers)
+        return "\n".join(header) + "\n" + _content_block(shown, start, line_numbers)
     except Exception as e:
         return _text_error("read_error", str(e))
 
@@ -773,7 +821,8 @@ def get_file_stats(path: str) -> str:
 @mcp.tool()
 def list_directory(path: str) -> str:
     """
-    Lists all files and directories within the specified path.
+    Lists all files and directories within the specified path, folders first.
+    Very large directories are listed partially.
 
     Args:
         path (str): The directory to list.
@@ -807,7 +856,19 @@ def list_directory(path: str) -> str:
                     "error": str(e)
                 })
 
-        return json.dumps({"success": True, "entries": entries}, indent=2)
+        # Folders first, then files, by name, so that a limited listing is predictable.
+        # Each listed entry takes about 150 characters of JSON.
+        entries.sort(key=lambda e: (e["type"] != "DIR", e["name"].lower()))
+        limit = max(10, min(MAX_LIST_ENTRIES, (MAX_OUTPUT_CHARS - 1000) // 150))
+        response = {"success": True, "total_entries": len(entries), "entries": entries[:limit]}
+        if len(entries) > limit:
+            rel = _display_path(p, ALLOWED_DIR)
+            prefix = "" if rel == "." else f"{rel}/"
+            suffixes = [Path(e["name"]).suffix for e in entries if e["type"] == "FILE" and Path(e["name"]).suffix]
+            example = max(set(suffixes), key=suffixes.count) if suffixes else ".py"
+            response["output_limited"] = (f"Output limited: the directory has {len(entries)} entries, but only the first {limit} (folders first, then files, by name) are listed."
+                                          f" Find specific files with search_files_by_pattern, e.g. pattern='{prefix}*{example}' or pattern='{prefix}name*'.")
+        return json.dumps(response, indent=2)
     except Exception as e:
         return json.dumps({"success": False, "error": "list_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
 
@@ -914,6 +975,10 @@ def get_filesystem_config() -> str:
             "allowed_dir_exists": ALLOWED_DIR.exists(),
             "ignored_dirs": [],
             "forbidden_paths": [_display_path(p, ALLOWED_DIR) for p in FORBIDDEN_PATHS],
+            "max_output_chars": MAX_OUTPUT_CHARS,
+            "max_read_lines": MAX_READ_LINES,
+            "max_line_chars": MAX_LINE_CHARS,
+            "max_list_entries": MAX_LIST_ENTRIES,
             "protected_file_names": sorted(PROTECTED_FILE_NAMES),
             "gitignore": {
                 "applied": False

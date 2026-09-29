@@ -27,8 +27,10 @@ if CONFIG_PATH:
 
 ARG_PLACEHOLDER = "{arg}"
 DEFAULT_TIMEOUT_SECONDS = 120
-MAX_OUTPUT_CHARS = 20000  # Per stream, to protect the context window
-OUTPUT_HEAD_CHARS = 5000  # Kept from the start of truncated output, the rest is kept from the end
+# Largest response size in characters (about 4 characters per token). Lower it for models with small context windows.
+MAX_OUTPUT_CHARS = max(2000, int(os.getenv("MAX_OUTPUT_CHARS") or 40000))
+MAX_STREAM_CHARS = int(MAX_OUTPUT_CHARS * 0.45)  # Per stream (stdout and stderr), leaving room for JSON escaping
+OUTPUT_HEAD_RATIO = 0.25  # Share of truncated output kept from the start, the rest is kept from the end
 IS_WINDOWS = os.name == "nt"
 # Characters cmd.exe interprets even when Windows batch files (.bat/.cmd) are run without a shell
 BATCH_UNSAFE_CHARS = set('&|<>^%!"()')
@@ -67,13 +69,24 @@ def _validate_argument(argument: str, tokens: list[str], executable: str) -> str
 
 def _truncate_output(text: str) -> str:
     """
-    Shortens output longer than MAX_OUTPUT_CHARS, keeping its start and its end.
+    Shortens output longer than MAX_STREAM_CHARS, keeping its start and its end.
     """
-    if len(text) <= MAX_OUTPUT_CHARS:
+    if len(text) <= MAX_STREAM_CHARS:
         return text
-    tail_chars = MAX_OUTPUT_CHARS - OUTPUT_HEAD_CHARS
-    omitted = len(text) - MAX_OUTPUT_CHARS
-    return f"{text[:OUTPUT_HEAD_CHARS]}\n... ({omitted} characters truncated) ...\n{text[-tail_chars:]}"
+    head_chars = int(MAX_STREAM_CHARS * OUTPUT_HEAD_RATIO)
+    tail_chars = MAX_STREAM_CHARS - head_chars
+    omitted = len(text) - MAX_STREAM_CHARS
+    return f"{text[:head_chars]}\n... [{omitted} characters cut from the middle] ...\n{text[-tail_chars:]}"
+
+def _limit_note(*outputs: str) -> str | None:
+    """
+    Returns the 'Output limited' instruction if any of the outputs is too long to show completely.
+    """
+    if all(len(output) <= MAX_STREAM_CHARS for output in outputs):
+        return None
+    return ("Output limited: the output is too long to show completely, so characters are cut from the middle."
+            " The start and the end are shown, as errors and summaries are usually at the end."
+            " To see more, run a narrower command, e.g. tests for a single file instead of all tests.")
 
 def _decode_output(output: str | bytes | None) -> str:
     """
@@ -158,6 +171,7 @@ def _execute_command_logic(command_key: str, argument: str | None = None) -> dic
         return {
             "success": result.returncode == 0,
             "returncode": result.returncode,
+            "output_limited": _limit_note(result.stdout, result.stderr),
             "stdout": _truncate_output(result.stdout),
             "stderr": _truncate_output(result.stderr),
             "command": command
@@ -168,6 +182,7 @@ def _execute_command_logic(command_key: str, argument: str | None = None) -> dic
             "success": False,
             "error": "timeout",
             "message": f"Command did not finish within {timeout} seconds and was stopped.",
+            "output_limited": _limit_note(_decode_output(e.stdout), _decode_output(e.stderr)),
             "stdout": _truncate_output(_decode_output(e.stdout)),
             "stderr": _truncate_output(_decode_output(e.stderr)),
             "command": command
@@ -208,7 +223,8 @@ def list_available_commands() -> str:
 def run_predefined_command(command_name: str, argument: str | None = None) -> str:
     """
     Executes a specific console command from the allowed registry.
-    The command succeeds only if it exits with code 0. Long output is truncated in the middle.
+    The command succeeds only if it exits with code 0. Long output is cut from the middle:
+    then output_limited is set and tells how to see more.
 
     Args:
         command_name (str): The key of the command (from list_available_commands).

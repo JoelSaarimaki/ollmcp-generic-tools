@@ -18,7 +18,10 @@ DIFF_MODES = {
     "staged": ["diff", "--cached"],
     "head": ["diff", "HEAD"]
 }
-MAX_DIFF_CHARS = 50000  # Cap output to protect the context window
+# Largest response size in characters (about 4 characters per token). Lower it for models with small context windows.
+MAX_OUTPUT_CHARS = max(2000, int(os.getenv("MAX_OUTPUT_CHARS") or 40000))
+MAX_LISTED_FILES = 200  # Changed and untracked files listed at most by get_all_changes_diff
+JSON_ESCAPE_RATIO = 0.9  # Share of the budget used for text inside JSON, as escaping line breaks and quotes adds characters
 
 # --- Internal Helpers ---
 
@@ -202,15 +205,27 @@ def _prepare(path: str | None) -> tuple[Path, Path, Path | None, str | None]:
         }, indent=2)
     return p, cwd, repo_root, None
 
-def _truncate_diff(text: str) -> tuple[str, bool]:
+def _limit_text(text: str, limit: int, instruction: str) -> tuple[str, str | None]:
     """
-    Shortens diff output longer than MAX_DIFF_CHARS, keeping its start.
-    Returns the text and whether it was truncated.
+    Shortens text longer than limit at a line break, keeping its start.
+    Returns the text and an 'Output limited' note with the instruction, or None if the text fits.
     """
-    if len(text) <= MAX_DIFF_CHARS:
-        return text, False
-    omitted = len(text) - MAX_DIFF_CHARS
-    return f"{text[:MAX_DIFF_CHARS]}\n... ({omitted} characters truncated, use get_file_diff for individual files) ...", True
+    if len(text) <= limit:
+        return text, None
+    cut = text.rfind("\n", 0, limit)
+    cut = cut if cut > 0 else limit
+    note = f"Output limited: only the first {cut} of {len(text)} characters are shown. {instruction}"
+    return text[:cut] + "\n... (cut short)", note
+
+def _limit_stdout(result: dict[str, Any], instruction: str) -> dict[str, Any]:
+    """
+    Limits the stdout of a git command result to MAX_OUTPUT_CHARS, adding an 'output_limited' note if needed.
+    """
+    stdout, note = _limit_text(result.get("stdout", ""), int((MAX_OUTPUT_CHARS - min(2000, MAX_OUTPUT_CHARS // 4)) * JSON_ESCAPE_RATIO), instruction)
+    if note:
+        result["stdout"] = stdout
+        result["output_limited"] = note
+    return result
 
 def _invalid_mode(mode: str) -> str | None:
     """
@@ -269,6 +284,7 @@ def get_file_diff(path: str, mode: str) -> str:
                 "command": result["command"]
             }, indent=2)
 
+        result = _limit_stdout(result, "The diff is too long to show completely: read the current version of the file with read_file_with_metadata instead.")
         return json.dumps(result, indent=2)
     except Exception as e:
         return json.dumps({"success": False, "error": "diff_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
@@ -289,7 +305,8 @@ def get_all_changes_diff(mode: str, path: str | None = None) -> str:
     Returns:
         str: A JSON-formatted string containing the changed files with their status (M = modified,
             A = added, D = deleted, R = renamed), new untracked files (not included in the diff),
-            and the diff output, or an error message. Long diffs are truncated.
+            and the diff output, or an error message. If output_limited is set, the output was cut
+            short: follow its instructions to see the rest.
     """
     error = _invalid_mode(mode)
     if error:
@@ -315,16 +332,27 @@ def get_all_changes_diff(mode: str, path: str | None = None) -> str:
             if untracked["success"]:
                 untracked_files = untracked["stdout"].splitlines()
 
-        diff_text, truncated = _truncate_diff(diff["stdout"])
         changed_files = name_status["stdout"].splitlines()
+        notes = []
+        if len(changed_files) > MAX_LISTED_FILES or len(untracked_files) > MAX_LISTED_FILES:
+            notes.append(f"Output limited: {len(changed_files)} changed and {len(untracked_files)} untracked files were found, but at most {MAX_LISTED_FILES} of each are listed."
+                         f" Limit the diff to one folder with path to see the rest.")
+        listed_changed, listed_untracked = changed_files[:MAX_LISTED_FILES], untracked_files[:MAX_LISTED_FILES]
+
+        listed_chars = sum(len(f) + 8 for f in listed_changed + listed_untracked)
+        diff_text, diff_note = _limit_text(diff["stdout"], max(1000, int((MAX_OUTPUT_CHARS - min(3000, MAX_OUTPUT_CHARS // 4) - listed_chars) * JSON_ESCAPE_RATIO)),
+                                           "All changed files are listed in changed_files: view the rest one file at a time with get_file_diff, or limit the diff to one folder with path.")
+        if diff_note:
+            notes.append(diff_note)
+
         return json.dumps({
             "success": True,
             "mode": mode,
             "repository_root": repo_root.as_posix(),
-            "changed_files": changed_files,
-            "untracked_files": untracked_files,
+            "output_limited": " ".join(notes) or None,
+            "changed_files": listed_changed,
+            "untracked_files": listed_untracked,
             "diff": diff_text,
-            "truncated": truncated,
             "message": "No differences detected." if not changed_files and not untracked_files else "",
             "command": diff["command"]
         }, indent=2, ensure_ascii=False)
@@ -367,6 +395,8 @@ def get_file_history(path: str, limit: int = 10) -> str:
                 "command": result["command"]
             }, indent=2)
 
+        smaller = f"Show fewer commits with a smaller limit, e.g. limit={max(1, int(limit) // 2)}." if int(limit) > 1 else "The latest change alone is too long to show completely."
+        result = _limit_stdout(result, smaller)
         return json.dumps(result, indent=2)
     except Exception as e:
         return json.dumps({"success": False, "error": "history_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
@@ -388,6 +418,7 @@ def get_git_status(path: str | None = None) -> str:
             return error
 
         result = _run_git_command(["status", "--"] + _pathspecs(repo_root, p), cwd=cwd)
+        result = _limit_stdout(result, "Limit the status to one folder with path, or list the changed files with get_all_changes_diff.")
         return json.dumps(result, indent=2)
     except Exception as e:
         return json.dumps({"success": False, "error": "status_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
@@ -456,6 +487,8 @@ def get_git_config() -> str:
             "repository_root": repo_root.as_posix() if repo_root else None,
             "ignored_dirs": [],
             "forbidden_paths": [_display_path(p, ALLOWED_DIR) for p in FORBIDDEN_PATHS],
+            "max_output_chars": MAX_OUTPUT_CHARS,
+            "max_listed_files": MAX_LISTED_FILES,
             "protected_file_names": sorted(PROTECTED_FILE_NAMES),
             "gitignore": {
                 "applied": True

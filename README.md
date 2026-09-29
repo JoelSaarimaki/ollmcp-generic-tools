@@ -37,6 +37,9 @@ Most of the MCP servers use environment variables for configuration. These shoul
 
 Use the same values for all four servers, so that the files the AI can find with the map and search tools are exactly the files it can read, edit and inspect with git. To focus the AI on part of the project, such as `src`, it can limit maps and searches with their `path` argument instead.
 
+#### Shared by all servers
+- `MAX_OUTPUT_CHARS`: The largest size of a tool response in characters, about 4 characters per token. Lower it for models with small context windows, e.g. `"12000"` for an 8k-token context. See [Output limits](#output-limits). (Optional, defaults to `40000`)
+
 #### commands-mcp
 - `COMMANDS_CONFIG`: Path to the JSON configuration file containing the command registry.
 
@@ -221,3 +224,24 @@ Both tools additionally skip files matched by the `.gitignore` file (see `GITIGN
 `safe-filesystem-mcp` has no ignored directories, because it only accesses the paths the AI explicitly asks for. To block it from folders such as `.git` or `.venv`, add them to its `FORBIDDEN_PATHS`.
 
 `git-diff-mcp` has no ignored directories either. Git's own `.gitignore` rules decide which untracked files it lists.
+
+### Output limits
+
+Local models have small context windows, so every tool response is limited to `MAX_OUTPUT_CHARS` characters (40 000 by default, about 10 000 tokens). When a limit is applied, the response contains a message starting with `Output limited:` that says what was left out and exactly how to get the rest, for example which `start_line` to read next or which folder to map with `path`. In JSON responses, the message is in the `output_limited` field.
+
+| Tool | Limit | How the rest can be seen |
+|---|---|---|
+| `read_file_with_metadata` | 1000 lines or `MAX_OUTPUT_CHARS` per read; lines over 2000 characters are shortened; files over 50 MB are not read | Next part with `start_line`; long lines can still be edited using a unique part of the shown text |
+| `edit_file` | Shows up to 40 changed lines after the edit | `read_file_with_metadata` from the given line |
+| `list_directory` | Up to 250 entries, fewer for small budgets; folders are listed first | `search_files_by_pattern` with a suggested pattern |
+| `generate_codebase_map` | `MAX_OUTPUT_CHARS`; the file tree is limited to 400 lines; files over 1 MB are not parsed | Suggested subfolders to map with `path`, with their file counts |
+| `generate_file_map` | 400 lines | Suggested subfolders to map with `path` |
+| `search_text_in_files` | 100 matches or `MAX_OUTPUT_CHARS`; lines over 300 characters are shortened | A suggested `path` with the most matches, `file_pattern`, fewer `context_lines` |
+| `search_files_by_pattern` | 100 matches | A more specific pattern |
+| `get_file_diff`, `get_file_history`, `get_git_status` | `MAX_OUTPUT_CHARS` | Read the file instead, a smaller `limit`, or a `path` |
+| `get_all_changes_diff` | `MAX_OUTPUT_CHARS`; up to 200 changed and 200 untracked files are listed | `get_file_diff` for the files listed in `changed_files`, or a `path` |
+| `run_predefined_command` | `MAX_OUTPUT_CHARS`, split between stdout and stderr; the middle of long output is cut, as errors are usually at the end | A narrower command, such as tests for a single file |
+| `read_all_context_files` | `MAX_OUTPUT_CHARS`; whole files are left out | `read_context_file` for the listed files |
+| `read_context_file`, `get_project_instructions` | `MAX_OUTPUT_CHARS` | Keep these files short |
+
+The example [`_instructions/app-instructions.md`](_instructions/app-instructions.md) tells the AI to follow these messages instead of repeating the same call, and never to assume that a limited response is the whole result. Include a similar instruction in your own project instructions.

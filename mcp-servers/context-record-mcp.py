@@ -10,6 +10,8 @@ mcp = MCPServer("Context-Record-Server")
 
 # The folder path is defined via an environment variable.
 CONTEXT_FOLDER_PATH = os.getenv("CONTEXT_FOLDER_PATH")
+# Largest response size in characters (about 4 characters per token). Lower it for models with small context windows.
+MAX_OUTPUT_CHARS = max(2000, int(os.getenv("MAX_OUTPUT_CHARS") or 40000))
 
 # --- Internal Helpers ---
 
@@ -46,6 +48,22 @@ def _get_context_file(filename: str) -> tuple[Path, Path]:
     if not _is_context_file(file_path, folder):
         raise ValueError(f"'{filename}' leads outside the context folder.")
     return folder, file_path
+
+def _limit_content(content: str, filename: str) -> str:
+    """
+    Returns the content of a context file, cut short at a line break with an 'Output limited'
+    instruction if it is longer than MAX_OUTPUT_CHARS.
+    """
+    limit = MAX_OUTPUT_CHARS - min(1000, MAX_OUTPUT_CHARS // 4)
+    if len(content) <= limit:
+        return content
+    cut = content.rfind("\n", 0, limit)
+    cut = cut if cut > 0 else limit
+    next_line = content.count("\n", 0, cut) + 2
+    return (f"{content[:cut]}\n\n"
+            f"Output limited: only the first {cut} of {len(content)} characters of '{filename}' are shown."
+            f" If the context folder is inside the project, read the rest with read_file_with_metadata(start_line={next_line})."
+            f" Keep context files short: summarize long notes and split them into several files with write_context_file.")
 
 def _list_context_files(folder: Path) -> list[Path]:
     """
@@ -99,7 +117,7 @@ def read_context_file(filename: str) -> str:
         if not file_path.is_file():
             return f"Error: '{filename}' is not a file."
 
-        return file_path.read_text(encoding="utf-8")
+        return _limit_content(file_path.read_text(encoding="utf-8"), filename)
     except ValueError as e:
         return f"Error: {e}"
     except Exception as e:
@@ -166,7 +184,8 @@ def append_to_context_file(filename: str, content: str) -> str:
 def read_all_context_files() -> str:
     """
     Reads the content of all Markdown files in the context folder and returns them
-    all at once.
+    all at once. If they do not all fit in one response, the files left out are listed
+    so that they can be read one at a time with read_context_file.
 
     Returns:
         str: The concatenated content of all files, or an error message.
@@ -180,13 +199,21 @@ def read_all_context_files() -> str:
         if not md_files:
             return "No Markdown files found in the context folder."
 
-        output = []
+        # Include whole files until MAX_OUTPUT_CHARS, leaving room for the note
+        budget = MAX_OUTPUT_CHARS - min(1000, MAX_OUTPUT_CHARS // 4)
+        output, skipped, used = [], [], 0
         for file_path in md_files:
-            output.append("=" * 80)
-            output.append(f"FILE: {file_path.name}")
-            output.append("=" * 80)
-            output.append(file_path.read_text(encoding="utf-8"))
-            output.append("\n")  # Add extra newline after content
+            block = "\n".join(["=" * 80, f"FILE: {file_path.name}", "=" * 80, file_path.read_text(encoding="utf-8"), "\n"])
+            if used + len(block) > budget:
+                skipped.append(file_path.name)
+                continue
+            output.append(block)
+            used += len(block) + 1
+
+        if skipped:
+            note = (f"Output limited: {len(skipped)} of {len(md_files)} context files are not shown, as the output is limited to {MAX_OUTPUT_CHARS} characters:"
+                    f" {', '.join(skipped)}. Read them one at a time with read_context_file.")
+            output.insert(0, note + "\n")
 
         return "\n".join(output)
     except ValueError as e:

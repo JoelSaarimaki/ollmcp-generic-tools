@@ -24,6 +24,11 @@ PYTHON_SUFFIXES = {".py"}
 JS_TS_SUFFIXES = {".js", ".jsx", ".ts", ".tsx"}
 OTHER_SUFFIXES = {".md", ".json", ".css", ".scss", ".html"}
 ALL_ALLOWED_SUFFIXES = PYTHON_SUFFIXES | JS_TS_SUFFIXES | OTHER_SUFFIXES
+# Largest response size in characters (about 4 characters per token). Lower it for models with small context windows.
+MAX_OUTPUT_CHARS = max(2000, int(os.getenv("MAX_OUTPUT_CHARS") or 40000))
+MAX_TREE_LINES = 400  # Longer file trees are cut short
+MAX_PARSE_BYTES = 1024 * 1024  # Larger files (e.g. bundles) are listed but not parsed
+MAX_FOLDER_SUGGESTIONS = 10  # Folders suggested for mapping separately when the output is limited
 
 # --- Internal Helpers ---
 
@@ -160,6 +165,8 @@ def _parse_python(filepath: Path, base_dir: Path, metadata: dict) -> str:
     """
     Parses a Python file using AST and returns a markdown summary of its classes, functions and calls.
     """
+    if filepath.stat().st_size > MAX_PARSE_BYTES:
+        return f"### `{filepath.relative_to(base_dir).as_posix()}`\n- (File too large to parse)\n"
     try:
         content = filepath.read_text(encoding="utf-8")
         tree = ast.parse(content, filename=str(filepath))
@@ -290,7 +297,6 @@ _JS_MODIFIERS = r"(?:(?:public|private|protected|static|readonly|abstract|overri
 _JS_METHOD = re.compile(rf"^\s*{_JS_MODIFIERS}\*?\s*(#?{_JS_IDENT})\s*(?:<[^>]*>)?\s*\(")
 _JS_ARROW_PROPERTY = re.compile(rf"^\s*{_JS_MODIFIERS}(#?{_JS_IDENT})\s*(?::[^=]+)?=\s*(?:async\s+)?(?:\([^()]*\)|{_JS_IDENT})\s*(?::[^=]*?)?=>")
 _JS_KEYWORDS = {"if", "for", "while", "switch", "catch", "return", "function", "else", "do", "try", "with", "new", "typeof", "await", "super", "throw"}
-MAX_JS_PARSE_BYTES = 1024 * 1024  # Larger files (e.g. bundles) are listed but not parsed
 
 def _blank(chars: list[str], start: int, end: int):
     """
@@ -452,7 +458,7 @@ def _parse_js_ts(filepath: Path, base_dir: Path) -> str:
 
     rel_path = filepath.relative_to(base_dir)
     out = [f"### `{rel_path.as_posix()}`\n"]
-    if len(content) > MAX_JS_PARSE_BYTES:
+    if len(content) > MAX_PARSE_BYTES:
         out.append("- (File too large to parse)\n")
         return "".join(out)
 
@@ -647,14 +653,48 @@ def _resolve_scope(path: str | None, gitignore_patterns: list[str]) -> tuple[Pat
         return p, f"Error: Path '{path}' is ignored or forbidden. Use get_codebase_map_config to see why."
     return p, None
 
-def _generate_simple_map(base_dir: Path, gitignore_patterns: list[str], root_dir: Path | None = None) -> str:
+def _limit_instructions(base_dir: Path, scope_dir: Path, files: list[Path], tool: str) -> str:
+    """
+    Returns instructions for seeing the given files that did not fit in the output: the subfolders
+    containing them as 'path=...' suggestions for the tool, with the most files first, and how to
+    see files directly in the folder. If all files are in one subfolder, its subfolders are
+    suggested instead, since that subfolder would not fit either.
+    """
+    while True:
+        counts, direct = {}, 0
+        for path in files:
+            parts = path.relative_to(scope_dir).parts
+            if len(parts) > 1:
+                counts[scope_dir / parts[0]] = counts.get(scope_dir / parts[0], 0) + 1
+            else:
+                direct += 1
+        if len(counts) == 1 and not direct:
+            scope_dir = next(iter(counts))
+            continue
+        break
+
+    instructions = []
+    if counts:
+        suggestions = [f"path='{folder.relative_to(base_dir).as_posix()}' ({count} {'file' if count == 1 else 'files'})"
+                       for folder, count in sorted(counts.items(), key=lambda item: -item[1])[:MAX_FOLDER_SUGGESTIONS]]
+        instructions.append(f"See them one folder at a time with {tool}(path=...), for example: {', '.join(suggestions)}.")
+    if direct:
+        folder = scope_dir.relative_to(base_dir).as_posix()
+        where = "the top of the allowed directory" if folder == "." else f"'{folder}'"
+        instructions.append(f"{direct} of them are directly in {where}: find them with search_files_by_pattern and read the ones you need with read_file_with_metadata.")
+    return " ".join(instructions)
+
+def _generate_simple_map(base_dir: Path, gitignore_patterns: list[str], root_dir: Path | None = None) -> tuple[str, bool]:
     """
     Generates a directory tree string of the allowed files within root_dir (defaulting to base_dir).
+    Returns the tree and whether it was cut short at MAX_TREE_LINES.
     """
     root_dir = root_dir or base_dir
     lines = [f"Root: `{root_dir.as_posix()}`\n"]
+    limited = False
 
     def _build_tree(current_dir: Path, prefix: str = ""):
+        nonlocal limited
         try:
             entries = []
             for entry in current_dir.iterdir():
@@ -674,6 +714,9 @@ def _generate_simple_map(base_dir: Path, gitignore_patterns: list[str], root_dir
             return
 
         for i, entry in enumerate(entries):
+            if len(lines) > MAX_TREE_LINES:
+                limited = True
+                return
             is_last = (i == len(entries) - 1)
             connector = "└── " if is_last else "├── "
 
@@ -685,7 +728,17 @@ def _generate_simple_map(base_dir: Path, gitignore_patterns: list[str], root_dir
                 lines.append(f"{prefix}{connector}{entry.name}\n")
 
     _build_tree(root_dir)
-    return "".join(lines)
+    if limited:
+        lines.append("... (file tree cut short)\n")
+    return "".join(lines), limited
+
+def _tree_limit_note(base_dir: Path, gitignore_patterns: list[str], scope_dir: Path) -> str:
+    """
+    Returns the instruction shown when the file tree was cut short.
+    """
+    files = [p for p in _iter_files(base_dir, gitignore_patterns, scope_dir) if p.suffix in ALL_ALLOWED_SUFFIXES]
+    return (f"Output limited: the file tree has more than {MAX_TREE_LINES} lines, so it is cut short."
+            f" {_limit_instructions(base_dir, scope_dir, files, 'generate_file_map')}")
 
 def _create_map_content(base_dir: Path, gitignore_patterns: list[str], scope_dir: Path) -> str:
     """
@@ -694,13 +747,20 @@ def _create_map_content(base_dir: Path, gitignore_patterns: list[str], scope_dir
     """
     metadata = _get_project_metadata(base_dir, gitignore_patterns)
 
-    content = ["# Codebase Structure & Summaries\n\n"]
-    content.append("## File Map\n")
-    map_tree = _generate_simple_map(base_dir, gitignore_patterns, scope_dir)
-    content.append(f"```\n{map_tree}```\n\n")
-    content.append("## Detailed Descriptions\n\n")
+    map_tree, tree_limited = _generate_simple_map(base_dir, gitignore_patterns, scope_dir)
+    content = ["## File Map\n", f"```\n{map_tree}```\n\n", "## Detailed Descriptions\n\n"]
 
+    # Describe files until the output reaches MAX_OUTPUT_CHARS, leaving room for the notes
+    budget = MAX_OUTPUT_CHARS - min(3000, MAX_OUTPUT_CHARS // 4)
+    used = sum(len(part) for part in content)
+    described, omitted = 0, []
     for path in _iter_files(base_dir, gitignore_patterns, scope_dir):
+        if path.suffix not in ALL_ALLOWED_SUFFIXES:
+            continue
+        if omitted:
+            omitted.append(path)
+            continue
+
         file_content = ""
         if path.suffix in PYTHON_SUFFIXES:
             file_content = _parse_python(path, base_dir, metadata)
@@ -708,14 +768,27 @@ def _create_map_content(base_dir: Path, gitignore_patterns: list[str], scope_dir
             file_content = _parse_js_ts(path, base_dir)
         elif path.suffix in OTHER_SUFFIXES:
             file_content = f"### `{path.relative_to(base_dir).as_posix()}`\n"
+        if not file_content:
+            continue
 
-        if file_content:
-            if len(content) > 0 and not content[-1].endswith("\n\n"):
-                content.append("\n" + file_content)
-            else:
-                content.append(file_content)
+        if not content[-1].endswith("\n\n"):
+            file_content = "\n" + file_content
+        if used + len(file_content) > budget:
+            omitted.append(path)
+            continue
+        content.append(file_content)
+        used += len(file_content)
+        described += 1
 
-    return "".join(content)
+    notes = []
+    if omitted:
+        notes.append(f"Output limited: the map reached its limit of {MAX_OUTPUT_CHARS} characters, so {len(omitted)} of {described + len(omitted)} files are not described below."
+                     f" {_limit_instructions(base_dir, scope_dir, omitted, 'generate_codebase_map')}")
+    if tree_limited:
+        notes.append(_tree_limit_note(base_dir, gitignore_patterns, scope_dir))
+
+    header = "# Codebase Structure & Summaries\n\n" + "".join(f"{note}\n\n" for note in notes)
+    return header + "".join(content)
 
 # --- Public MCP Tools ---
 
@@ -736,7 +809,7 @@ def generate_codebase_map(path: str | None = None) -> str:
         str: The generated codebase structure map as a string, or an error message.
     """
     if not ALLOWED_DIR.exists():
-        return f"Error: Input directory {ALLOWED_DIR.as_posix()} does not exist."
+        return f"Error: Allowed directory {ALLOWED_DIR.as_posix()} does not exist."
 
     try:
         gitignore_patterns = _load_gitignore_patterns(ALLOWED_DIR)
@@ -763,7 +836,7 @@ def generate_file_map(path: str | None = None) -> str:
         str: The generated file tree map as a string, or an error message.
     """
     if not ALLOWED_DIR.exists():
-        return f"Error: Input directory {ALLOWED_DIR.as_posix()} does not exist."
+        return f"Error: Allowed directory {ALLOWED_DIR.as_posix()} does not exist."
 
     try:
         gitignore_patterns = _load_gitignore_patterns(ALLOWED_DIR)
@@ -771,8 +844,9 @@ def generate_file_map(path: str | None = None) -> str:
         if error:
             return error
 
-        map_tree = _generate_simple_map(ALLOWED_DIR, gitignore_patterns, scope_dir)
-        return f"File map of {scope_dir.as_posix()}\n\n```\n{map_tree}```"
+        map_tree, tree_limited = _generate_simple_map(ALLOWED_DIR, gitignore_patterns, scope_dir)
+        note = f"{_tree_limit_note(ALLOWED_DIR, gitignore_patterns, scope_dir)}\n\n" if tree_limited else ""
+        return f"File map of {scope_dir.as_posix()}\n\n{note}```\n{map_tree}```"
     except Exception as e:
         return f"Error: Generating file map failed:\n{e}\n{traceback.format_exc()}"
 
@@ -803,6 +877,9 @@ def get_codebase_map_config() -> str:
                 "patterns": _load_gitignore_patterns(ALLOWED_DIR)
             },
             "included_file_types": sorted(ALL_ALLOWED_SUFFIXES),
+            "max_output_chars": MAX_OUTPUT_CHARS,
+            "max_tree_lines": MAX_TREE_LINES,
+            "max_parse_bytes": MAX_PARSE_BYTES,
             "notes": [
                 "Files named in protected_file_names (the MCP server configuration) are always denied and hidden at any depth, even if forbidden_paths is empty.",
                 "Only files with an included file type are listed in the maps.",

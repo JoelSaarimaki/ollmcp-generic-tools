@@ -20,7 +20,9 @@ IGNORED_DIRS = {
     "target", "out", ".mypy_cache", ".ruff_cache"
 }
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10MB limit
-MAX_RESULTS = 100  # Cap output to protect the context window
+# Largest response size in characters (about 4 characters per token). Lower it for models with small context windows.
+MAX_OUTPUT_CHARS = max(2000, int(os.getenv("MAX_OUTPUT_CHARS") or 40000))
+MAX_RESULTS = 100  # Matches shown at most
 MAX_LINE_CHARS = 300  # Longer lines (e.g. minified code) are shortened around the match
 MAX_CONTEXT_LINES = 5
 BINARY_CHECK_BYTES = 8192  # Files with a null byte in this many first bytes are treated as binary
@@ -251,14 +253,15 @@ def _search_file(path: Path, pattern: re.Pattern) -> tuple[list[str], dict[int, 
             matches[i] = match
     return lines, matches
 
-def _format_file_matches(rel_path: str, lines: list[str], matches: dict[int, re.Match], context_lines: int, limit: int) -> list[str]:
+def _format_file_matches(rel_path: str, lines: list[str], matches: dict[int, re.Match], context_lines: int, limit: int) -> list[tuple[str, bool]]:
     """
     Formats up to limit matches of one file, grep-style: 'path:line: text' for matching lines and
     'path-line- text' for context lines, with '--' between separate groups of lines.
+    Returns (line, is_match) pairs, so that the caller can count the matches it shows.
     """
     shown = sorted(matches)[:limit]
     if not context_lines:
-        return [f"{rel_path}:{i + 1}: {_shorten_line(lines[i].strip(), matches[i])}" for i in shown]
+        return [(f"{rel_path}:{i + 1}: {_shorten_line(lines[i].strip(), matches[i])}", True) for i in shown]
 
     # Merge overlapping context ranges into groups
     groups = []
@@ -272,23 +275,52 @@ def _format_file_matches(rel_path: str, lines: list[str], matches: dict[int, re.
     out = []
     for start, end in groups:
         if out:
-            out.append("--")
+            out.append(("--", False))
         for i in range(start, end + 1):
             if i in matches and i in shown:
-                out.append(f"{rel_path}:{i + 1}: {_shorten_line(lines[i], matches[i])}")
+                out.append((f"{rel_path}:{i + 1}: {_shorten_line(lines[i], matches[i])}", True))
             else:
-                out.append(f"{rel_path}-{i + 1}- {_shorten_line(lines[i])}")
+                out.append((f"{rel_path}-{i + 1}- {_shorten_line(lines[i])}", False))
     return out
+
+def _suggest_folder(scope: Path, file_matches: list[tuple[tuple[str, ...], int]]) -> tuple[str, int] | None:
+    """
+    Returns the subfolder of scope with the most matches and its match count, from (folder parts, match count)
+    pairs of the matching files. While one subfolder holds all the matches, its subfolders are compared instead.
+    Returns None if the matches are not in subfolders.
+    """
+    prefix = ()
+    while True:
+        counts, direct = {}, 0
+        for folders, count in file_matches:
+            if folders[:len(prefix)] != prefix:
+                continue
+            if len(folders) > len(prefix):
+                counts[folders[len(prefix)]] = counts.get(folders[len(prefix)], 0) + count
+            else:
+                direct += count
+        if len(counts) == 1 and not direct:
+            prefix += (next(iter(counts)),)
+            continue
+        if counts:
+            top = max(counts, key=counts.get)
+            prefix, count = prefix + (top,), counts[top]
+        else:
+            count = direct
+        break
+    if not prefix:
+        return None
+    return scope.joinpath(*prefix).relative_to(ALLOWED_DIR).as_posix(), count
 
 def _format_list(items: list[str], location: str) -> str:
     """
     Formats a list of matching paths, capped at MAX_RESULTS.
     """
     output = f"Found {len(items)} matches in {location}:\n\n"
-    output += "\n".join(items[:MAX_RESULTS])
     if len(items) > MAX_RESULTS:
-        output += f"\n... (and {len(items) - MAX_RESULTS} more matches)"
-    return output
+        output += (f"Output limited: only the first {MAX_RESULTS} of {len(items)} matches are shown."
+                   f" Use a more specific pattern to see the rest, e.g. 'src/**/*.py' instead of '*.py' with recursive=True.\n\n")
+    return output + "\n".join(items[:MAX_RESULTS])
 
 # --- Public MCP Tools ---
 
@@ -304,7 +336,7 @@ def search_text_in_files(query: str, case_sensitive: bool = False, path: str | N
         query (str): The text or regex pattern to search for. Escape regex special characters
             such as '(' or '.' to search for them literally.
         case_sensitive (bool): Whether the search should be case-sensitive. The default is False
-        path (str, optional): A folder or file to limit the search to, relative to the input
+        path (str, optional): A folder or file to limit the search to, relative to the allowed
             directory (e.g., 'src/components'). Defaults to the whole allowed directory.
         file_pattern (str, optional): A glob pattern the file path must end with (e.g., '*.py',
             '*.test.ts' or 'tests/*.py'). Defaults to all files.
@@ -332,7 +364,10 @@ def search_text_in_files(query: str, case_sensitive: bool = False, path: str | N
         file_regex = _glob_to_regex("/" + file_pattern.replace("\\", "/").lstrip("/")) if file_pattern else None
         files = [scope] if scope.is_file() else [p for p, is_dir in _walk(ALLOWED_DIR, gitignore_patterns, scope) if not is_dir]
 
-        total_matches, matched_files, remaining = 0, 0, MAX_RESULTS
+        # Show matches until MAX_RESULTS matches or MAX_OUTPUT_CHARS characters, leaving room for the notes
+        budget = MAX_OUTPUT_CHARS - min(1500, MAX_OUTPUT_CHARS // 4)
+        total_matches, matched_files, shown_matches, used, full = 0, 0, 0, 0, False
+        file_matches = []
         output = []
         for file in files:
             rel_path = file.relative_to(ALLOWED_DIR).as_posix()
@@ -343,20 +378,39 @@ def search_text_in_files(query: str, case_sensitive: bool = False, path: str | N
                 continue
             total_matches += len(matches)
             matched_files += 1
-            if remaining > 0:
-                output.extend(_format_file_matches(rel_path, lines, matches, context_lines, remaining))
-                output.append("")
-                remaining -= min(len(matches), remaining)
+            folders = file.relative_to(scope).parts[:-1] if scope.is_dir() else ()
+            file_matches.append((folders, len(matches)))
+
+            if full or shown_matches >= MAX_RESULTS:
+                continue
+            for line, is_match in _format_file_matches(rel_path, lines, matches, context_lines, MAX_RESULTS - shown_matches):
+                if used + len(line) + 1 > budget:
+                    full = True
+                    break
+                output.append(line)
+                used += len(line) + 1
+                shown_matches += is_match
+            output.append("")
 
         location = _display_path(scope, ALLOWED_DIR) if scope != ALLOWED_DIR else ALLOWED_DIR.as_posix()
         if not total_matches:
             filter_note = f" (files matching '{file_pattern}')" if file_pattern else ""
             return f"No matches found for '{query}' in {location}{filter_note}"
 
-        result = f"Found {total_matches} matches in {matched_files} files in {location}:\n\n" + "\n".join(output).rstrip()
-        if total_matches > MAX_RESULTS:
-            result += f"\n\n... (and {total_matches - MAX_RESULTS} more matches. Narrow the search with path or file_pattern.)"
-        return result
+        result = f"Found {total_matches} matches in {matched_files} files in {location}:\n\n"
+        if shown_matches < total_matches:
+            hints = []
+            suggestion = _suggest_folder(scope, file_matches) if scope.is_dir() else None
+            if suggestion:
+                hints.append(f"path (e.g. path='{suggestion[0]}', which has {suggestion[1]} matches)")
+            if not file_pattern:
+                hints.append("file_pattern (e.g. file_pattern='*.py')")
+            if context_lines:
+                hints.append("fewer context_lines")
+            hints.append("a more specific query")
+            result += (f"Output limited: only {shown_matches} of {total_matches} matches are shown, as the output is limited to {MAX_RESULTS} matches or {MAX_OUTPUT_CHARS} characters."
+                       f" Narrow the search with {', '.join(hints[:-1])} or {hints[-1]}.\n\n")
+        return result + "\n".join(output).rstrip()
     except Exception as e:
         return f"Error: Searching text in files failed:\n{e}\n{traceback.format_exc()}"
 
@@ -430,6 +484,7 @@ def get_search_config() -> str:
                 "patterns": _load_gitignore_patterns(ALLOWED_DIR)
             },
             "max_file_size_bytes": MAX_FILE_SIZE_BYTES,
+            "max_output_chars": MAX_OUTPUT_CHARS,
             "max_results_shown": MAX_RESULTS,
             "max_line_chars": MAX_LINE_CHARS,
             "max_context_lines": MAX_CONTEXT_LINES,

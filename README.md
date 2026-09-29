@@ -2,6 +2,8 @@
 
 Generic custom MCP servers for Ollmcp for Python and JS/TS development purposes.
 
+For the design principles behind the servers and the planned improvements, see [DEVELOPMENT.md](DEVELOPMENT.md).
+
 ## Setup
 
 ### Prerequisites

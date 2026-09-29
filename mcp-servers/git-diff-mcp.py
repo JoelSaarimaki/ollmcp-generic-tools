@@ -1,121 +1,41 @@
 # --- git-diff-mcp.py ---
 import json
-import os
 import subprocess
 import traceback
 from pathlib import Path
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
+from mcp_common import (
+    ALLOWED_DIR,
+    CONFIG_PATH,
+    FORBIDDEN_PATHS,
+    MAX_OUTPUT_CHARS,
+    PROTECTED_FILE_NAMES,
+    access_denied_message,
+    get_repo_root,
+    is_path_allowed,
+    resolve_path
+)
 
 # --- Constants & Config ---
 mcp = MCPServer("Git-Diff-Server")
 
-ALLOWED_DIR = Path(os.getenv("ALLOWED_DIR", os.getcwd())).resolve()
-PROTECTED_FILE_NAMES = {".mcp.json"}  # MCP server configuration, never accessible regardless of FORBIDDEN_PATHS
 DIFF_MODES = {
     "unstaged": ["diff"],
     "staged": ["diff", "--cached"],
     "head": ["diff", "HEAD"]
 }
-# Largest response size in characters (about 4 characters per token). Lower it for models with small context windows.
-MAX_OUTPUT_CHARS = max(2000, int(os.getenv("MAX_OUTPUT_CHARS") or 40000))
 MAX_LISTED_FILES = 200  # Changed and untracked files listed at most by get_all_changes_diff
 JSON_ESCAPE_RATIO = 0.9  # Share of the budget used for text inside JSON, as escaping line breaks and quotes adds characters
 
 # --- Internal Helpers ---
 
-def _load_forbidden_paths(base_dir: Path) -> list[Path]:
-    """
-    Loads the forbidden folders and files from the FORBIDDEN_PATHS env var.
-    Paths are separated by commas, e.g. "folder/sub_folder/code-file.py, another_folder".
-    Relative paths are resolved against base_dir. An empty or unset value means no restrictions.
-    """
-    raw = os.getenv("FORBIDDEN_PATHS", "").strip()
-    if not raw:
-        return []
-
-    forbidden = []
-    for entry in raw.split(","):
-        entry = entry.strip()
-        if not entry:
-            continue
-        p = Path(entry)
-        if not p.is_absolute():
-            p = base_dir / p
-        forbidden.append(p.resolve())
-    return forbidden
-
-FORBIDDEN_PATHS = _load_forbidden_paths(ALLOWED_DIR)
-
-def _is_protected(path: Path) -> bool:
-    """
-    Checks if the given path is a protected file (see PROTECTED_FILE_NAMES), also through a symlink
-    or a Windows alias of the name, such as a trailing dot or a '::$DATA' stream suffix.
-    """
-    names = [path.name]
-    try:
-        if path.is_symlink():
-            names.append(path.resolve().name)
-    except OSError:
-        return True
-    for name in names:
-        name = name.lower()
-        if os.name == "nt":
-            name = name.split(":")[0].rstrip(" .")
-        if name in PROTECTED_FILE_NAMES:
-            return True
-    return False
-
-def _is_forbidden(path: Path) -> bool:
-    """
-    Checks if the given path is a protected file, a forbidden file or is located within a forbidden folder.
-    """
-    if _is_protected(path):
-        return True
-    if not FORBIDDEN_PATHS:
-        return False
-    try:
-        resolved = path.resolve()
-    except OSError:
-        return True
-    return any(resolved.is_relative_to(forbidden) for forbidden in FORBIDDEN_PATHS)
-
-def _resolve_path(path: str) -> Path:
-    """
-    Resolves a path given to a tool. Relative paths are resolved against ALLOWED_DIR, as in all servers.
-    """
-    p = Path(path)
-    return (p if p.is_absolute() else ALLOWED_DIR / p).resolve()
-
-def _is_path_allowed(path: Path) -> bool:
-    """
-    Checks if the given path is within ALLOWED_DIR and not forbidden.
-    """
-    try:
-        return path.resolve().is_relative_to(ALLOWED_DIR) and not _is_forbidden(path)
-    except (ValueError, OSError):
-        return False
-
 def _access_denied(path: Path, label: str = "Path") -> str:
     """
     Returns the JSON access_denied response, stating why access to the given path was denied.
     """
-    if _is_protected(path):
-        message = f"{label} is protected: '{path.name}' files contain the MCP server configuration and cannot be accessed."
-    elif _is_forbidden(path):
-        message = f"{label} is forbidden: {path}"
-    else:
-        message = f"{label} is not within the allowed directory: {ALLOWED_DIR}"
-    return json.dumps({"success": False, "error": "access_denied", "message": message}, indent=2)
-
-def _display_path(path: Path, base_dir: Path) -> str:
-    """
-    Returns the path relative to base_dir if it is inside it, otherwise the absolute path.
-    """
-    if path.is_relative_to(base_dir):
-        return path.relative_to(base_dir).as_posix()
-    return path.as_posix()
+    return json.dumps({"success": False, "error": "access_denied", "message": access_denied_message(path, label)}, indent=2, ensure_ascii=False)
 
 def _run_git_command(args: list[str], cwd: str | Path | None = None) -> dict[str, Any]:
     """
@@ -159,15 +79,6 @@ def _existing_dir(path: Path) -> Path:
         current = current.parent
     return current
 
-def _get_repo_root(directory: Path) -> Path | None:
-    """
-    Returns the root of the git repository containing the directory, or None if it is not in a repository.
-    """
-    result = _run_git_command(["rev-parse", "--show-toplevel"], cwd=directory)
-    if not result["success"]:
-        return None
-    return Path(result["stdout"].strip()).resolve()
-
 def _pathspecs(repo_root: Path, target: Path) -> list[str]:
     """
     Returns git pathspecs that limit a command to the target within the repository,
@@ -181,9 +92,11 @@ def _pathspecs(repo_root: Path, target: Path) -> list[str]:
     for forbidden in FORBIDDEN_PATHS:
         if forbidden.is_relative_to(repo_root) and forbidden != repo_root:
             specs.append(f":(top,exclude){forbidden.relative_to(repo_root).as_posix()}")
-    # Protected files are excluded by name at any depth, in any letter case
+    # Protected files are excluded by name at any depth, in any letter case, and the tools config file by its path
     for name in sorted(PROTECTED_FILE_NAMES):
         specs.append(f":(top,exclude,glob,icase)**/{name}")
+    if CONFIG_PATH.is_relative_to(repo_root):
+        specs.append(f":(top,exclude){CONFIG_PATH.relative_to(repo_root).as_posix()}")
     return specs
 
 def _prepare(path: str | None) -> tuple[Path, Path, Path | None, str | None]:
@@ -191,18 +104,18 @@ def _prepare(path: str | None) -> tuple[Path, Path, Path | None, str | None]:
     Resolves the path (defaulting to ALLOWED_DIR) and finds its working directory and repository root.
     Returns (path, working directory, repository root, error response); the error response is None on success.
     """
-    p = _resolve_path(path) if path else ALLOWED_DIR
-    if not _is_path_allowed(p):
+    p = resolve_path(path) if path else ALLOWED_DIR
+    if not is_path_allowed(p):
         return p, p, None, _access_denied(p)
 
     cwd = _existing_dir(p)
-    repo_root = _get_repo_root(cwd)
+    repo_root = get_repo_root(cwd)
     if repo_root is None:
         return p, cwd, None, json.dumps({
             "success": False,
             "error": "not_a_repository",
             "message": f"{p} is not inside a git repository."
-        }, indent=2)
+        }, indent=2, ensure_ascii=False)
     return p, cwd, repo_root, None
 
 def _limit_text(text: str, limit: int, instruction: str) -> tuple[str, str | None]:
@@ -237,7 +150,7 @@ def _invalid_mode(mode: str) -> str | None:
         "success": False,
         "error": "invalid_mode",
         "message": f"Invalid mode '{mode}'. Must be one of: {', '.join(DIFF_MODES)}"
-    }, indent=2)
+    }, indent=2, ensure_ascii=False)
 
 # --- Public MCP Tools ---
 
@@ -267,7 +180,7 @@ def get_file_diff(path: str, mode: str) -> str:
 
         result = _run_git_command(DIFF_MODES[mode] + ["--"] + _pathspecs(repo_root, p), cwd=cwd)
         if not result["success"]:
-            return json.dumps(result, indent=2)
+            return json.dumps(result, indent=2, ensure_ascii=False)
 
         if not result["stdout"].strip():
             if not p.exists():
@@ -276,18 +189,18 @@ def get_file_diff(path: str, mode: str) -> str:
                     "error": "file_not_found",
                     "message": f"The file '{path}' was not found in the working tree and has no {mode} changes.",
                     "command": result["command"]
-                }, indent=2)
+                }, indent=2, ensure_ascii=False)
             return json.dumps({
                 "success": True,
                 "stdout": "",
                 "message": "No differences detected.",
                 "command": result["command"]
-            }, indent=2)
+            }, indent=2, ensure_ascii=False)
 
         result = _limit_stdout(result, "The diff is too long to show completely: read the current version of the file with read_file_with_metadata instead.")
-        return json.dumps(result, indent=2)
+        return json.dumps(result, indent=2, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"success": False, "error": "diff_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
+        return json.dumps({"success": False, "error": "diff_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
 def get_all_changes_diff(mode: str, path: str | None = None) -> str:
@@ -320,11 +233,11 @@ def get_all_changes_diff(mode: str, path: str | None = None) -> str:
         specs = _pathspecs(repo_root, p)
         name_status = _run_git_command(DIFF_MODES[mode] + ["--name-status", "--"] + specs, cwd=repo_root)
         if not name_status["success"]:
-            return json.dumps(name_status, indent=2)
+            return json.dumps(name_status, indent=2, ensure_ascii=False)
 
         diff = _run_git_command(DIFF_MODES[mode] + ["--"] + specs, cwd=repo_root)
         if not diff["success"]:
-            return json.dumps(diff, indent=2)
+            return json.dumps(diff, indent=2, ensure_ascii=False)
 
         untracked_files = []
         if mode != "staged":
@@ -357,7 +270,7 @@ def get_all_changes_diff(mode: str, path: str | None = None) -> str:
             "command": diff["command"]
         }, indent=2, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"success": False, "error": "diff_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
+        return json.dumps({"success": False, "error": "diff_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
 def get_file_history(path: str, limit: int = 10) -> str:
@@ -366,19 +279,20 @@ def get_file_history(path: str, limit: int = 10) -> str:
 
     Args:
         path (str): The path to the file.
-        limit (int, optional): The number of recent commits to show. Defaults to 10.
+        limit (int, optional): The number of recent commits to show, at least 1. Defaults to 10.
 
     Returns:
         str: A JSON-formatted string containing the git log with patch information or an error message.
     """
     try:
+        limit = max(1, int(limit))
         p, cwd, repo_root, error = _prepare(path)
         if error:
             return error
 
         result = _run_git_command(["log", "-p", "-n", str(limit), "--"] + _pathspecs(repo_root, p), cwd=cwd)
         if not result["success"]:
-            return json.dumps(result, indent=2)
+            return json.dumps(result, indent=2, ensure_ascii=False)
 
         if not result["stdout"].strip():
             if not p.exists():
@@ -387,19 +301,19 @@ def get_file_history(path: str, limit: int = 10) -> str:
                     "error": "file_not_found",
                     "message": f"The file '{path}' was not found in the working tree or its history.",
                     "command": result["command"]
-                }, indent=2)
+                }, indent=2, ensure_ascii=False)
             return json.dumps({
                 "success": True,
                 "stdout": "",
                 "message": "No commit history found. The file may not be committed yet.",
                 "command": result["command"]
-            }, indent=2)
+            }, indent=2, ensure_ascii=False)
 
-        smaller = f"Show fewer commits with a smaller limit, e.g. limit={max(1, int(limit) // 2)}." if int(limit) > 1 else "The latest change alone is too long to show completely."
+        smaller = f"Show fewer commits with a smaller limit, e.g. limit={max(1, limit // 2)}." if limit > 1 else "The latest change alone is too long to show completely."
         result = _limit_stdout(result, smaller)
-        return json.dumps(result, indent=2)
+        return json.dumps(result, indent=2, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"success": False, "error": "history_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
+        return json.dumps({"success": False, "error": "history_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
 def get_git_status(path: str | None = None) -> str:
@@ -421,47 +335,9 @@ def get_git_status(path: str | None = None) -> str:
 
         result = _run_git_command(["status", "--"] + _pathspecs(repo_root, p), cwd=cwd)
         result = _limit_stdout(result, "Limit the status to one folder with path, or list the changed files with get_all_changes_diff.")
-        return json.dumps(result, indent=2)
+        return json.dumps(result, indent=2, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"success": False, "error": "status_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
-
-@mcp.tool()
-def get_git_config() -> str:
-    """
-    Returns the configuration that decides which files the git tools can see:
-    the allowed directory, which relative paths are resolved against, its repository root
-    and forbidden paths.
-    Use this tool to find out why a path is denied or missing from the git tools' output.
-
-    Returns:
-        str: A JSON-formatted string containing the configuration or an error message.
-    """
-    try:
-        repo_root = _get_repo_root(ALLOWED_DIR) if ALLOWED_DIR.exists() else None
-        return json.dumps({
-            "success": True,
-            "allowed_dir": ALLOWED_DIR.as_posix(),
-            "allowed_dir_exists": ALLOWED_DIR.exists(),
-            "repository_root": repo_root.as_posix() if repo_root else None,
-            "ignored_dirs": [],
-            "forbidden_paths": [_display_path(p, ALLOWED_DIR) for p in FORBIDDEN_PATHS],
-            "max_output_chars": MAX_OUTPUT_CHARS,
-            "max_listed_files": MAX_LISTED_FILES,
-            "protected_file_names": sorted(PROTECTED_FILE_NAMES),
-            "gitignore": {
-                "applied": True
-            },
-            "notes": [
-                "Files named in protected_file_names (the MCP server configuration) are always denied and hidden at any depth, even if forbidden_paths is empty.",
-                "Only paths within allowed_dir can be inspected.",
-                "Relative paths given to the tools are resolved against allowed_dir.",
-                "Forbidden paths and everything inside forbidden folders are denied and left out of status and diff output.",
-                "Git's own .gitignore rules decide which untracked files are listed.",
-                "If allowed_dir is a subfolder of the repository, changes outside it are left out."
-            ]
-        }, indent=2, ensure_ascii=False)
-    except Exception as e:
-        return json.dumps({"success": False, "error": "config_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
+        return json.dumps({"success": False, "error": "status_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
 
 if __name__ == "__main__":
     mcp.run()

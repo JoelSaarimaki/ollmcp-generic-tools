@@ -10,15 +10,32 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from mcp.server.mcpserver import Image, MCPServer
+from mcp_common import (
+    ALL_ALLOWED_SUFFIXES,
+    ALLOWED_DIR,
+    COMMANDS_CONFIG,
+    CONFIG,
+    CONFIG_PATH,
+    CONTEXT_FOLDER,
+    FORBIDDEN_PATHS,
+    GITIGNORE_PATH,
+    IGNORED_DIRS,
+    MAX_OUTPUT_CHARS,
+    PROTECTED_FILE_NAMES,
+    READ_ONLY_FILES,
+    access_denied_message,
+    contains_forbidden,
+    display_path,
+    get_repo_root,
+    is_path_allowed,
+    load_gitignore_patterns,
+    resolve_path
+)
 
 # --- Constants & Config ---
 mcp = MCPServer("Safe-Filesystem-Server")
 
-ALLOWED_DIR = Path(os.getenv("ALLOWED_DIR", os.getcwd())).resolve()
-PROTECTED_FILE_NAMES = {".mcp.json"}  # MCP server configuration, never accessible regardless of FORBIDDEN_PATHS
 MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10MB limit
-# Largest response size in characters (about 4 characters per token). Lower it for models with small context windows.
-MAX_OUTPUT_CHARS = max(2000, int(os.getenv("MAX_OUTPUT_CHARS") or 40000))
 MAX_READ_LINES = 1000  # Longer files are read in parts
 MAX_LINE_CHARS = 2000  # Longer lines (e.g. minified code) are shown shortened, ending with SHORTENED_LINE_MARK
 SHORTENED_LINE_MARK = " [...]"
@@ -53,118 +70,11 @@ class FileMetadata:
 
 # --- Internal Helpers ---
 
-def _load_forbidden_paths(base_dir: Path) -> list[Path]:
-    """
-    Loads the forbidden folders and files from the FORBIDDEN_PATHS env var.
-    Paths are separated by commas, e.g. "folder/sub_folder/code-file.py, another_folder".
-    Relative paths are resolved against base_dir. An empty or unset value means no restrictions.
-    """
-    raw = os.getenv("FORBIDDEN_PATHS", "").strip()
-    if not raw:
-        return []
-
-    forbidden = []
-    for entry in raw.split(","):
-        entry = entry.strip()
-        if not entry:
-            continue
-        p = Path(entry)
-        if not p.is_absolute():
-            p = base_dir / p
-        forbidden.append(p.resolve())
-    return forbidden
-
-FORBIDDEN_PATHS = _load_forbidden_paths(ALLOWED_DIR)
-
-def _is_protected(path: Path) -> bool:
-    """
-    Checks if the given path is a protected file (see PROTECTED_FILE_NAMES), also through a symlink
-    or a Windows alias of the name, such as a trailing dot or a '::$DATA' stream suffix.
-    """
-    names = [path.name]
-    try:
-        if path.is_symlink():
-            names.append(path.resolve().name)
-    except OSError:
-        return True
-    for name in names:
-        name = name.lower()
-        if os.name == "nt":
-            name = name.split(":")[0].rstrip(" .")
-        if name in PROTECTED_FILE_NAMES:
-            return True
-    return False
-
-def _is_forbidden(path: Path) -> bool:
-    """
-    Checks if the given path is a protected file, a forbidden file or is located within a forbidden folder.
-    """
-    if _is_protected(path):
-        return True
-    if not FORBIDDEN_PATHS:
-        return False
-    try:
-        resolved = path.resolve()
-    except OSError:
-        return True
-    return any(resolved.is_relative_to(forbidden) for forbidden in FORBIDDEN_PATHS)
-
-def _contains_forbidden(path: Path) -> bool:
-    """
-    Checks if the given directory contains any forbidden or protected files or folders.
-    Used to stop recursive operations (delete, move) from touching forbidden or protected paths.
-    """
-    try:
-        resolved = path.resolve()
-    except OSError:
-        return True
-    if any(forbidden.is_relative_to(resolved) for forbidden in FORBIDDEN_PATHS):
-        return True
-    if resolved.is_dir():
-        for dirpath, _, filenames in os.walk(resolved):
-            if any(_is_protected(Path(dirpath) / name) for name in filenames):
-                return True
-    return False
-
-def _display_path(path: Path, base_dir: Path) -> str:
-    """
-    Returns the path relative to base_dir if it is inside it, otherwise the absolute path.
-    """
-    if path.is_relative_to(base_dir):
-        return path.relative_to(base_dir).as_posix()
-    return path.as_posix()
-
-def _resolve_path(path: str) -> Path:
-    """
-    Resolves a path given to a tool. Relative paths are resolved against ALLOWED_DIR, as in all servers.
-    """
-    p = Path(path)
-    return (p if p.is_absolute() else ALLOWED_DIR / p).resolve()
-
-def _is_path_allowed(path: Path) -> bool:
-    """
-    Checks if the given path is within ALLOWED_DIR and not forbidden.
-    """
-    try:
-        return path.resolve().is_relative_to(ALLOWED_DIR) and not _is_forbidden(path)
-    except (ValueError, OSError):
-        return False
-
-def _access_denied_message(path: Path, label: str = "Path") -> str:
-    """
-    Returns the reason why access to the given path was denied.
-    """
-    if _is_protected(path):
-        return f"{label} is protected: '{path.name}' files contain the MCP server configuration and cannot be accessed."
-    if _is_forbidden(path):
-        return f"{label} is forbidden: {path}"
-    return f"{label} is not within the allowed directory: {ALLOWED_DIR}"
-
 def _access_denied(path: Path, label: str = "Path") -> str:
     """
     Returns the JSON access_denied response, stating why access to the given path was denied.
     """
-    return json.dumps({"success": False, "error": "access_denied", "message": _access_denied_message(path, label)}, indent=2)
+    return json.dumps({"success": False, "error": "access_denied", "message": access_denied_message(path, label)}, indent=2, ensure_ascii=False)
 
 def _text_error(error: str, message: str) -> str:
     """
@@ -226,13 +136,13 @@ def _write_logic(path: Path, content: str, expected_sha256: str) -> str:
     original line endings and BOM. Returns a JSON response with the new metadata.
     """
     if not path.exists():
-        return json.dumps({"success": False, "error": "file_not_found", "message": f"File not found: {path}"}, indent=2)
+        return json.dumps({"success": False, "error": "file_not_found", "message": f"File not found: {path}. To create a new file, use create_file."}, indent=2, ensure_ascii=False)
 
     # 1. Read metadata to validate
     try:
         info = _get_file_info(path)
     except Exception as e:
-        return json.dumps({"success": False, "error": "read_error", "message": str(e)}, indent=2)
+        return json.dumps({"success": False, "error": "read_error", "message": str(e)}, indent=2, ensure_ascii=False)
 
     # 2. Hash validation
     if info.sha256 != expected_sha256:
@@ -241,7 +151,7 @@ def _write_logic(path: Path, content: str, expected_sha256: str) -> str:
             "error": "hash_mismatch",
             "message": "File changed since it was read.",
             "current_sha256": info.sha256
-        }, indent=2)
+        }, indent=2, ensure_ascii=False)
 
     # 3. Normalize all line endings to LF, then restore the original line endings
     normalized_content = _normalize_newlines(content)
@@ -262,11 +172,11 @@ def _write_logic(path: Path, content: str, expected_sha256: str) -> str:
         os.replace(temp_path, path)
 
         new_info = _get_file_info(path)
-        return json.dumps({"success": True, **asdict(new_info)}, indent=2)
+        return json.dumps({"success": True, **asdict(new_info)}, indent=2, ensure_ascii=False)
     except Exception as e:
         if temp_path.exists():
             os.remove(temp_path)
-        return json.dumps({"success": False, "error": "write_error", "message": str(e)}, indent=2)
+        return json.dumps({"success": False, "error": "write_error", "message": str(e)}, indent=2, ensure_ascii=False)
 
 def _detect_image_format(data: bytes) -> str | None:
     """
@@ -490,7 +400,7 @@ def _detect_neighbor_line_ending(directory: Path) -> tuple[str, str]:
     counts = {"CRLF": 0, "LF": 0}
     if directory.exists():
         for neighbor in directory.iterdir():
-            if neighbor.is_file() and _is_path_allowed(neighbor):
+            if neighbor.is_file() and is_path_allowed(neighbor):
                 try:
                     with open(neighbor, "rb") as f:
                         chunk = f.read(4096)
@@ -536,8 +446,8 @@ def write_file(path: str, content: str, expected_sha256: str) -> str:
             if the file became much shorter.
     """
     try:
-        p = _resolve_path(path)
-        if not _is_path_allowed(p):
+        p = resolve_path(path)
+        if not is_path_allowed(p):
             return _access_denied(p)
 
         if p.is_file():
@@ -545,7 +455,7 @@ def write_file(path: str, content: str, expected_sha256: str) -> str:
                 info = _get_file_info(p)
                 original = _read_text(p, info.has_bom)
             except Exception as e:
-                return json.dumps({"success": False, "error": "read_error", "message": str(e)}, indent=2)
+                return json.dumps({"success": False, "error": "read_error", "message": str(e)}, indent=2, ensure_ascii=False)
 
             placeholder = _find_placeholder(_normalize_newlines(content), original)
             if placeholder:
@@ -553,17 +463,17 @@ def write_file(path: str, content: str, expected_sha256: str) -> str:
                     "success": False,
                     "error": "placeholder_in_content",
                     "message": f"content contains the placeholder comment '{placeholder}'. The content is written literally, so the placeholder would replace real code. Write out the complete file, or use edit_file to change only part of it."
-                }, indent=2)
+                }, indent=2, ensure_ascii=False)
 
             result = json.loads(_write_logic(p, content, expected_sha256))
             old_count, new_count = len(_split_lines(original)), len(_split_lines(_normalize_newlines(content)))
             if result.get("success") and old_count >= 20 and new_count < old_count * SHRINK_WARNING_RATIO:
                 result["warning"] = f"The file shrank from {old_count} to {new_count} lines. If you meant to change only part of it, restore the missing lines: write_file replaces the whole file, while edit_file changes only part of it."
-            return json.dumps(result, indent=2)
+            return json.dumps(result, indent=2, ensure_ascii=False)
 
         return _write_logic(p, content, expected_sha256)
     except Exception as e:
-        return json.dumps({"success": False, "error": "write_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
+        return json.dumps({"success": False, "error": "write_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
 def edit_file(path: str, old_text: str, new_text: str, expected_sha256: str, replace_all: bool = False) -> str:
@@ -603,9 +513,9 @@ def edit_file(path: str, old_text: str, new_text: str, expected_sha256: str, rep
             lines, multiple_matches with their line numbers).
     """
     try:
-        p = _resolve_path(path)
-        if not _is_path_allowed(p):
-            return _text_error("access_denied", _access_denied_message(p))
+        p = resolve_path(path)
+        if not is_path_allowed(p):
+            return _text_error("access_denied", access_denied_message(p))
 
         return _edit_logic(p, old_text, new_text, expected_sha256, replace_all)
     except Exception as e:
@@ -625,12 +535,12 @@ def create_file(path: str, content: str) -> str:
         str: JSON response indicating success or error.
     """
     try:
-        p = _resolve_path(path)
-        if not _is_path_allowed(p):
+        p = resolve_path(path)
+        if not is_path_allowed(p):
             return _access_denied(p)
 
         if p.exists():
-            return json.dumps({"success": False, "error": "file_exists", "message": "File already exists."}, indent=2)
+            return json.dumps({"success": False, "error": "file_exists", "message": "File already exists."}, indent=2, ensure_ascii=False)
 
         target_newline, note = _detect_neighbor_line_ending(p.parent)
 
@@ -646,12 +556,12 @@ def create_file(path: str, content: str) -> str:
         message = f"File created successfully.{note}"
         try:
             new_info = _get_file_info(p)
-            return json.dumps({"success": True, **asdict(new_info), "message": message}, indent=2)
+            return json.dumps({"success": True, **asdict(new_info), "message": message}, indent=2, ensure_ascii=False)
         except Exception:
             # Fallback if metadata retrieval fails
-            return json.dumps({"success": True, "message": message}, indent=2)
+            return json.dumps({"success": True, "message": message}, indent=2, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"success": False, "error": "create_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
+        return json.dumps({"success": False, "error": "create_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
 def read_file_with_metadata(path: str, start_line: int | None = None, end_line: int | None = None, line_numbers: bool = False) -> str:
@@ -684,9 +594,9 @@ def read_file_with_metadata(path: str, start_line: int | None = None, end_line: 
         str: The file's metadata followed by its content as plain text, or an error message.
     """
     try:
-        p = _resolve_path(path)
-        if not _is_path_allowed(p):
-            return _text_error("access_denied", _access_denied_message(p))
+        p = resolve_path(path)
+        if not is_path_allowed(p):
+            return _text_error("access_denied", access_denied_message(p))
         if p.is_dir():
             return _text_error("is_a_directory", f"{p} is a directory. Use 'list_directory' to see its contents.")
         if not p.exists():
@@ -758,12 +668,12 @@ def read_image(path: str) -> list[str | Image] | str:
             or a JSON error message (e.g., unsupported_format or too_large).
     """
     try:
-        p = _resolve_path(path)
-        if not _is_path_allowed(p):
+        p = resolve_path(path)
+        if not is_path_allowed(p):
             return _access_denied(p)
 
         if not p.is_file():
-            return json.dumps({"success": False, "error": "file_not_found", "message": f"File not found: {p}"}, indent=2)
+            return json.dumps({"success": False, "error": "file_not_found", "message": f"File not found: {p}"}, indent=2, ensure_ascii=False)
 
         stats = p.stat()
         if stats.st_size > MAX_IMAGE_BYTES:
@@ -771,7 +681,7 @@ def read_image(path: str) -> list[str | Image] | str:
                 "success": False,
                 "error": "too_large",
                 "message": f"Image is {stats.st_size} bytes, larger than the {MAX_IMAGE_BYTES} byte limit."
-            }, indent=2)
+            }, indent=2, ensure_ascii=False)
 
         with open(p, "rb") as f:
             data = f.read()
@@ -781,7 +691,7 @@ def read_image(path: str) -> list[str | Image] | str:
             message = "Not a supported image. Supported formats: PNG, JPEG, GIF and WebP."
             if p.suffix.lower() == ".svg":
                 message += " SVG images are text files, so read them with 'read_file_with_metadata'."
-            return json.dumps({"success": False, "error": "unsupported_format", "message": message}, indent=2)
+            return json.dumps({"success": False, "error": "unsupported_format", "message": message}, indent=2, ensure_ascii=False)
 
         metadata = json.dumps({
             "success": True,
@@ -792,7 +702,7 @@ def read_image(path: str) -> list[str | Image] | str:
         }, indent=2, ensure_ascii=False)
         return [metadata, Image(data=data, format=image_format)]
     except Exception as e:
-        return json.dumps({"success": False, "error": "read_image_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
+        return json.dumps({"success": False, "error": "read_image_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
 def list_directory(path: str) -> str:
@@ -807,15 +717,15 @@ def list_directory(path: str) -> str:
         str: JSON string containing a list of entries, distinguishing between [FILE] and [DIR].
     """
     try:
-        p = _resolve_path(path)
-        if not _is_path_allowed(p):
+        p = resolve_path(path)
+        if not is_path_allowed(p):
             return _access_denied(p)
         if not p.is_dir():
-            return json.dumps({"success": False, "error": "not_a_directory", "message": f"{p} is not a directory."}, indent=2)
+            return json.dumps({"success": False, "error": "not_a_directory", "message": f"{p} is not a directory."}, indent=2, ensure_ascii=False)
 
         entries = []
         for entry in p.iterdir():
-            if not _is_path_allowed(entry):
+            if not is_path_allowed(entry):
                 continue
             try:
                 info = entry.stat()
@@ -838,15 +748,15 @@ def list_directory(path: str) -> str:
         limit = max(10, min(MAX_LIST_ENTRIES, (MAX_OUTPUT_CHARS - 1000) // 150))
         response = {"success": True, "total_entries": len(entries), "entries": entries[:limit]}
         if len(entries) > limit:
-            rel = _display_path(p, ALLOWED_DIR)
+            rel = display_path(p, ALLOWED_DIR)
             prefix = "" if rel == "." else f"{rel}/"
             suffixes = [Path(e["name"]).suffix for e in entries if e["type"] == "FILE" and Path(e["name"]).suffix]
             example = max(set(suffixes), key=suffixes.count) if suffixes else ".py"
             response["output_limited"] = (f"Output limited: the directory has {len(entries)} entries, but only the first {limit} (folders first, then files, by name) are listed."
                                           f" Find specific files with search_files_by_pattern, e.g. pattern='{prefix}*{example}' or pattern='{prefix}name*'.")
-        return json.dumps(response, indent=2)
+        return json.dumps(response, indent=2, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"success": False, "error": "list_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
+        return json.dumps({"success": False, "error": "list_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
 def create_directory(path: str) -> str:
@@ -860,17 +770,17 @@ def create_directory(path: str) -> str:
         str: JSON success/error message.
     """
     try:
-        p = _resolve_path(path)
-        if not _is_path_allowed(p):
+        p = resolve_path(path)
+        if not is_path_allowed(p):
             return _access_denied(p)
 
         if p.exists() and not p.is_dir():
-            return json.dumps({"success": False, "error": "file_exists", "message": "A file already exists at this path."}, indent=2)
+            return json.dumps({"success": False, "error": "file_exists", "message": "A file already exists at this path."}, indent=2, ensure_ascii=False)
 
         p.mkdir(parents=True, exist_ok=True)
-        return json.dumps({"success": True, "message": f"Directory created: {p}"}, indent=2)
+        return json.dumps({"success": True, "message": f"Directory created: {p}"}, indent=2, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"success": False, "error": "create_dir_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
+        return json.dumps({"success": False, "error": "create_dir_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
 def move_file(source: str, destination: str) -> str:
@@ -885,25 +795,25 @@ def move_file(source: str, destination: str) -> str:
         str: JSON success/error message.
     """
     try:
-        src = _resolve_path(source)
-        dst = _resolve_path(destination)
+        src = resolve_path(source)
+        dst = resolve_path(destination)
 
-        if not _is_path_allowed(src):
+        if not is_path_allowed(src):
             return _access_denied(src, "Source path")
-        if not _is_path_allowed(dst):
+        if not is_path_allowed(dst):
             return _access_denied(dst, "Destination path")
-        if _contains_forbidden(src):
-            return json.dumps({"success": False, "error": "access_denied", "message": f"Source path contains forbidden or protected files or folders: {src}"}, indent=2)
+        if contains_forbidden(src):
+            return json.dumps({"success": False, "error": "access_denied", "message": f"Source path contains forbidden or protected files or folders: {src}"}, indent=2, ensure_ascii=False)
 
         if not src.exists():
-            return json.dumps({"success": False, "error": "source_not_found", "message": f"Source not found: {src}"}, indent=2)
+            return json.dumps({"success": False, "error": "source_not_found", "message": f"Source not found: {src}"}, indent=2, ensure_ascii=False)
         if dst.exists():
-            return json.dumps({"success": False, "error": "destination_exists", "message": f"Destination already exists: {dst}"}, indent=2)
+            return json.dumps({"success": False, "error": "destination_exists", "message": f"Destination already exists: {dst}"}, indent=2, ensure_ascii=False)
 
         shutil.move(str(src), str(dst))
-        return json.dumps({"success": True, "message": f"Moved {src} to {dst}"}, indent=2)
+        return json.dumps({"success": True, "message": f"Moved {src} to {dst}"}, indent=2, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"success": False, "error": "move_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
+        return json.dumps({"success": False, "error": "move_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
 def delete_file(path: str) -> str:
@@ -917,59 +827,93 @@ def delete_file(path: str) -> str:
         str: JSON success/error message.
     """
     try:
-        p = _resolve_path(path)
-        if not _is_path_allowed(p):
+        p = resolve_path(path)
+        if not is_path_allowed(p):
             return _access_denied(p)
-        if _contains_forbidden(p):
-            return json.dumps({"success": False, "error": "access_denied", "message": f"Path contains forbidden or protected files or folders: {p}"}, indent=2)
+        if contains_forbidden(p):
+            return json.dumps({"success": False, "error": "access_denied", "message": f"Path contains forbidden or protected files or folders: {p}"}, indent=2, ensure_ascii=False)
         if not p.exists():
-            return json.dumps({"success": False, "error": "not_found", "message": f"Path not found: {p}"}, indent=2)
+            return json.dumps({"success": False, "error": "not_found", "message": f"Path not found: {p}"}, indent=2, ensure_ascii=False)
 
         if p.is_dir():
             shutil.rmtree(p)
         else:
             p.unlink()
 
-        return json.dumps({"success": True, "message": f"Deleted: {p}"}, indent=2)
+        return json.dumps({"success": True, "message": f"Deleted: {p}"}, indent=2, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"success": False, "error": "delete_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
+        return json.dumps({"success": False, "error": "delete_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
-def get_filesystem_config() -> str:
+def get_config() -> str:
     """
-    Returns the configuration that decides which paths the filesystem tools can access:
-    the allowed directory, which relative paths are resolved against, and forbidden paths.
-    Use this tool to find out why a path is denied or not found by the filesystem tools.
+    Returns the configuration shared by all MCP servers: the allowed directory, forbidden and protected
+    paths and the output limit, followed by what each server sees: the files the maps and searches skip,
+    the git repository, the command registry and the context files.
+    Use this tool to find out why a file is missing, a path is denied or a tool does not find something.
 
     Returns:
         str: A JSON-formatted string containing the configuration or an error message.
     """
     try:
+        gitignore_patterns = load_gitignore_patterns()
+        repo_root = get_repo_root(ALLOWED_DIR) if ALLOWED_DIR.exists() else None
+
+        commands = {"registry": COMMANDS_CONFIG.as_posix() if COMMANDS_CONFIG else None,
+                    "registry_found": bool(COMMANDS_CONFIG and COMMANDS_CONFIG.is_file())}
+        if commands["registry_found"]:
+            try:
+                with open(COMMANDS_CONFIG, "r", encoding="utf-8") as f:
+                    commands["command_count"] = len(json.load(f))
+            except Exception as e:
+                commands["error"] = f"The registry could not be read: {e}"
+
         return json.dumps({
             "success": True,
-            "allowed_dir": ALLOWED_DIR.as_posix(),
-            "allowed_dir_exists": ALLOWED_DIR.exists(),
-            "ignored_dirs": [],
-            "forbidden_paths": [_display_path(p, ALLOWED_DIR) for p in FORBIDDEN_PATHS],
-            "max_output_chars": MAX_OUTPUT_CHARS,
-            "max_read_lines": MAX_READ_LINES,
-            "max_line_chars": MAX_LINE_CHARS,
-            "max_list_entries": MAX_LIST_ENTRIES,
-            "protected_file_names": sorted(PROTECTED_FILE_NAMES),
-            "gitignore": {
-                "applied": False
+            "config_file": CONFIG_PATH.as_posix(),
+            "shared": {
+                "allowed_dir": ALLOWED_DIR.as_posix(),
+                "allowed_dir_exists": ALLOWED_DIR.exists(),
+                "forbidden_paths": [display_path(p, ALLOWED_DIR) for p in FORBIDDEN_PATHS],
+                "protected_file_names": sorted(PROTECTED_FILE_NAMES),
+                "max_output_chars": MAX_OUTPUT_CHARS
+            },
+            "filesystem": {
+                "max_read_lines": MAX_READ_LINES,
+                "max_line_chars": MAX_LINE_CHARS,
+                "max_list_entries": MAX_LIST_ENTRIES
+            },
+            "map_and_search": {
+                "ignored_dirs": sorted(IGNORED_DIRS),
+                "ignored_dirs_source": "default" if CONFIG.get("ignored_dirs") is None else "tools config",
+                "gitignore": {
+                    "path": GITIGNORE_PATH.as_posix(),
+                    "found": GITIGNORE_PATH.exists(),
+                    "patterns": gitignore_patterns
+                },
+                "map_file_types": sorted(ALL_ALLOWED_SUFFIXES)
+            },
+            "git": {
+                "repository_root": repo_root.as_posix() if repo_root else None
+            },
+            "commands": commands,
+            "context": {
+                "context_folder": CONTEXT_FOLDER.as_posix() if CONTEXT_FOLDER else None,
+                "context_folder_exists": bool(CONTEXT_FOLDER and CONTEXT_FOLDER.is_dir()),
+                "read_only_files": [{"path": p.as_posix(), "found": p.is_file()} for p in READ_ONLY_FILES]
             },
             "notes": [
-                "Files named in protected_file_names (the MCP server configuration) are always denied and hidden at any depth, even if forbidden_paths is empty.",
-                "Only paths within allowed_dir can be accessed.",
-                "Relative paths given to the tools are resolved against allowed_dir.",
-                "Forbidden paths and everything inside forbidden folders are denied and hidden from list_directory.",
-                "Deleting or moving a folder that contains a forbidden path is denied.",
-                "There are no ignored directories and .gitignore is not applied, so folders such as .git are accessible unless forbidden."
+                "All servers read the same config_file, so they all use the same allowed_dir, forbidden_paths and max_output_chars.",
+                "Only paths within allowed_dir can be accessed. Relative paths given to the tools are resolved against allowed_dir.",
+                "Forbidden paths and everything inside forbidden folders are denied and hidden, and so are protected files: files named in protected_file_names and the config_file itself.",
+                "The map and search tools also skip folders named in ignored_dirs at any depth, files matching the .gitignore patterns and, for search, binary files.",
+                "The maps only list files of the map_file_types.",
+                "Git's own .gitignore rules decide which untracked files the git tools list. If repository_root is null, allowed_dir is not in a git repository.",
+                "Responses longer than max_output_chars are cut short with an 'Output limited:' message that explains how to see the rest."
             ]
         }, indent=2, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"success": False, "error": "config_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
+        return json.dumps({"success": False, "error": "config_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
 
 if __name__ == "__main__":
     mcp.run()

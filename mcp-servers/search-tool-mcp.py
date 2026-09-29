@@ -1,172 +1,30 @@
 # --- search-tool-mcp.py ---
-import fnmatch
-import json
 import os
 import re
 import traceback
 from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
+from mcp_common import (
+    ALLOWED_DIR,
+    IGNORED_DIRS,
+    MAX_OUTPUT_CHARS,
+    display_path,
+    is_ignored,
+    load_gitignore_patterns,
+    walk
+)
 
 # --- Constants & Config ---
 mcp = MCPServer("Search-Tool-Server")
 
-ALLOWED_DIR = Path(os.getenv("ALLOWED_DIR", os.getcwd())).resolve()
-GITIGNORE_PATH = os.getenv("GITIGNORE_PATH")
-PROTECTED_FILE_NAMES = {".mcp.json"}  # MCP server configuration, never accessible regardless of FORBIDDEN_PATHS
-IGNORED_DIRS = {
-    "node_modules", ".git", "__pycache__", "dist", "build", ".next",
-    ".venv", "venv", "env", ".pytest_cache", ".idea", ".vscode",
-    "target", "out", ".mypy_cache", ".ruff_cache"
-}
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10MB limit
-# Largest response size in characters (about 4 characters per token). Lower it for models with small context windows.
-MAX_OUTPUT_CHARS = max(2000, int(os.getenv("MAX_OUTPUT_CHARS") or 40000))
 MAX_RESULTS = 100  # Matches shown at most
 MAX_LINE_CHARS = 300  # Longer lines (e.g. minified code) are shortened around the match
 MAX_CONTEXT_LINES = 5
 BINARY_CHECK_BYTES = 8192  # Files with a null byte in this many first bytes are treated as binary
 
 # --- Internal Helpers ---
-
-def _load_forbidden_paths(base_dir: Path) -> list[Path]:
-    """
-    Loads the forbidden folders and files from the FORBIDDEN_PATHS env var.
-    Paths are separated by commas, e.g. "folder/sub_folder/code-file.py, another_folder".
-    Relative paths are resolved against base_dir. An empty or unset value means no restrictions.
-    """
-    raw = os.getenv("FORBIDDEN_PATHS", "").strip()
-    if not raw:
-        return []
-
-    forbidden = []
-    for entry in raw.split(","):
-        entry = entry.strip()
-        if not entry:
-            continue
-        p = Path(entry)
-        if not p.is_absolute():
-            p = base_dir / p
-        forbidden.append(p.resolve())
-    return forbidden
-
-FORBIDDEN_PATHS = _load_forbidden_paths(ALLOWED_DIR)
-
-def _is_protected(path: Path) -> bool:
-    """
-    Checks if the given path is a protected file (see PROTECTED_FILE_NAMES), also through a symlink
-    or a Windows alias of the name, such as a trailing dot or a '::$DATA' stream suffix.
-    """
-    names = [path.name]
-    try:
-        if path.is_symlink():
-            names.append(path.resolve().name)
-    except OSError:
-        return True
-    for name in names:
-        name = name.lower()
-        if os.name == "nt":
-            name = name.split(":")[0].rstrip(" .")
-        if name in PROTECTED_FILE_NAMES:
-            return True
-    return False
-
-def _is_forbidden(path: Path) -> bool:
-    """
-    Checks if the given path is a protected file, a forbidden file or is located within a forbidden folder.
-    """
-    if _is_protected(path):
-        return True
-    if not FORBIDDEN_PATHS:
-        return False
-    try:
-        resolved = path.resolve()
-    except OSError:
-        return True
-    return any(resolved.is_relative_to(forbidden) for forbidden in FORBIDDEN_PATHS)
-
-def _display_path(path: Path, base_dir: Path) -> str:
-    """
-    Returns the path relative to base_dir if it is inside it, otherwise the absolute path.
-    """
-    if path.is_relative_to(base_dir):
-        return path.relative_to(base_dir).as_posix()
-    return path.as_posix()
-
-def _get_gitignore_path(base_dir: Path) -> Path:
-    """
-    Returns GITIGNORE_PATH if set, otherwise base_dir/.gitignore.
-    """
-    return Path(GITIGNORE_PATH).resolve() if GITIGNORE_PATH else base_dir / ".gitignore"
-
-def _load_gitignore_patterns(base_dir: Path) -> list[str]:
-    """
-    Loads the patterns from the .gitignore file returned by _get_gitignore_path.
-    """
-    gitignore_path = _get_gitignore_path(base_dir)
-
-    if not gitignore_path.exists():
-        return []
-
-    patterns = []
-    try:
-        with open(gitignore_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                patterns.append(line)
-    except Exception:
-        pass
-    return patterns
-
-def _is_ignored(path: Path, base_dir: Path, ignored_dirs: set[str], gitignore_patterns: list[str]) -> bool:
-    """
-    Checks if a path is excluded by FORBIDDEN_PATHS, ignored_dirs or .gitignore patterns.
-    """
-    if _is_forbidden(path):
-        return True
-
-    if any(ignored in path.parts for ignored in ignored_dirs):
-        return True
-
-    if not gitignore_patterns:
-        return False
-
-    try:
-        rel_path = path.relative_to(base_dir).as_posix()
-    except ValueError:
-        return False
-
-    for pattern in gitignore_patterns:
-        if fnmatch.fnmatch(rel_path, pattern) or \
-           fnmatch.fnmatch(f"{rel_path}/", pattern) or \
-           any(fnmatch.fnmatch(part, pattern) for part in path.relative_to(base_dir).parts):
-            return True
-
-    return False
-
-def _walk(base_dir: Path, gitignore_patterns: list[str], start_dir: Path, max_depth: int | None = None):
-    """
-    Yields (path, is_dir) for the folders and files within start_dir that are not ignored, in sorted order.
-    Ignored folders are skipped without being entered, which keeps large folders such as node_modules fast.
-    Folders deeper than max_depth levels below start_dir are not entered.
-    """
-    for dirpath, dirnames, filenames in os.walk(start_dir):
-        current_dir = Path(dirpath)
-        depth = len(current_dir.relative_to(start_dir).parts)
-        dirnames[:] = sorted(
-            (d for d in dirnames if not _is_ignored(current_dir / d, base_dir, IGNORED_DIRS, gitignore_patterns)),
-            key=str.lower
-        )
-        for name in dirnames:
-            yield current_dir / name, True
-        if max_depth is not None and depth + 1 >= max_depth:
-            dirnames[:] = []
-        for name in sorted(filenames, key=str.lower):
-            path = current_dir / name
-            if not _is_ignored(path, base_dir, IGNORED_DIRS, gitignore_patterns):
-                yield path, False
 
 def _resolve_scope(path: str | None, gitignore_patterns: list[str]) -> tuple[Path, str | None]:
     """
@@ -183,8 +41,8 @@ def _resolve_scope(path: str | None, gitignore_patterns: list[str]) -> tuple[Pat
         return p, f"Error: Path '{path}' is not within the allowed directory {ALLOWED_DIR.as_posix()}."
     if not p.exists():
         return p, f"Error: Path '{path}' does not exist in the allowed directory {ALLOWED_DIR.as_posix()}."
-    if p != ALLOWED_DIR and _is_ignored(p, ALLOWED_DIR, IGNORED_DIRS, gitignore_patterns):
-        return p, f"Error: Path '{path}' is ignored or forbidden. Use get_search_config to see why."
+    if p != ALLOWED_DIR and is_ignored(p, ALLOWED_DIR, IGNORED_DIRS, gitignore_patterns):
+        return p, f"Error: Path '{path}' is ignored or forbidden. Use get_config to see why."
     return p, None
 
 def _glob_to_regex(pattern: str) -> re.Pattern:
@@ -354,7 +212,7 @@ def search_text_in_files(query: str, case_sensitive: bool = False, path: str | N
         except re.error as e:
             return f"Error: Invalid regular expression '{query}': {e}. Escape special characters to search for them literally."
 
-        gitignore_patterns = _load_gitignore_patterns(ALLOWED_DIR)
+        gitignore_patterns = load_gitignore_patterns()
         scope, error = _resolve_scope(path, gitignore_patterns)
         if error:
             return error
@@ -362,7 +220,7 @@ def search_text_in_files(query: str, case_sensitive: bool = False, path: str | N
         context_lines = max(0, min(int(context_lines), MAX_CONTEXT_LINES))
         # Anchored at a '/' so that 'tests/*.py' matches 'src/tests/a.py' but not 'src/mytests/a.py'
         file_regex = _glob_to_regex("/" + file_pattern.replace("\\", "/").lstrip("/")) if file_pattern else None
-        files = [scope] if scope.is_file() else [p for p, is_dir in _walk(ALLOWED_DIR, gitignore_patterns, scope) if not is_dir]
+        files = [scope] if scope.is_file() else [p for p, is_dir in walk(ALLOWED_DIR, gitignore_patterns, scope) if not is_dir]
 
         # Show matches until MAX_RESULTS matches or MAX_OUTPUT_CHARS characters, leaving room for the notes
         budget = MAX_OUTPUT_CHARS - min(1500, MAX_OUTPUT_CHARS // 4)
@@ -392,7 +250,7 @@ def search_text_in_files(query: str, case_sensitive: bool = False, path: str | N
                 shown_matches += is_match
             output.append("")
 
-        location = _display_path(scope, ALLOWED_DIR) if scope != ALLOWED_DIR else ALLOWED_DIR.as_posix()
+        location = display_path(scope, ALLOWED_DIR) if scope != ALLOWED_DIR else ALLOWED_DIR.as_posix()
         if not total_matches:
             filter_note = f" (files matching '{file_pattern}')" if file_pattern else ""
             return f"No matches found for '{query}' in {location}{filter_note}"
@@ -440,9 +298,9 @@ def search_files_by_pattern(pattern: str, recursive: bool = False) -> str:
         # Without '**', only paths with as many parts as the pattern can match, so deeper folders are not entered
         max_depth = None if "**" in glob else len(glob.split("/"))
 
-        gitignore_patterns = _load_gitignore_patterns(ALLOWED_DIR)
+        gitignore_patterns = load_gitignore_patterns()
         matches = []
-        for path, is_dir in _walk(ALLOWED_DIR, gitignore_patterns, ALLOWED_DIR, max_depth):
+        for path, is_dir in walk(ALLOWED_DIR, gitignore_patterns, ALLOWED_DIR, max_depth):
             rel_path = path.relative_to(ALLOWED_DIR).as_posix()
             if regex.match(rel_path):
                 matches.append(rel_path + ("/" if is_dir else ""))
@@ -456,50 +314,6 @@ def search_files_by_pattern(pattern: str, recursive: bool = False) -> str:
         return _format_list(matches, ALLOWED_DIR.as_posix())
     except Exception as e:
         return f"Error: Searching files by pattern failed:\n{e}\n{traceback.format_exc()}"
-
-@mcp.tool()
-def get_search_config() -> str:
-    """
-    Returns the configuration that decides which files the search tools can see:
-    the allowed directory, ignored directories, forbidden paths, .gitignore patterns and search limits.
-    Use this tool to find out why a file or match is missing from search_text_in_files
-    or search_files_by_pattern.
-
-    Returns:
-        str: A JSON-formatted string containing the configuration or an error message.
-    """
-    try:
-        gitignore_path = _get_gitignore_path(ALLOWED_DIR)
-        return json.dumps({
-            "success": True,
-            "allowed_dir": ALLOWED_DIR.as_posix(),
-            "allowed_dir_exists": ALLOWED_DIR.exists(),
-            "ignored_dirs": sorted(IGNORED_DIRS),
-            "forbidden_paths": [_display_path(p, ALLOWED_DIR) for p in FORBIDDEN_PATHS],
-            "protected_file_names": sorted(PROTECTED_FILE_NAMES),
-            "gitignore": {
-                "applied": True,
-                "path": gitignore_path.as_posix(),
-                "found": gitignore_path.exists(),
-                "patterns": _load_gitignore_patterns(ALLOWED_DIR)
-            },
-            "max_file_size_bytes": MAX_FILE_SIZE_BYTES,
-            "max_output_chars": MAX_OUTPUT_CHARS,
-            "max_results_shown": MAX_RESULTS,
-            "max_line_chars": MAX_LINE_CHARS,
-            "max_context_lines": MAX_CONTEXT_LINES,
-            "notes": [
-                "Files named in protected_file_names (the MCP server configuration) are always denied and hidden at any depth, even if forbidden_paths is empty.",
-                "Folders named in ignored_dirs are skipped at any depth within allowed_dir.",
-                "Forbidden paths and everything inside forbidden folders are skipped.",
-                "Files and folders matching the .gitignore patterns are skipped.",
-                "search_text_in_files skips binary files and files larger than max_file_size_bytes.",
-                "Lines longer than max_line_chars are shortened around the match.",
-                "Only the first max_results_shown matches are listed; the total count is always reported."
-            ]
-        }, indent=2, ensure_ascii=False)
-    except Exception as e:
-        return json.dumps({"success": False, "error": "config_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
 
 if __name__ == "__main__":
     mcp.run()

@@ -2,8 +2,9 @@
 
 ## Tools
 
-**codebase_mapper.generate_codebase_map**: Use this tool to get a structured map of the codebase before you start working on the project.
+**codebase-mapper.generate_codebase_map**: Use this tool to get a structured map of the codebase before you start working on the project.
 **context.read_all_context_files**: Use this tool to understand the already existing plans and records of the project.
+**filesystem.get_config**: Use this tool when a tool does not find a file or denies a path, to see which files the tools can access.
 
 ## Documents in the root folder
 

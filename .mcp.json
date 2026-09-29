@@ -6,8 +6,7 @@
             ".\\mcp-servers\\generate-map-mcp.py"
           ],
           "env": {
-            "ALLOWED_DIR": ".\\",
-            "FORBIDDEN_PATHS": ""
+            "MCP_TOOLS_CONFIG": ".\\tools-config.json"
           }
         },
         "search-tool": {
@@ -16,8 +15,7 @@
             ".\\mcp-servers\\search-tool-mcp.py"
           ],
           "env": {
-            "ALLOWED_DIR": ".\\",
-            "FORBIDDEN_PATHS": ""
+            "MCP_TOOLS_CONFIG": ".\\tools-config.json"
           }
         },
         "commands": {
@@ -26,7 +24,7 @@
             ".\\mcp-servers\\commands-mcp.py"
           ],
           "env": {
-            "COMMANDS_CONFIG": ".\\_commands\\app-commands.json"
+            "MCP_TOOLS_CONFIG": ".\\tools-config.json"
           }
         },
         "context": {
@@ -35,8 +33,7 @@
             ".\\mcp-servers\\context-record-mcp.py"
           ],
           "env": {
-            "CONTEXT_FOLDER_PATH": ".\\_context",
-            "READ_ONLY_FILES": ".\\_instructions\\app-instructions.md"
+            "MCP_TOOLS_CONFIG": ".\\tools-config.json"
           }
         },
         "filesystem": {
@@ -45,8 +42,7 @@
             ".\\mcp-servers\\safe-filesystem-mcp.py"
           ],
           "env": {
-            "ALLOWED_DIR": ".\\",
-            "FORBIDDEN_PATHS": ""
+            "MCP_TOOLS_CONFIG": ".\\tools-config.json"
           }
         },
         "git-diff": {
@@ -55,8 +51,7 @@
             ".\\mcp-servers\\git-diff-mcp.py"
           ],
           "env": {
-            "ALLOWED_DIR": ".\\",
-            "FORBIDDEN_PATHS": ""
+            "MCP_TOOLS_CONFIG": ".\\tools-config.json"
           }
         }
     }

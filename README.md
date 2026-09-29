@@ -20,46 +20,57 @@ Generic custom MCP servers for Ollmcp for Python and JS/TS development purposes.
 
 ### Configuration
 
-To use these MCP servers, you need to configure a `.mcp.json` file in your project root. This file tells `ollmcp` which servers to start and how to access them.
+The tools are configured with two files:
+- `.mcp.json` in your project root tells `ollmcp` which servers to start. Each server only gets the path of the tools config file, in the `MCP_TOOLS_CONFIG` environment variable.
+- The tools config file, e.g. `tools-config.json`, holds all settings. Every server reads the same file, so they all see exactly the same project directory, forbidden paths and limits.
 
-**Important Notes on File Paths:**
-- The MCP servers themselves (the code) do **not** need to be located within your project folder.
-- However, the file paths specified in `.mcp.json` must correctly point to the location of the server scripts and any data directories used by the tools.
-- The special directories used by the tools (`_context`, `_instructions`, and `_commands`) can either be located inside your project folder or anywhere else on your system, as long as you provide the correct absolute or relative paths in your configuration.
+```json
+{
+    "mcpServers": {
+        "filesystem": {
+            "command": "python",
+            "args": [".\\mcp-servers\\safe-filesystem-mcp.py"],
+            "env": {
+                "MCP_TOOLS_CONFIG": ".\\tools-config.json"
+            }
+        }
+    }
+}
+```
 
-### Environment Variables
+Add every server the same way (see this repository's [`.mcp.json`](.mcp.json)). The server scripts share code in `mcp-servers/mcp_common.py`, so keep all the scripts in the same folder. The scripts, the tools config file and the special directories (`_context`, `_instructions` and `_commands`) do **not** need to be located within your project folder.
 
-Most of the MCP servers use environment variables for configuration. These should be defined in your `.mcp.json` under the `env` key for each server.
+### Tools config file
 
-#### Shared by generate-map-mcp, search-tool-mcp, safe-filesystem-mcp and git-diff-mcp
-- `ALLOWED_DIR`: The project directory the tools can access. Relative paths given to the tools are resolved against it, so a path returned by one tool (e.g. `src/app.py` from a search) works as-is in the others. (Defaults to current working directory)
-- `FORBIDDEN_PATHS`: List of folders and/or files the tools must never access, even within `ALLOWED_DIR`. See [Forbidden paths](#forbidden-paths). (Optional)
+```json
+{
+    "allowed_dir": ".",
+    "forbidden_paths": ["secrets", "config/keys.json"],
+    "ignored_dirs": null,
+    "gitignore_path": null,
+    "max_output_chars": 40000,
+    "commands_config": "_commands/app-commands.json",
+    "context_folder": "_context",
+    "read_only_files": ["_instructions/app-instructions.md"]
+}
+```
 
-Use the same values for all four servers, so that the files the AI can find with the map and search tools are exactly the files it can read, edit and inspect with git. To focus the AI on part of the project, such as `src`, it can limit maps and searches with their `path` argument instead.
+All settings except `allowed_dir` are optional. An optional setting that is left out or set to `null` uses its default, so `null` can be used to show that a setting exists without using it. Note that an empty list is not the same as `null`: `"ignored_dirs": []` skips no folders at all, while `"ignored_dirs": null` skips the default folders.
 
-#### Shared by all servers
-- `MAX_OUTPUT_CHARS`: The largest size of a tool response in characters, about 4 characters per token. Lower it for models with small context windows, e.g. `"12000"` for an 8k-token context. See [Output limits](#output-limits). (Optional, defaults to `40000`)
+Relative paths are resolved against the folder of the config file, except `forbidden_paths`, which are resolved against `allowed_dir`. A server refuses to start if the file is missing, is not valid JSON, lacks `allowed_dir`, points `allowed_dir` to a folder that does not exist or contains an unknown setting, so a typo cannot silently weaken the configuration. The config file itself is always [protected](#protected-files).
 
-#### commands-mcp
-- `COMMANDS_CONFIG`: Path to the JSON configuration file containing the command registry.
+| Setting | Description |
+|---|---|
+| `allowed_dir` | The project directory the tools can access. Relative paths given to the tools are resolved against it, so a path returned by one tool (e.g. `src/app.py` from a search) works as-is in the others. To focus the AI on part of the project, such as `src`, it can limit maps and searches with their `path` argument. (Required) |
+| `forbidden_paths` | List of folders and/or files the tools must never access, even within `allowed_dir`. See [Forbidden paths](#forbidden-paths). (Optional) |
+| `max_output_chars` | The largest size of a tool response in characters, about 4 characters per token. Lower it for models with small context windows, e.g. `12000` for an 8k-token context. See [Output limits](#output-limits). (Optional, defaults to `40000`, at least `2000`) |
+| `gitignore_path` | The `.gitignore` file used by the map and search tools. (Optional, defaults to `.gitignore` in `allowed_dir`) |
+| `commands_config` | The command registry of `commands-mcp`. See [commands-mcp](#commands-mcp). (Optional) |
+| `context_folder` | The folder of the context Markdown files of `context-record-mcp`. (Optional) |
+| `read_only_files` | List of files maintained by you, such as project instructions, that the AI can read with `context-record-mcp` but not change or remove. They can be located anywhere, and are read by their file name. (Optional) |
+| `ignored_dirs` | List of folder names the map and search tools skip at any depth. Replaces the defaults completely. See [Ignored directories](#ignored-directories). (Optional, defaults to `node_modules`, `.git`, `build` and other common build and cache folders) |
 
-#### context-record-mcp
-- `CONTEXT_FOLDER_PATH`: Path to the folder containing the context Markdown files.
-- `READ_ONLY_FILES`: List of files maintained by you, such as project instructions, that the AI can read but not change or remove, separated by commas (e.g. `".\\_instructions\\app-instructions.md"`). They can be located anywhere, and are read by their file name. (Optional)
-
-#### generate-map-mcp
-- `ALLOWED_DIR`, `FORBIDDEN_PATHS`: See [above](#shared-by-generate-map-mcp-search-tool-mcp-safe-filesystem-mcp-and-git-diff-mcp).
-- `GITIGNORE_PATH`: Path to the `.gitignore` file to use for excluding files. (Optional, defaults to `ALLOWED_DIR/.gitignore`)
-
-#### git-diff-mcp
-- `ALLOWED_DIR`, `FORBIDDEN_PATHS`: See [above](#shared-by-generate-map-mcp-search-tool-mcp-safe-filesystem-mcp-and-git-diff-mcp).
-
-#### safe-filesystem-mcp
-- `ALLOWED_DIR`, `FORBIDDEN_PATHS`: See [above](#shared-by-generate-map-mcp-search-tool-mcp-safe-filesystem-mcp-and-git-diff-mcp).
-
-#### search-tool-mcp
-- `ALLOWED_DIR`, `FORBIDDEN_PATHS`: See [above](#shared-by-generate-map-mcp-search-tool-mcp-safe-filesystem-mcp-and-git-diff-mcp).
-- `GITIGNORE_PATH`: Path to the `.gitignore` file to use for excluding files. (Optional, defaults to `ALLOWED_DIR/.gitignore`)
+The AI can see the effective configuration with the `get_config` tool of `safe-filesystem-mcp`.
 
 ### Running
 
@@ -78,7 +89,7 @@ This is a tool for allowing AI Agent access to very specific console commands an
 - **list_available_commands** Returns a list of all allowed console commands and their descriptions.
 - **run_predefined_command** Executes a specific console command from the allowed registry.
 
-Commands are defined in the `COMMANDS_CONFIG` JSON file:
+Commands are defined in the JSON file set as `commands_config` in the tools config:
 
 ```json
 {
@@ -96,6 +107,8 @@ See [`_commands/app-commands.json`](_commands/app-commands.json) for a fuller ex
 - `description`: Tells the AI when to use the command.
 - `timeout`: Seconds before the command is stopped. (Optional, defaults to 120)
 
+Commands run in `allowed_dir`, so commands such as `pytest` or `ruff check .` work on the project regardless of where `ollmcp` was started. The server refuses to start if the registry file is missing or not valid JSON, or if a command lacks its `template` or `description` or has an invalid `timeout`.
+
 To keep the AI from running anything other than the defined commands:
 - Commands run without a shell, so shell features such as pipes (`|`), chaining (`&&`), redirection (`>`) and shell built-ins (`echo`, `dir`, `cd`) are not available in templates. Put such logic in a script and call the script from the template.
 - Arguments that start with `-`, or contain line breaks, are rejected so the AI cannot add unintended options.
@@ -107,7 +120,7 @@ To keep the AI from running anything other than the defined commands:
 
 This tool manages a context folder containing Markdown files, allowing for listing, reading, writing, appending, and removing context files. File names must be plain `.md` names such as `notes.md`: names with folders (`../x.md`, `sub/x.md`) or other extensions are rejected, so the tools cannot reach files outside the context folder.
 
-It also gives the AI your project instructions: list them in `READ_ONLY_FILES`, and they are listed and read first, marked `(read-only)`, while writing, appending to or removing them is refused. A context file with the same name as a read-only file is hidden and cannot be created, so it cannot take the instructions' place.
+It also gives the AI your project instructions: list them in `read_only_files`, and they are listed and read first, marked `(read-only)`, while writing, appending to or removing them is refused. A context file with the same name as a read-only file is hidden and cannot be created, so it cannot take the instructions' place.
 
 - **list_context_files** Lists all Markdown files in the context folder and the read-only files.
 - **read_context_file** Reads the content of a specific Markdown file in the context folder, or of a read-only file.
@@ -116,7 +129,7 @@ It also gives the AI your project instructions: list them in `READ_ONLY_FILES`, 
 - **read_all_context_files** Reads the read-only files and all Markdown files in the context folder at once. Meant to be called at the start of a session.
 - **remove_context_file** Removes a specific Markdown file from the context folder.
 
-Read-only only applies to `context-record-mcp`. If the instructions file is inside the project, `safe-filesystem-mcp` can still change it: add its folder (e.g. `_instructions`) to `FORBIDDEN_PATHS` to prevent that. `context-record-mcp` does not use `FORBIDDEN_PATHS`, so it can still read the file.
+Read-only only applies to `context-record-mcp`. If the instructions file is inside the project, `safe-filesystem-mcp` can still change it: add its folder (e.g. `_instructions`) to `forbidden_paths` to prevent that. `context-record-mcp` does not use `forbidden_paths`, so it can still read the file.
 
 ### generate-map-mcp
 
@@ -126,7 +139,6 @@ Generates a comprehensive structure map and summary of a codebase, supporting Py
   - Python: functions, classes and methods, docstring summaries, and calls to the project's own functions and classes.
   - JS/TS: local imports, functions, React components and hooks, classes and methods, interfaces, types, enums, exported constants, default and named exports, re-exports and JSDoc summaries. Code in comments is ignored.
 - **generate_file_map** Generates the file tree map of the codebase without detailed summaries, optionally limited to a subfolder (`path`).
-- **get_codebase_map_config** Returns the allowed directory, ignored directories, forbidden paths, `.gitignore` patterns and included file types, to explain why a file may be missing from the maps.
 
 ### git-diff-mcp
 
@@ -136,7 +148,6 @@ Provides tools to inspect git history and differences for files within a reposit
 - **get_all_changes_diff** Retrieves the differences for all changed files at once, with a list of changed and new untracked files. Useful for reviewing all changes before committing.
 - **get_file_history** Retrieves the commit history and associated diffs for a specified file.
 - **get_git_status** Returns the results of `git status`. Also tells whether a folder is in a git repository: if not, the error is `not_a_repository`.
-- **get_git_config** Returns the allowed directory, its repository root and forbidden paths, to explain why a path may be denied or missing from the output.
 
 ### safe-filesystem-mcp
 
@@ -156,7 +167,7 @@ The file reading and editing tools are designed to let local AI models read and 
 - **create_directory** Creates a new directory at the specified path.
 - **move_file** Moves or renames a file or directory.
 - **delete_file** Deletes a file or a directory.
-- **get_filesystem_config** Returns the allowed directory and forbidden paths, to explain why a path may be denied or not found.
+- **get_config** Returns the configuration shared by all servers (allowed directory, forbidden and protected paths, output limit) and what each server sees: the files the maps and searches skip, the git repository, the command registry and the context files. Helps the AI find out why a file is missing or a path is denied.
 
 ### search-tool-mcp
 
@@ -164,31 +175,28 @@ Performs text or regex searches across files in a specified directory.
 
 - **search_text_in_files** Search for text or regex patterns from code files in the codebase. Can be limited to a folder or file (`path`) and to matching file names (`file_pattern`, e.g. `*.py`), and can show lines around each match (`context_lines`). Very long lines are shortened around the match.
 - **search_files_by_pattern** Searches for files and directories that match a glob-style pattern, such as `src/**/*.test.ts`.
-- **get_search_config** Returns the input directory, ignored directories, forbidden paths, `.gitignore` patterns and search limits, to explain why a file or match may be missing from the searches.
 
 ## Details and patterns
 
 ### Forbidden paths
 
-`generate-map-mcp`, `search-tool-mcp`, `safe-filesystem-mcp` and `git-diff-mcp` accept a `FORBIDDEN_PATHS` list of sub-folders and individual files that are excluded from all tool operations. A forbidden folder also forbids everything inside it. Leave the value empty (or omit it) to forbid nothing.
+The `forbidden_paths` setting of the [tools config file](#tools-config-file) lists sub-folders and individual files that `generate-map-mcp`, `search-tool-mcp`, `safe-filesystem-mcp` and `git-diff-mcp` exclude from all tool operations. A forbidden folder also forbids everything inside it. Leave the list empty (or omit it) to forbid nothing.
 
-- Relative paths are resolved against `ALLOWED_DIR`. Absolute paths are also accepted.
-- Separate paths with commas. Whitespace around each path is ignored:
+- Relative paths are resolved against `allowed_dir`. Absolute paths are also accepted:
   ```json
-  "FORBIDDEN_PATHS": "folder/sub_folder/code-file.py, another_folder"
-  "FORBIDDEN_PATHS": ""
+  "forbidden_paths": ["folder/sub_folder/code-file.py", "another_folder"]
   ```
 - In `safe-filesystem-mcp`, forbidden paths are hidden from `list_directory`, and deleting or moving a folder that contains a forbidden path is denied.
 - In `git-diff-mcp`, forbidden paths are denied and left out of status and diff output. Otherwise a file's history would reveal its contents.
-- There is no need to add the [ignored directories](#ignored-directories) to `FORBIDDEN_PATHS` for `generate-map-mcp` or `search-tool-mcp`, as they are already skipped by default.
+- There is no need to add the [ignored directories](#ignored-directories) to `forbidden_paths` for `generate-map-mcp` or `search-tool-mcp`, as they are already skipped by default.
 
 Limitations:
-- `commands-mcp` does not use `FORBIDDEN_PATHS`. Do not register commands that can print arbitrary files (e.g., `git show` or `cat {arg}`) if some files must stay hidden. See also [Protected files](#protected-files).
+- `commands-mcp` does not use `forbidden_paths`. Do not register commands that can print arbitrary files (e.g., `git show` or `cat {arg}`) if some files must stay hidden. See also [Protected files](#protected-files).
 - In `git-diff-mcp`, a file that was moved into a forbidden folder can still be seen in the history of its old, allowed path. Commit messages are not filtered either.
 
 ### Protected files
 
-Files named `.mcp.json` contain the MCP server configuration: which servers run, their allowed directories, forbidden paths and command registries. If the AI could change them, it could remove its own restrictions, which would take effect the next time the servers start. Therefore `.mcp.json` files are always protected, at any depth and regardless of `FORBIDDEN_PATHS` (defined as `PROTECTED_FILE_NAMES` in the scripts):
+Files named `.mcp.json` contain the MCP server configuration, which servers run and which tools config file they read, and the [tools config file](#tools-config-file) contains the allowed directory, forbidden paths and command registry. If the AI could change them, it could remove its own restrictions, which would take effect the next time the servers start. Therefore `.mcp.json` files, at any depth, and the tools config file in use are always protected, regardless of `forbidden_paths` (defined as `PROTECTED_FILE_NAMES` and `CONFIG_PATH` in `mcp_common.py`):
 
 - `safe-filesystem-mcp` denies reading, writing, editing, moving and deleting them, and creating a file or renaming a file to that name. Folders containing one cannot be moved or deleted either.
 - `generate-map-mcp` and `search-tool-mcp` leave them out of maps and search results.
@@ -197,45 +205,53 @@ Files named `.mcp.json` contain the MCP server configuration: which servers run,
 
 The protection also covers other spellings of the name that Windows treats as the same file, such as a different letter case, a trailing dot or space, a `::$DATA` suffix or an 8.3 short name.
 
-**The tools cannot fully protect files from `commands-mcp`.** Commands such as tests, scripts or `npm run` execute project code, which the AI can write and which can read or change any file. For a real project, keep the MCP configuration outside the project folder, where no tool can reach it, and start `ollmcp` with its path:
+**The tools cannot fully protect files from `commands-mcp`.** Commands such as tests, scripts or `npm run` execute project code, which the AI can write and which can read or change any file. For a real project, keep the MCP configuration and the tools config file outside the project folder, where no tool can reach them, and start `ollmcp` with its path:
 
 ```bash
 ollmcp --servers-json C:\path\outside\project\.mcp.json
 ```
 
-For the same reason, keep the `mcp-servers` scripts and the `COMMANDS_CONFIG` registry outside the project folder, or add them to `FORBIDDEN_PATHS`.
+When the tools config file is outside the project, set `allowed_dir` in it to the project folder, as an absolute path or relative to the config file.
+
+For the same reason, keep the `mcp-servers` scripts and the `commands_config` registry outside the project folder, or add them to `forbidden_paths`.
 
 ### Ignored directories
 
-`generate-map-mcp` and `search-tool-mcp` always skip folders with the following names, at any depth within `ALLOWED_DIR` (defined as `IGNORED_DIRS` in the scripts):
+`generate-map-mcp` and `search-tool-mcp` skip folders with the names listed in the `ignored_dirs` setting of the [tools config file](#tools-config-file), at any depth within `allowed_dir`. If the setting is not given, these defaults are used (defined as `DEFAULT_IGNORED_DIRS` in `mcp_common.py`):
 
-`node_modules`, `.git`, `__pycache__`, `dist`, `build`, `.next`, `.venv`, `venv`, `env`, `.pytest_cache`, `.idea`, `.vscode`, `target`, `out`, `.mypy_cache`, `.ruff_cache`
+```json
+"ignored_dirs": ["node_modules", ".git", "__pycache__", "dist", "build", ".next", ".venv", "venv", "env", ".pytest_cache", ".idea", ".vscode", "target", "out", ".mypy_cache", ".ruff_cache"]
+```
 
-These folders are skipped without being entered, so even a large `node_modules` does not slow the tools down.
+A list in the config file replaces the defaults completely: copy the list above and add or remove names to suit the project. For example, remove `build` or `env` if the project has real source code in folders with those names, or add `coverage` or `.gradle`. An empty list skips no folders by name.
 
-Both tools additionally skip files matched by the `.gitignore` file (see `GITIGNORE_PATH`). `search-tool-mcp` also skips binary files.
+- The entries are folder names, not paths: `build` skips every folder named `build`. To exclude one specific folder, such as `docs/build`, add it to `forbidden_paths` instead.
+- These folders are skipped without being entered, so even a large `node_modules` does not slow the tools down. Removing `node_modules` from the list makes maps and searches of JS/TS projects much slower.
+- Ignored folders are not a security measure: `safe-filesystem-mcp` and `git-diff-mcp` can still access them. Use `forbidden_paths` for files the AI must not access.
 
-`safe-filesystem-mcp` has no ignored directories, because it only accesses the paths the AI explicitly asks for. To block it from folders such as `.git` or `.venv`, add them to its `FORBIDDEN_PATHS`.
+Both tools additionally skip files matched by the `.gitignore` file (see `gitignore_path`). `search-tool-mcp` also skips binary files.
+
+`safe-filesystem-mcp` has no ignored directories, because it only accesses the paths the AI explicitly asks for. To block it from folders such as `.git` or `.venv`, add them to its `forbidden_paths`.
 
 `git-diff-mcp` has no ignored directories either. Git's own `.gitignore` rules decide which untracked files it lists.
 
 ### Output limits
 
-Local models have small context windows, so every tool response is limited to `MAX_OUTPUT_CHARS` characters (40 000 by default, about 10 000 tokens). When a limit is applied, the response contains a message starting with `Output limited:` that says what was left out and exactly how to get the rest, for example which `start_line` to read next or which folder to map with `path`. In JSON responses, the message is in the `output_limited` field.
+Local models have small context windows, so every tool response is limited to `max_output_chars` characters (40 000 by default, about 10 000 tokens). When a limit is applied, the response contains a message starting with `Output limited:` that says what was left out and exactly how to get the rest, for example which `start_line` to read next or which folder to map with `path`. In JSON responses, the message is in the `output_limited` field.
 
 | Tool | Limit | How the rest can be seen |
 |---|---|---|
-| `read_file_with_metadata` | 1000 lines or `MAX_OUTPUT_CHARS` per read; lines over 2000 characters are shortened; files over 50 MB are not read | Next part with `start_line`; long lines can still be edited using a unique part of the shown text |
+| `read_file_with_metadata` | 1000 lines or `max_output_chars` per read; lines over 2000 characters are shortened; files over 50 MB are not read | Next part with `start_line`; long lines can still be edited using a unique part of the shown text |
 | `edit_file` | Shows up to 40 changed lines after the edit | `read_file_with_metadata` from the given line |
 | `list_directory` | Up to 250 entries, fewer for small budgets; folders are listed first | `search_files_by_pattern` with a suggested pattern |
-| `generate_codebase_map` | `MAX_OUTPUT_CHARS`; the file tree is limited to 400 lines; files over 1 MB are not parsed | Suggested subfolders to map with `path`, with their file counts |
+| `generate_codebase_map` | `max_output_chars`; the file tree is limited to 400 lines; files over 1 MB are not parsed | Suggested subfolders to map with `path`, with their file counts |
 | `generate_file_map` | 400 lines | Suggested subfolders to map with `path` |
-| `search_text_in_files` | 100 matches or `MAX_OUTPUT_CHARS`; lines over 300 characters are shortened | A suggested `path` with the most matches, `file_pattern`, fewer `context_lines` |
+| `search_text_in_files` | 100 matches or `max_output_chars`; lines over 300 characters are shortened | A suggested `path` with the most matches, `file_pattern`, fewer `context_lines` |
 | `search_files_by_pattern` | 100 matches | A more specific pattern |
-| `get_file_diff`, `get_file_history`, `get_git_status` | `MAX_OUTPUT_CHARS` | Read the file instead, a smaller `limit`, or a `path` |
-| `get_all_changes_diff` | `MAX_OUTPUT_CHARS`; up to 200 changed and 200 untracked files are listed | `get_file_diff` for the files listed in `changed_files`, or a `path` |
-| `run_predefined_command` | `MAX_OUTPUT_CHARS`, split between stdout and stderr; the middle of long output is cut, as errors are usually at the end | A narrower command, such as tests for a single file |
-| `read_all_context_files` | `MAX_OUTPUT_CHARS`; read-only files always come first, then whole context files are left out | `read_context_file` for the listed files |
-| `read_context_file` | `MAX_OUTPUT_CHARS` | Keep context and read-only files short |
+| `get_file_diff`, `get_file_history`, `get_git_status` | `max_output_chars` | Read the file instead, a smaller `limit`, or a `path` |
+| `get_all_changes_diff` | `max_output_chars`; up to 200 changed and 200 untracked files are listed | `get_file_diff` for the files listed in `changed_files`, or a `path` |
+| `run_predefined_command` | `max_output_chars`, split between stdout and stderr; the middle of long output is cut, as errors are usually at the end | A narrower command, such as tests for a single file |
+| `read_all_context_files` | `max_output_chars`; read-only files always come first, then whole context files are left out | `read_context_file` for the listed files |
+| `read_context_file` | `max_output_chars` | Keep context and read-only files short |
 
 The example [`_instructions/app-instructions.md`](_instructions/app-instructions.md) tells the AI to follow these messages instead of repeating the same call, and never to assume that a limited response is the whole result. Include a similar instruction in your own project instructions.

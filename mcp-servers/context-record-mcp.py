@@ -1,54 +1,45 @@
 # --- context-record-mcp.py ---
-import os
 import traceback
 from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
+from mcp_common import (
+    CONFIG_PATH,
+    CONTEXT_FOLDER,
+    MAX_OUTPUT_CHARS,
+    READ_ONLY_FILES
+)
 
 # --- Constants & Config ---
 mcp = MCPServer("Context-Record-Server")
 
-# The folder path is defined via an environment variable.
-CONTEXT_FOLDER_PATH = os.getenv("CONTEXT_FOLDER_PATH")
-# Largest response size in characters (about 4 characters per token). Lower it for models with small context windows.
-MAX_OUTPUT_CHARS = max(2000, int(os.getenv("MAX_OUTPUT_CHARS") or 40000))
-
 # --- Internal Helpers ---
 
-def _load_read_only_files() -> dict[str, Path]:
+def _index_read_only_files() -> dict[str, Path]:
     """
-    Loads the files maintained by the user, such as project instructions, from the READ_ONLY_FILES env var.
-    Paths are separated by commas and can be anywhere. Returns {lowercase file name: path}.
+    Returns the read_only_files of the tools config, such as project instructions, as {lowercase file name: path}.
     Raises an error if a file does not exist or two files have the same name, so a typo cannot silently hide a file.
     """
-    raw = os.getenv("READ_ONLY_FILES", "").strip()
-    if not raw:
-        return {}
-
     files = {}
-    for entry in raw.split(","):
-        entry = entry.strip()
-        if not entry:
-            continue
-        p = Path(entry).resolve()
+    for p in READ_ONLY_FILES:
         if not p.is_file():
-            raise FileNotFoundError(f"READ_ONLY_FILES: file not found: {p}")
+            raise FileNotFoundError(f"{CONFIG_PATH}: read_only_files: file not found: {p}")
         if p.name.lower() in files:
-            raise ValueError(f"READ_ONLY_FILES: two files are named '{p.name}'. Read-only files are read by name, so their names must be unique.")
+            raise ValueError(f"{CONFIG_PATH}: read_only_files: two files are named '{p.name}'. Read-only files are read by name, so their names must be unique.")
         files[p.name.lower()] = p
     return files
 
-READ_ONLY_FILES = _load_read_only_files()
+READ_ONLY_BY_NAME = _index_read_only_files()
 
 def _get_context_folder() -> Path:
     """
-    Returns the resolved path to the context folder.
-    Raises ValueError if CONTEXT_FOLDER_PATH is not set.
+    Returns the context folder.
+    Raises ValueError if context_folder is not set in the tools config.
     """
-    if not CONTEXT_FOLDER_PATH:
-        raise ValueError("Environment variable 'CONTEXT_FOLDER_PATH' is not set.")
+    if not CONTEXT_FOLDER:
+        raise ValueError(f"'context_folder' is not set in the tools config file {CONFIG_PATH}.")
 
-    return Path(CONTEXT_FOLDER_PATH).resolve()
+    return CONTEXT_FOLDER
 
 def _is_context_file(path: Path, folder: Path) -> bool:
     """
@@ -79,7 +70,7 @@ def _check_writable(filename: str):
     Raises ValueError if the file name belongs to a read-only file, which the tools must not change or remove.
     Also prevents creating a context file that would hide a read-only file with the same name.
     """
-    if filename.lower() in READ_ONLY_FILES:
+    if filename.lower() in READ_ONLY_BY_NAME:
         raise ValueError(f"'{filename}' is read-only: it is maintained by the user and cannot be changed or removed. Write your own notes to another file.")
 
 def _limit_content(content: str, filename: str, read_only: bool = False) -> str:
@@ -107,7 +98,7 @@ def _list_context_files(folder: Path) -> list[Path]:
     if not folder.is_dir():
         return []
     return sorted(p for p in folder.glob("*.md")
-                  if p.is_file() and _is_context_file(p, folder) and p.name.lower() not in READ_ONLY_FILES)
+                  if p.is_file() and _is_context_file(p, folder) and p.name.lower() not in READ_ONLY_BY_NAME)
 
 def _file_block(name: str, content: str) -> str:
     """
@@ -131,7 +122,7 @@ def list_context_files() -> str:
         if folder.exists() and not folder.is_dir():
             return f"Error: Path {folder.as_posix()} is not a directory."
 
-        files = [f"{p.name} (read-only)" for p in READ_ONLY_FILES.values()]
+        files = [f"{p.name} (read-only)" for p in READ_ONLY_BY_NAME.values()]
         files += [p.name for p in _list_context_files(folder)]
         if not files:
             return "No Markdown (.md) files found in the context folder."
@@ -154,7 +145,7 @@ def read_context_file(filename: str) -> str:
         str: The content of the file, or an error message.
     """
     try:
-        read_only = READ_ONLY_FILES.get(filename.lower())
+        read_only = READ_ONLY_BY_NAME.get(filename.lower())
         if read_only:
             return _limit_content(read_only.read_text(encoding="utf-8"), read_only.name, read_only=True)
 
@@ -246,7 +237,7 @@ def read_all_context_files() -> str:
     try:
         folder = _get_context_folder()
         md_files = _list_context_files(folder)
-        if not md_files and not READ_ONLY_FILES:
+        if not md_files and not READ_ONLY_BY_NAME:
             if not folder.exists():
                 return f"Error: Folder does not exist at {folder.as_posix()}"
             return "No Markdown files found in the context folder."
@@ -255,7 +246,7 @@ def read_all_context_files() -> str:
         # until MAX_OUTPUT_CHARS, leaving room for the note
         budget = MAX_OUTPUT_CHARS - min(1000, MAX_OUTPUT_CHARS // 4)
         output, skipped, used = [], [], 0
-        for path in READ_ONLY_FILES.values():
+        for path in READ_ONLY_BY_NAME.values():
             block = _file_block(f"{path.name} (read-only)", _limit_content(path.read_text(encoding="utf-8"), path.name, read_only=True))
             output.append(block)
             used += len(block) + 1

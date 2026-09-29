@@ -109,6 +109,8 @@ This tool manages a context folder containing Markdown files, allowing for listi
 Generates a comprehensive structure map and summary of a codebase, supporting Python (via AST) and JS/TS (via regex).
 
 - **generate_codebase_map** Generates a structuremap of the codebase.
+- **generate_file_map** Generates the file tree map of the codebase without detailed summaries.
+- **get_codebase_map_config** Returns the input directory, ignored directories, forbidden paths, `.gitignore` patterns and included file types, to explain why a file may be missing from the maps.
 
 ### git-diff-mcp
 
@@ -137,6 +139,7 @@ Provides safe and robust file system operations, including metadata retrieval an
 - **create_directory** Creates a new directory at the specified path.
 - **move_file** Moves or renames a file or directory.
 - **delete_file** Deletes a file or a directory.
+- **get_filesystem_config** Returns the allowed directory, forbidden paths and the working directory relative paths are resolved against, to explain why a path may be denied or not found.
 
 ### search-tool-mcp
 
@@ -144,3 +147,4 @@ Performs text or regex searches across files in a specified directory.
 
 - **search_text_in_files** Search for text or regex patterns from code files in the codebase.
 - **search_files_by_pattern** Searches for files and directories that match a glob-style pattern.
+- **get_search_config** Returns the input directory, ignored directories, forbidden paths and search limits, to explain why a file or match may be missing from the searches.

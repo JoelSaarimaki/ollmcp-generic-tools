@@ -1,6 +1,7 @@
 # --- generate-map-mcp.py ---
 import ast
 import fnmatch
+import json
 import os
 import re
 import traceback
@@ -60,14 +61,25 @@ def _is_forbidden(path: Path) -> bool:
         return True
     return any(resolved.is_relative_to(forbidden) for forbidden in FORBIDDEN_PATHS)
 
+def _display_path(path: Path, base_dir: Path) -> str:
+    """
+    Returns the path relative to base_dir if it is inside it, otherwise the absolute path.
+    """
+    if path.is_relative_to(base_dir):
+        return path.relative_to(base_dir).as_posix()
+    return path.as_posix()
+
+def _get_gitignore_path(input_dir: Path) -> Path:
+    """
+    Returns GITIGNORE_PATH if set, otherwise input_dir/.gitignore.
+    """
+    return Path(GITIGNORE_PATH).resolve() if GITIGNORE_PATH else input_dir / ".gitignore"
+
 def _load_gitignore_patterns(input_dir: Path) -> list[str]:
     """
-    Loads patterns from GITIGNORE_PATH if set, otherwise from input_dir/.gitignore.
+    Loads the patterns from the .gitignore file returned by _get_gitignore_path.
     """
-    if GITIGNORE_PATH:
-        gitignore_path = Path(GITIGNORE_PATH)
-    else:
-        gitignore_path = input_dir / ".gitignore"
+    gitignore_path = _get_gitignore_path(input_dir)
 
     if not gitignore_path.exists():
         return []
@@ -423,6 +435,42 @@ def generate_file_map() -> str:
         return f"File map of {INPUT_DIR.as_posix()}\n\n```\n{map_tree}```"
     except Exception as e:
         return f"Error: Generating file map failed:\n{e}\n{traceback.format_exc()}"
+
+@mcp.tool()
+def get_codebase_map_config() -> str:
+    """
+    Returns the configuration that decides which files the codebase map tools can see:
+    the input directory, ignored directories, forbidden paths, .gitignore patterns and
+    the file types that are included in the maps.
+    Use this tool to find out why a file is missing from generate_codebase_map or generate_file_map.
+
+    Returns:
+        str: A JSON-formatted string containing the configuration or an error message.
+    """
+    try:
+        gitignore_path = _get_gitignore_path(INPUT_DIR)
+        return json.dumps({
+            "success": True,
+            "input_dir": INPUT_DIR.as_posix(),
+            "input_dir_exists": INPUT_DIR.exists(),
+            "ignored_dirs": sorted(IGNORED_DIRS),
+            "forbidden_paths": [_display_path(p, INPUT_DIR) for p in FORBIDDEN_PATHS],
+            "gitignore": {
+                "applied": True,
+                "path": gitignore_path.as_posix(),
+                "found": gitignore_path.exists(),
+                "patterns": _load_gitignore_patterns(INPUT_DIR)
+            },
+            "included_file_types": sorted(ALL_ALLOWED_SUFFIXES),
+            "notes": [
+                "Only files with an included file type are listed in the maps.",
+                "Folders named in ignored_dirs are skipped at any depth within input_dir.",
+                "Forbidden paths and everything inside forbidden folders are skipped.",
+                "Files and folders matching the .gitignore patterns are skipped."
+            ]
+        }, indent=2, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"success": False, "error": "config_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
 
 if __name__ == "__main__":
     mcp.run()

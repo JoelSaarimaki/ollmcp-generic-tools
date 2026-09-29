@@ -1,4 +1,5 @@
 # --- search-tool-mcp.py ---
+import json
 import os
 import re
 import traceback
@@ -54,6 +55,14 @@ def _is_forbidden(path: Path) -> bool:
     except OSError:
         return True
     return any(resolved.is_relative_to(forbidden) for forbidden in FORBIDDEN_PATHS)
+
+def _display_path(path: Path, base_dir: Path) -> str:
+    """
+    Returns the path relative to base_dir if it is inside it, otherwise the absolute path.
+    """
+    if path.is_relative_to(base_dir):
+        return path.relative_to(base_dir).as_posix()
+    return path.as_posix()
 
 def _is_ignored(path: Path) -> bool:
     """
@@ -152,6 +161,40 @@ def search_files_by_pattern(pattern: str, recursive: bool = False) -> str:
         return _format_results(matches)
     except Exception as e:
         return f"Error: Searching files by pattern failed:\n{e}\n{traceback.format_exc()}"
+
+@mcp.tool()
+def get_search_config() -> str:
+    """
+    Returns the configuration that decides which files the search tools can see:
+    the input directory, ignored directories, forbidden paths and search limits.
+    Use this tool to find out why a file or match is missing from search_text_in_files
+    or search_files_by_pattern.
+
+    Returns:
+        str: A JSON-formatted string containing the configuration or an error message.
+    """
+    try:
+        return json.dumps({
+            "success": True,
+            "input_dir": INPUT_DIR.as_posix(),
+            "input_dir_exists": INPUT_DIR.exists(),
+            "ignored_dirs": sorted(IGNORED_DIRS),
+            "forbidden_paths": [_display_path(p, INPUT_DIR) for p in FORBIDDEN_PATHS],
+            "gitignore": {
+                "applied": False
+            },
+            "max_file_size_bytes": MAX_FILE_SIZE_BYTES,
+            "max_results_shown": MAX_RESULTS,
+            "notes": [
+                "Folders named in ignored_dirs are skipped at any depth within input_dir.",
+                "Forbidden paths and everything inside forbidden folders are skipped.",
+                ".gitignore is not applied, so ignored files outside ignored_dirs are still searched.",
+                "search_text_in_files skips files larger than max_file_size_bytes and files that cannot be read as text.",
+                "Only the first max_results_shown matches are listed; the total count is always reported."
+            ]
+        }, indent=2, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"success": False, "error": "config_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
 
 if __name__ == "__main__":
     mcp.run()

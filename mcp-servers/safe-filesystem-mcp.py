@@ -76,6 +76,14 @@ def _contains_forbidden(path: Path) -> bool:
         return True
     return any(forbidden.is_relative_to(resolved) for forbidden in FORBIDDEN_PATHS)
 
+def _display_path(path: Path, base_dir: Path) -> str:
+    """
+    Returns the path relative to base_dir if it is inside it, otherwise the absolute path.
+    """
+    if path.is_relative_to(base_dir):
+        return path.relative_to(base_dir).as_posix()
+    return path.as_posix()
+
 def _is_path_allowed(path: Path) -> bool:
     """
     Checks if the given path is within ALLOWED_DIR and not forbidden.
@@ -503,6 +511,39 @@ def delete_file(path: str) -> str:
         return json.dumps({"success": True, "message": f"Deleted: {p}"}, indent=2)
     except Exception as e:
         return json.dumps({"success": False, "error": "delete_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
+
+@mcp.tool()
+def get_filesystem_config() -> str:
+    """
+    Returns the configuration that decides which paths the filesystem tools can access:
+    the allowed directory, forbidden paths and the working directory that relative paths
+    are resolved against.
+    Use this tool to find out why a path is denied or not found by the filesystem tools.
+
+    Returns:
+        str: A JSON-formatted string containing the configuration or an error message.
+    """
+    try:
+        return json.dumps({
+            "success": True,
+            "allowed_dir": ALLOWED_DIR.as_posix(),
+            "allowed_dir_exists": ALLOWED_DIR.exists(),
+            "working_directory": Path.cwd().resolve().as_posix(),
+            "ignored_dirs": [],
+            "forbidden_paths": [_display_path(p, ALLOWED_DIR) for p in FORBIDDEN_PATHS],
+            "gitignore": {
+                "applied": False
+            },
+            "notes": [
+                "Only paths within allowed_dir can be accessed.",
+                "Relative paths given to the tools are resolved against working_directory, not allowed_dir.",
+                "Forbidden paths and everything inside forbidden folders are denied and hidden from list_directory.",
+                "Deleting or moving a folder that contains a forbidden path is denied.",
+                "There are no ignored directories and .gitignore is not applied, so folders such as .git are accessible unless forbidden."
+            ]
+        }, indent=2, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"success": False, "error": "config_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
 
 if __name__ == "__main__":
     mcp.run()

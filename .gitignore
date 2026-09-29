@@ -1,0 +1,45 @@
+# NOTE: generate-map-mcp.py also reads this file with a simplified matcher.
+# Keep patterns simple: no "!" negations, and write folders without a trailing "/"
+# so they are excluded at any depth by both git and the codebase map.
+
+# Python bytecode and caches
+__pycache__
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv
+venv
+env
+
+# Packaging and build output
+build
+dist
+*.egg-info
+.eggs
+
+# Test, lint and type-check caches
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.tox
+.coverage
+htmlcov
+
+# Local secrets and environment variables
+.env
+
+# Leftovers from interrupted atomic writes in safe-filesystem-mcp.py
+*.tmp
+
+# Logs
+*.log
+
+# Editors and OS files
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Claude Code local settings
+.claude/settings.local.json

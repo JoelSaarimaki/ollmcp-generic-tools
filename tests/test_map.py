@@ -203,3 +203,7 @@ def test_file_outline_points_to_the_right_tool(project):
     outline = project.load("map")
     assert "read_image" in outline.get_outline("logo.png")
     assert "read_file_with_metadata(path='src/app.py', section=...)" in outline.get_outline("src/app.py")
+
+def test_file_outline_shows_a_js_syntax_error(project):
+    project.write("src/app.ts", "export function a() {\n  return 1;\n}\nexport function b( {\n")
+    assert project.load("map").get_outline("src/app.ts").startswith("src/app.ts (4 lines, JS/TS syntax error near line 4)")

@@ -1,4 +1,8 @@
 # Packages needed to run the test suite: python -m pip install -r requirements-dev.txt
 mcp>=2.1
 ollama>=0.6
+# Pinned to one minor version each, as the grammars must match the tree-sitter version and its API changes between versions
+tree-sitter>=0.26,<0.27
+tree-sitter-javascript>=0.25,<0.26
+tree-sitter-typescript>=0.23,<0.24
 pytest>=9.0

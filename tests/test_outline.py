@@ -3,6 +3,8 @@
 Tests for mcp_outline: the Python, JS/TS and Markdown outlines, their line spans, finding sections
 by name, rendering at each detail level and comparing outlines before and after a write.
 """
+import re
+
 import pytest
 
 import mcp_outline as outline_module
@@ -329,3 +331,39 @@ def test_same_full_names_point_to_line_numbers():
     text = "class A:\n    @property\n    def x(self):\n        return 1\n\n    @x.setter\n    def x(self, v):\n        pass\n"
     _, error, message = locate_section(outline_text(text, ".py"), "x")
     assert error == "multiple_sections" and "read the one you need with start_line and end_line" in message
+
+# --- tree-sitter: cases the earlier regex parser could not handle ---
+
+def test_regex_literal_with_a_backtick():
+    assert spans("const re = /a`b/g\nexport function after() {\n  return 1\n}\n", ".js") == {"after": (2, 4)}
+
+def test_decorators_are_part_of_their_section():
+    text = ("@Component({\n  selector: 'x',\n})\nexport class Widget {\n  @Input() name: string;\n  /** Handles it. */\n"
+            "  @HostListener('click')\n  onClick() {\n    return 1;\n  }\n}\n")
+    assert spans(text, ".ts") == {"Widget": (1, 11), "Widget.onClick": (6, 10)}
+
+def test_typescript_declarations():
+    text = ("declare function g(): void;\nexport abstract class Base {\n  abstract run(): void;\n  protected helper() {}\n}\n"
+            "export function* gen() {\n  yield 1;\n}\nexport const load = async (id: string): Promise<{ a: string }> => {\n  return { a: id };\n};\n")
+    assert spans(text, ".ts") == {"g": (1, 1), "Base": (2, 5), "Base.run": (3, 3), "Base.helper": (4, 4), "gen": (6, 8), "load": (9, 11)}
+
+def test_js_syntax_error_is_reported_with_the_outline():
+    outline = outline_text("export function a() {\n  return 1;\n}\nexport function b( {\n", ".ts")
+    assert outline.syntax_error == "JS/TS syntax error near line 4" and not outline.error
+    assert "a" in [s.name for s in outline.sections]
+
+def test_outline_after_write_warns_about_a_new_js_syntax_error_only():
+    good, broken = "export function a() {\n  return 1;\n}\n", "export function a() {\n  return 1;\n"
+    report = outline_after_write(good, broken, ".ts", 2000)
+    assert "Warning: JS/TS syntax error near line" in report["warnings"][0] and "after this change" in report["warnings"][0]
+    assert not any("syntax error" in w for w in outline_after_write(broken, broken + "// more\n", ".ts", 2000)["warnings"])
+
+def test_large_js_file_is_outlined():
+    # Reading Point.row crashed Python 3.14 with tree-sitter 0.26 as soon as a file had a few hundred declarations
+    text = "".join(f"/** Doc {i}. */\nexport function f{i}(a: number): number {{\n  return a + {i};\n}}\n\n" for i in range(3000))
+    outline = outline_text(text, ".ts")
+    assert len(outline.sections) == 3000 and (outline.sections[-1].start, outline.sections[-1].end) == (14996, 14999)
+
+def test_points_are_read_by_index():
+    source = open(outline_module.__file__, encoding="utf-8").read()
+    assert not re.search(r"_point\.(row|column)", source), "Read tree-sitter Points by index: Point.row crashes Python 3.14"

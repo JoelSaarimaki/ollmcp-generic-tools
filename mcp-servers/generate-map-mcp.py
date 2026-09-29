@@ -98,7 +98,9 @@ def _file_line(entry: _FileEntry, detail: int, depth: int = 0) -> str:
     info = [f"{entry.lines} {'line' if entry.lines == 1 else 'lines'}"]
     if entry.outline and entry.outline.error:
         info.append(f"not outlined: {entry.outline.error}")
-    elif entry.outline and detail >= FILES:
+    elif entry.outline and entry.outline.syntax_error:
+        info.append(entry.outline.syntax_error)
+    if entry.outline and not entry.outline.error and detail >= FILES:
         count = section_count(entry.outline)
         info.append(f"{count} {'section' if count == 1 else 'sections'}")
     line = f"{'  ' * depth}{entry.rel} ({', '.join(info)})"

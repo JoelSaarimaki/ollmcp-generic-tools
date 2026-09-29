@@ -70,9 +70,10 @@ Configuration:
 - **Reduce detail instead of cutting.** A folder outline that does not fit drops, in order: summaries, sections below the top level, all sections (files with section counts remain), and finally files in subfolders (subfolders with file counts remain). Every level still covers the whole folder, and the response names the level and suggests subfolders. Folders with more than 1000 files go straight to the last level without reading the files. A single file's outline drops calls, then summaries, then nested sections, and is only cut short as a last resort.
 - **Full relative paths instead of a tree with connectors**, so that a path can be copied into the other tools as-is.
 - **Reading by name** (`section`), because small models copy line numbers wrongly and line numbers go stale after an edit, while a name resolves against the current file. A name matches the full name (`App.run`, `Guide > Install`) or the name alone, first exactly and then ignoring letter case; an outline line copied as the name (`18-60 class App`, `## Install`, `run()`) also works. Several matches return the candidates with their spans instead of guessing.
-- **Outline after every write** to a Python, JS/TS or Markdown file (`edit_file`, `write_file`, `create_file`, `write_context_file`, `append_to_context_file`), with the sections removed and added compared to the outline before the write. An explicit "no longer in the file" warning is more reliable than expecting a small model to notice a missing entry. A Python file that parsed before but not after the write is also warned about, which catches broken indentation early. Blocks of top-level statements are not compared, as their names change with every new constant.
-- **Spans**: Python from the first decorator to `end_lineno`, top-level statements between definitions grouped as blocks (`docstring, imports, assignments: A, B`); JS/TS from the JSDoc to the brace closing the body, or to the `;` or line break ending the statement; Markdown from the heading to the line before the next heading of the same or a higher level, without trailing blank lines, skipping code blocks and front matter.
-- The parsers are in their own module, `mcp_outline.py`, because the regular expressions are hard to read and edit among the server code.
+- **Outline after every write** to a Python, JS/TS or Markdown file (`edit_file`, `write_file`, `create_file`, `write_context_file`, `append_to_context_file`), with the sections removed and added compared to the outline before the write. An explicit "no longer in the file" warning is more reliable than expecting a small model to notice a missing entry. A Python file that parsed before but not after the write is also warned about, which catches broken indentation early, and so is a new JS/TS syntax error (only a new one, so that syntax the grammar does not know is not reported after every write). Blocks of top-level statements are not compared, as their names change with every new constant.
+- **Spans**: Python from the first decorator to `end_lineno`, top-level statements between definitions grouped as blocks (`docstring, imports, assignments: A, B`); JS/TS from the JSDoc (and decorators) to the end of the declaration's syntax tree node, overloads and getter/setter pairs spanning all their declarations; Markdown from the heading to the line before the next heading of the same or a higher level, without trailing blank lines, skipping code blocks and front matter.
+- The parsers are in their own module, `mcp_outline.py`, which reads no config and no files.
+- **JS/TS uses tree-sitter** (`tree-sitter`, `tree-sitter-javascript`, `tree-sitter-typescript`), which replaced a regex parser in 2026-09. The regex parser needed a special case for every construct (type arguments, object return types, apostrophes in JSX text, regex literals, statements continued on the next line) and kept producing wrong spans, which matter now that section reads and the outline after writes depend on them. `.ts` files use the TypeScript grammar, `.tsx` its TSX variant and other files the JavaScript grammar, which includes JSX. tree-sitter also outlines files with syntax errors and reports the first one (`Outline.syntax_error`).
 
 ### Local-model-friendly reading and editing
 
@@ -88,7 +89,7 @@ Configuration:
 
 - Folders are skipped without being entered (`walk` in `mcp_common.py`), so a large `node_modules` costs nothing. Only the part of a path inside `allowed_dir` is compared with `ignored_dirs`, so a project inside a folder named e.g. `out` is not hidden.
 - The outline and search tools respect `.gitignore` with a simplified matcher (no `!` negations; folders without a trailing `/` match at any depth). The repository's own `.gitignore` is written for that.
-- The JS/TS parser is regex-based but masks comments and strings first, so commented-out code is not reported and braces in strings do not break class bodies. It lists functions, components, hooks, classes with methods, interfaces, types, enums, exported constants, default/named/CommonJS exports, re-exports, local imports and JSDoc summaries.
+- The JS/TS outline lists functions, components, hooks, classes with methods, interfaces, types, enums, exported constants, default/named/CommonJS exports, re-exports, local imports and JSDoc summaries.
 - `search_text_in_files` searches for a query that is not a valid regex (e.g. `functionName(`, which small models often search for) as literal text, and says so in a `Note:` line, instead of returning an error.
 - Outlines and text search can be limited to a folder with `path`. The outline of one Python file scans the whole project for Python symbols, so that "Calls:" works across folders; folder outlines do not show calls.
 
@@ -109,7 +110,7 @@ Every tool definition is sent with every request, so tools that duplicate others
 
 ## How changes have been verified
 
-The automated test suite in `tests/` (pytest, 268 tests, about a minute) covers every server. Run it from the repository root:
+The automated test suite in `tests/` (pytest, 277 tests, about a minute) covers every server. Run it from the repository root:
 
 ```bash
 python -m pip install -r requirements-dev.txt
@@ -127,8 +128,8 @@ Add tests for every new tool or fixed bug.
 
 - `commands-mcp` can reach any file through the code it runs (see the security model).
 - In `git-diff-mcp`, a file moved into a forbidden folder is still visible in the history of its old, allowed path, and commit messages are not filtered.
-- The `.gitignore` matcher is simplified, and the JS/TS parser is regex-based: declarations that do not start at the beginning of a line, or a `/` in a regex literal mistaken for a string or comment, can be missed.
-- JS/TS spans are approximate: a statement without a `;` that continues on the next line without an operator at the end of the line or a leading `.`, `?` or operator on the next one ends at the line break, and a regex literal is not recognized as one. Type arguments (`<T extends { a: 1 }>`), object return types (`): { a: string } {`), `=>` at a line end and chained calls are handled. Python spans come from `ast` and are exact.
+- The `.gitignore` matcher is simplified.
+- In a JS/TS file with a syntax error, tree-sitter's error recovery can swallow the declarations after the error, so the outline may be incomplete until the error is fixed. The syntax error itself is always reported.
 - `ignored_dirs` names are matched case-sensitively.
 - Command output is decoded as UTF-8. Python programs are made to write UTF-8 (`PYTHONIOENCODING=utf-8`, found by the test suite), but other programs writing in the Windows code page may still show `�` for characters such as `ä`.
 
@@ -159,6 +160,7 @@ Also worth considering: allowing more than one argument in command templates.
 
 ## Notes for working on this repository
 
-- Environment: Windows, Python 3.14, `mcp` 2.1.1 (`MCPServer`, `Image` from `mcp.server.mcpserver`), ollmcp 0.35, git 2.54.
+- Environment: Windows, Python 3.14, `mcp` 2.1.1 (`MCPServer`, `Image` from `mcp.server.mcpserver`), `tree-sitter` 0.26.0 with `tree-sitter-javascript` 0.25.0 and `tree-sitter-typescript` 0.23.2, ollmcp 0.35, git 2.54.
+- **Read tree-sitter `Point`s by index** (`node.start_point[0]`), never as `.row`/`.column`: attribute access crashes Python 3.14 with an access violation as soon as a file has a few hundred declarations. `test_points_are_read_by_index` guards this.
 - The servers need `MCP_TOOLS_CONFIG` set to start, also when a script imports them for testing. When loading several servers in one test process, remove `mcp_common` from `sys.modules` before each load so that each gets a fresh config; the test fixtures in `tests/conftest.py` do this.
 - ollmcp passes tool responses to the model as text; `ImageContent` is forwarded only to vision-capable models.

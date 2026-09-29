@@ -313,3 +313,9 @@ def test_edit_response_stays_within_the_limit(project):
     old = "".join(f"x_{i} = '{'a' * 150}'\n" for i in range(40))
     response = fs.edit_file("wide.py", old, old.replace("'a", "'b"), sha)
     assert len(response) <= 2000 and "Output limited: the change continues after line" in response
+
+def test_edit_warns_when_a_ts_file_gets_a_syntax_error(project):
+    project.write("app.ts", "export function a() {\n  return 1;\n}\n")
+    fs = project.load("filesystem")
+    response = fs.edit_file("app.ts", "  return 1;\n}", "  return 1;", sha_of(fs.read_file_with_metadata("app.ts")))
+    assert "Warning: JS/TS syntax error near line" in response

@@ -21,10 +21,11 @@ For the design principles behind the servers and the planned improvements, see [
     ```
 
 3.  **Install the packages the servers use**:
-    The servers are developed and tested with Python 3.14 and need at least Python 3.10. They use the `mcp` package, and `web-search-mcp` also uses `ollama`:
+    The servers are developed and tested with Python 3.14 and need at least Python 3.10. They use the `mcp` package, `tree-sitter` with its JavaScript and TypeScript grammars for the outlines of JS/TS files, and `ollama` for `web-search-mcp`:
     ```bash
-    pip install mcp ollama
+    pip install mcp ollama "tree-sitter>=0.26,<0.27" "tree-sitter-javascript>=0.25,<0.26" "tree-sitter-typescript>=0.23,<0.24"
     ```
+    The tree-sitter packages are pinned to one minor version each, as the grammars must match the tree-sitter version.
 
 ### Configuration
 
@@ -154,7 +155,7 @@ Read-only only applies to `context-record-mcp`. If the instructions file is insi
 
 ### generate-map-mcp
 
-Gives the AI an outline of the project, so that it can find the code it needs and then read only that part, instead of reading whole files or a map that is cut off at the output limit. The parsers are in `mcp_outline.py`: Python via `ast`, JS/TS via regular expressions (code in comments and strings is ignored), and Markdown by its headings.
+Gives the AI an outline of the project, so that it can find the code it needs and then read only that part, instead of reading whole files or a map that is cut off at the output limit. The parsers are in `mcp_outline.py`: Python via `ast`, JS/TS via [tree-sitter](https://tree-sitter.github.io/), and Markdown by its headings. Both parsers give exact line spans, and a JS/TS file with a syntax error is still outlined, with the error reported.
 
 - **get_outline** Returns an outline with the line span (`first-last`) of each section.
   - For a folder (by default the whole allowed directory): every file that is not ignored, with its line count, and for Python, JS/TS and Markdown files their sections: classes and methods, functions, React components and hooks, interfaces, types, enums, exported constants, blocks of top-level statements, and headings, with docstring and JSDoc summaries.

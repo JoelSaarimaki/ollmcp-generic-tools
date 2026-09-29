@@ -4,17 +4,20 @@ Outlines of source and Markdown files: their classes, functions and headings wit
 of their content. Used by get_outline, by the section reads of read_file_with_metadata and
 read_context_file, and by the outlines shown after a file is written.
 
-Python files are parsed with the ast module. JS/TS files are parsed with regular expressions on a copy
-of the source whose comments and strings are blanked out, so that code in them is not mistaken for
-declarations or braces. Markdown headings are read line by line, skipping code blocks.
+Python files are parsed with the ast module and JS/TS files with tree-sitter, which gives exact
+line spans and still outlines a file with syntax errors. Markdown headings are read line by line,
+skipping code blocks.
 
 This module only parses text: it reads no configuration and no files, so it can be tested on its own.
 """
 import ast
-import bisect
 import re
 from collections import Counter
 from dataclasses import dataclass, field
+
+import tree_sitter_javascript
+import tree_sitter_typescript
+from tree_sitter import Language, Node, Parser
 
 # --- Constants & Config ---
 
@@ -74,6 +77,7 @@ class Outline:
     summary: str = ""
     notes: list[str] = field(default_factory=list)  # File-level lines such as imports and exports
     error: str = ""
+    syntax_error: str = ""  # A syntax error in a file that could still be outlined, e.g. in JS/TS
 
 # --- Shared Helpers ---
 
@@ -94,13 +98,6 @@ def _first_line(text: str | None) -> str:
         if line:
             return line if len(line) <= MAX_SUMMARY_CHARS else line[:MAX_SUMMARY_CHARS - 3] + "..."
     return ""
-
-def _line_finder(text: str):
-    """
-    Returns a function that converts a character index of text into a 1-based line number.
-    """
-    starts = [0] + [i + 1 for i, c in enumerate(text) if c == "\n"]
-    return lambda index: bisect.bisect_right(starts, index)
 
 # --- Python ---
 
@@ -244,84 +241,21 @@ def _outline_python(text: str, known: dict | None) -> Outline:
 
 # --- JS/TS ---
 
-# Top-level JS/TS declarations. They must start at the beginning of a line, so nested code is not listed.
-_JS_IDENT = r"[A-Za-z_$][\w$]*"
-_JS_FUNCTION = re.compile(rf"^(export\s+(?:default\s+)?)?(?:declare\s+)?(?:async\s+)?function\s*\*?\s*({_JS_IDENT})?", re.M)
-_JS_CLASS = re.compile(rf"^(export\s+(?:default\s+)?)?(?:declare\s+)?(?:abstract\s+)?class\b\s*(?!extends\b)({_JS_IDENT})?([^{{]*)\{{", re.M)
-_JS_INTERFACE = re.compile(rf"^(export\s+)?(?:declare\s+)?interface\s+({_JS_IDENT})", re.M)
-_JS_TYPE = re.compile(rf"^(export\s+)?(?:declare\s+)?type\s+({_JS_IDENT})\b", re.M)
-_JS_ENUM = re.compile(rf"^(export\s+)?(?:declare\s+)?(?:const\s+)?enum\s+({_JS_IDENT})", re.M)
-_JS_VARIABLE = re.compile(rf"^(export\s+)?(?:declare\s+)?(?:const|let|var)\s+({_JS_IDENT})\s*(?::[^=\n]+)?=(?![=>])", re.M)
-_JS_DEFAULT_NAME = re.compile(rf"^export\s+default\s+({_JS_IDENT})\s*;?[ \t]*$", re.M)
-_JS_DEFAULT_ANONYMOUS = re.compile(rf"^export\s+default\s+(?:async\s+)?(?:\(|{_JS_IDENT}\s*=>)", re.M)
-_JS_EXPORT_LIST = re.compile(r"^export\s+(?:type\s+)?\{([^}]*)\}(?:\s*from\s*['\"]([^'\"]+)['\"])?", re.M)
-_JS_EXPORT_ALL = re.compile(rf"^export\s+(?:type\s+)?\*\s*(?:as\s+({_JS_IDENT})\s*)?from\s*['\"]([^'\"]+)['\"]", re.M)
-_JS_CJS_OBJECT = re.compile(r"^module\.exports\s*=\s*\{([^}]*)\}", re.M)
-_JS_CJS_NAME = re.compile(rf"^(?:module\.exports\s*=\s*({_JS_IDENT})\s*;?[ \t]*$|(?:module\.)?exports\.({_JS_IDENT})\s*=)", re.M)
-_JS_IMPORT = re.compile(r"^[ \t]*(?:import|export)\s+(?:type\s+)?(?:[\w$*{}\s,]+?\s+from\s+)?['\"]([^'\"]+)['\"]", re.M)
-_JS_REQUIRE = re.compile(r"\b(?:require|import)\(\s*['\"]([^'\"]+)['\"]\s*\)")
-# Right-hand sides of variable declarations that make the variable a function or a component,
-# matched after the start ('async', 'function', type arguments) and after the parameter list ('=>')
-_JS_FUNCTION_START = re.compile(r"\s*(?:async\s+)?(?:(function)\b|<[^>]*>\s*|(?=\()|([A-Za-z_$][\w$]*)\s*=>)")
-_JS_ARROW_AFTER_PARAMETERS = re.compile(r"\s*(?::[^=;]*?)?=>")
-_JS_COMPONENT_VALUE = re.compile(r"\s*(?:React\.)?(?:memo|forwardRef)\s*[(<]")
-# Class members, matched on lines directly inside a class body
-_JS_MODIFIERS = r"(?:(?:public|private|protected|static|readonly|abstract|override|async|get|set|declare)\s+)*"
-_JS_METHOD = re.compile(rf"^\s*{_JS_MODIFIERS}\*?\s*(#?{_JS_IDENT})\s*(?:<[^>]*>)?\s*\(")
-_JS_ARROW_PROPERTY = re.compile(rf"^\s*{_JS_MODIFIERS}(#?{_JS_IDENT})\s*(?::[^=]+)?=\s*(?:async\s+)?(?:\([^()]*\)|{_JS_IDENT})\s*(?::[^=]*?)?=>")
-_JS_KEYWORDS = {"if", "for", "while", "switch", "catch", "return", "function", "else", "do", "try", "with", "new", "typeof", "await", "super", "throw"}
-# A statement continues on the next line if its line ends with one of these, or the next line starts with one of them
-_JS_CONTINUES_AFTER = set("=,+-*/%&|^?:.<>(")  # Not '!': a line ending with it is a non-null assertion, e.g. 'getElementById("x")!'
-_JS_CONTINUES_BEFORE = set(".?:|&+-*/=,>")
-
-def _blank(chars: list[str], start: int, end: int):
-    """
-    Replaces the characters between start and end with spaces, keeping line breaks.
-    """
-    for i in range(start, end):
-        if chars[i] != "\n":
-            chars[i] = " "
-
-def _mask_js(content: str) -> tuple[str, str]:
-    """
-    Returns two copies of JS/TS source with the same length and line breaks: one with comments
-    replaced by spaces, and one with both comments and string contents replaced by spaces.
-    """
-    no_comments = list(content)
-    no_strings = list(content)
-    i, n = 0, len(content)
-    while i < n:
-        c = content[i]
-        nxt = content[i + 1] if i + 1 < n else ""
-        if c == "/" and nxt == "/":
-            end = content.find("\n", i)
-            end = n if end == -1 else end
-            _blank(no_comments, i, end)
-            _blank(no_strings, i, end)
-            i = end
-        elif c == "/" and nxt == "*":
-            end = content.find("*/", i + 2)
-            end = n if end == -1 else end + 2
-            _blank(no_comments, i, end)
-            _blank(no_strings, i, end)
-            i = end
-        elif c in "'\"`":
-            j = i + 1
-            while j < n and content[j] != c:
-                if content[j] == "\\":
-                    j += 1
-                elif c != "`" and content[j] == "\n":
-                    break
-                j += 1
-            if c != "`" and (j >= n or content[j] == "\n"):
-                # A quote without a closing one on the same line is not a string, e.g. the apostrophe in JSX text "Can't"
-                i += 1
-                continue
-            _blank(no_strings, i + 1, min(j, n))
-            i = j + 1
-        else:
-            i += 1
-    return "".join(no_comments), "".join(no_strings)
+# TypeScript files are parsed with the TypeScript grammar (.tsx with its JSX variant), other files with the JavaScript grammar, which includes JSX
+_JS_PARSERS = {
+    ".ts": Parser(Language(tree_sitter_typescript.language_typescript())),
+    ".tsx": Parser(Language(tree_sitter_typescript.language_tsx())),
+    ".js": Parser(Language(tree_sitter_javascript.language())),
+}
+_JS_FUNCTION_NODES = {"function_declaration", "generator_function_declaration", "function_signature",
+                      "function_expression", "function", "generator_function", "arrow_function"}
+_JS_CLASS_NODES = {"class_declaration", "abstract_class_declaration", "class"}
+_JS_TYPE_NODES = {"interface_declaration": "interface", "type_alias_declaration": "type", "enum_declaration": "enum"}
+_JS_VARIABLE_NODES = {"lexical_declaration", "variable_declaration"}
+_JS_MEMBER_NODES = {"method_definition", "method_signature", "abstract_method_signature"}
+_JS_FIELD_NODES = {"public_field_definition", "field_definition"}
+_JS_COMPONENT_WRAPPERS = {"memo", "forwardRef", "React.memo", "React.forwardRef"}
+_JS_NAME = re.compile(r"[A-Za-z_$][\w$.]*")
 
 def _comment_summary(comment_body: str) -> str:
     """
@@ -332,30 +266,6 @@ def _comment_summary(comment_body: str) -> str:
         if line and not line.startswith("@"):
             return _first_line(line)
     return ""
-
-def _jsdoc_start(content: str, pos: int) -> int | None:
-    """
-    Returns the index of the JSDoc comment ('/**') directly before position pos, or None.
-    """
-    end = pos
-    while end > 0 and content[end - 1].isspace():
-        end -= 1
-    if content[end - 2:end] != "*/":
-        return None
-    start = content.rfind("/**", 0, end)
-    if start == -1 or content.find("*/", start, end - 2) != -1:
-        return None
-    return start
-
-def _jsdoc_summary(content: str, pos: int) -> str:
-    """
-    Returns the summary of the JSDoc comment directly before position pos, or an empty string.
-    """
-    start = _jsdoc_start(content, pos)
-    if start is None:
-        return ""
-    end = content.find("*/", start + 3)
-    return _comment_summary(content[start + 3:end])
 
 def _file_comment_summary(content: str) -> str:
     """
@@ -376,251 +286,258 @@ def _file_comment_summary(content: str) -> str:
         return _comment_summary(content[start + 2:end].lstrip("*"))
     return ""
 
-def _js_line_complete(code: str, newline: int) -> bool:
+def _js_text(code: bytes, node: Node) -> str:
     """
-    Checks if the statement on the line ending at index newline is complete, i.e. it does not
-    continue on the next line, as in 'a =' or a next line starting with '.method()'.
+    Returns the source text of a syntax tree node, from the UTF-8 source code the tree was parsed from.
     """
-    j = newline - 1
-    while j >= 0 and code[j] in " \t\r":
-        j -= 1
-    if j < 0 or code[j] == "\n":
-        return False
-    last, before = code[j], code[j - 1] if j > 0 else ""
-    if last == ">" and before != "=":
-        return True  # Closes a type argument, e.g. 'Record<string, number>', unlike an arrow '=>'
-    if last in "+-" and before == last:
-        return True  # 'count++'
-    if last in _JS_CONTINUES_AFTER:
-        return False
-    k = newline + 1
-    while k < len(code) and code[k] in " \t\r\n":
-        k += 1
-    return k >= len(code) or code[k] not in _JS_CONTINUES_BEFORE
+    return code[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
 
-def _js_statement_end(code: str, start: int, block: bool) -> tuple[int, int | None]:
+def _js_lines(node: Node) -> tuple[int, int]:
     """
-    Returns the index of the last character of the declaration starting at start, and the index of
-    the brace opening its body (None if it has none): for a block, the end is the brace closing its body,
-    otherwise the ';' or line break that ends the statement.
-    In a block, braces in type arguments ('<T extends { a: 1 }>') and after a ':' (a return type
-    such as '): { a: string } {') are not taken as the body.
+    Returns the first and last line (1-based) of a syntax tree node.
+    Points are read by index: reading Point.row crashes Python 3.14 with tree-sitter 0.26.
     """
-    depth = 0
-    angle = 0  # Depth of type arguments before a block's body
-    in_template = False
-    body = None
-    last = ""  # The previous character other than whitespace
-    for i in range(start, len(code)):
-        c = code[i]
-        if c == "`":
-            in_template = not in_template
-        elif in_template:
-            continue
-        elif block and body is None and depth == 0 and c == "<":
-            angle += 1
-        elif block and body is None and depth == 0 and c == ">" and angle and last != "=":
-            angle -= 1
-        elif c in "([{":
-            if block and c == "{" and body is None and depth == 0 and not angle and last not in (":", "|", "&", ","):
-                body = i
-            depth += 1
-        elif c in ")]}":
-            depth -= 1
-            if depth < 0:
-                return max(start, i - 1), body
-            if depth == 0 and c == "}" and body is not None:
-                return i, body
-        elif depth == 0:
-            if c == ";":
-                return i, body
-            if c == "\n" and not block and _js_line_complete(code, i):
-                return i - 1, body
-        if not c.isspace():
-            last = c
-    return len(code) - 1, body
+    first = node.start_point[0] + 1
+    last = node.end_point[0] + (1 if node.end_point[1] else 0)
+    return first, max(first, last)
 
-def _js_class_members(code: str, body_start: int, body_end: int) -> list[tuple[int, str, bool, int]]:
+def _js_doc(code: bytes, siblings: list[Node], index: int) -> tuple[int | None, str]:
     """
-    Returns (position, name, is_method, position of the last declaration) for the methods and arrow
-    function properties directly inside a class body.
+    Returns the first line and the summary of the JSDoc comment directly above siblings[index],
+    with no blank line in between, or (None, "") if there is none. Decorators above it are included.
+    The siblings are passed as a list, which the callers already have, instead of using Node.prev_named_sibling.
     """
-    members = []
-    seen = {}  # Member name: index in members
-    depth = 0
-    pos = body_start
-    for line in code[body_start:body_end].split("\n"):
-        if depth == 0:
-            method = _JS_METHOD.match(line)
-            match = method or _JS_ARROW_PROPERTY.match(line)
-            if match and match.group(1) not in _JS_KEYWORDS:
-                name = match.group(1)
-                if name in seen:
-                    # An overload or a getter and setter pair: the member ends where its last declaration ends
-                    members[seen[name]] = (*members[seen[name]][:3], pos)
-                else:
-                    seen[name] = len(members)
-                    members.append((pos, name, bool(method), pos))
-        # Brackets and parentheses too, so that the lines of a multi-line call are not taken as members
-        depth += sum(line.count(c) for c in "{([") - sum(line.count(c) for c in "})]")
-        pos += len(line) + 1
-    return members
+    node = siblings[index]
+    decorated = None  # The line of the first decorator above node
+    index -= 1
+    while index >= 0 and siblings[index].type == "decorator":
+        decorated = siblings[index].start_point[0] + 1
+        index -= 1
+    previous = siblings[index] if index >= 0 else None
+    top = decorated or node.start_point[0] + 1
+    if (previous is not None and previous.type == "comment" and _js_text(code, previous).startswith("/**")
+            and top - (previous.end_point[0] + 1) <= 1):
+        return previous.start_point[0] + 1, _comment_summary(_js_text(code, previous)[3:-2])
+    return decorated, ""
 
-def _js_is_function_value(code: str, pos: int) -> bool:
+def _js_first_error_line(node: Node) -> int:
     """
-    Checks if the value of a variable declaration starting at pos is a function: 'function ...',
-    'x => ...' or '(...) => ...', also async and with type arguments. The parameter list is matched
-    by its parentheses, so that it can be long and span many lines.
+    Returns the line (1-based) of the first syntax error inside a node that has one.
     """
-    start = _JS_FUNCTION_START.match(code, pos)
-    if not start:
-        return False
-    if start.group(1) or start.group(2):
-        return True
-    i = start.end()
-    if i >= len(code) or code[i] != "(":
-        return False
-    depth = 0
-    for j in range(i, len(code)):
-        depth += {"(": 1, ")": -1}.get(code[j], 0)
-        if depth == 0:
-            return _JS_ARROW_AFTER_PARAMETERS.match(code, j + 1) is not None
-    return False
+    while True:
+        if node.is_error or node.is_missing:
+            return node.start_point[0] + 1
+        child = next((c for c in node.children if c.has_error or c.is_missing), None)
+        if child is None:
+            return node.start_point[0] + 1
+        node = child
+
+def _js_walk(node: Node):
+    """
+    Yields the node and all nodes inside it.
+    """
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        yield current
+        stack.extend(reversed(current.children))
+
+def _js_name(code: bytes, node: Node, field_name: str = "name") -> str:
+    """
+    Returns the text of a node's name field, or '(anonymous)' if it has none.
+    """
+    name = node.child_by_field_name(field_name)
+    return _js_text(code, name) if name is not None else "(anonymous)"
+
+def _js_string(code: bytes, node: Node) -> str:
+    """
+    Returns the value of a string literal node, without its quotes.
+    """
+    return _js_text(code, node)[1:-1]
+
+def _js_extends(code: bytes, node: Node) -> str:
+    """
+    Returns 'extends X' for a class that extends another one, or an empty string.
+    """
+    heritage = next((c for c in node.named_children if c.type == "class_heritage"), None)
+    if heritage is None:
+        return ""
+    clause = next((c for c in heritage.named_children if c.type == "extends_clause"), None)
+    value = clause.child_by_field_name("value") if clause is not None else (heritage.named_children[0] if heritage.named_children else None)
+    name = _js_text(code, value) if value is not None else ""
+    return f"extends {name}" if _JS_NAME.fullmatch(name) else ""
 
 def _js_kind(name: str, is_function: bool, suffix: str) -> str:
     """
-    Classifies a declaration as a Hook, Component, Function or Const by its name and file type.
+    Classifies a declaration as a hook, component, function or const by its name and file type.
     """
     if not is_function:
-        return "Const"
+        return "const"
     if re.match(r"use[A-Z0-9]", name):
-        return "Hook"
+        return "hook"
     if name[:1].isupper() and suffix in {".jsx", ".tsx"}:
-        return "Component"
-    return "Function"
+        return "component"
+    return "function"
 
-def _parse_export_names(names: str) -> list[tuple[str, str]]:
+def _js_value_kind(code: bytes, value: Node | None, name: str, suffix: str) -> str:
     """
-    Parses the contents of an export list such as "a, b as c, type D" into (local, exported) name pairs.
+    Classifies a variable by its value: a function, a component wrapped in memo or forwardRef, or a const.
     """
-    pairs = []
-    for part in names.split(","):
-        part = re.sub(r"^\s*type\s+", "", part).strip()
-        if not part:
+    if value is not None and value.type == "call_expression":
+        function = value.child_by_field_name("function")
+        if function is not None and _js_text(code, function) in _JS_COMPONENT_WRAPPERS:
+            return "component"
+    return _js_kind(name, value is not None and value.type in _JS_FUNCTION_NODES, suffix)
+
+def _js_members(code: bytes, body: Node) -> list[Section]:
+    """
+    Returns the methods and function-valued fields directly inside a class body. An overloaded
+    method or a getter and setter pair forms one section spanning all its declarations.
+    """
+    members, by_name = [], {}
+    nodes = body.named_children
+    for index, node in enumerate(nodes):
+        if node.type in _JS_FIELD_NODES:
+            value = node.child_by_field_name("value")
+            if value is None or value.type not in _JS_FUNCTION_NODES:
+                continue
+            name = _js_name(code, node, "name" if node.child_by_field_name("name") is not None else "property")
+        elif node.type in _JS_MEMBER_NODES:
+            name = _js_name(code, node)
+        else:
             continue
-        local, _, exported = part.partition(" as ")
-        pairs.append((local.strip(), (exported or local).strip()))
-    return pairs
+        doc_start, summary = _js_doc(code, nodes, index)
+        first, last = _js_lines(node)
+        if name in by_name:
+            by_name[name].end = last
+            continue
+        by_name[name] = Section("method", name, doc_start or first, last, summary=summary)
+        members.append(by_name[name])
+    return members
 
 def _outline_js(text: str, suffix: str) -> Outline:
     """
-    Outlines a JS/TS file: top-level functions, components, hooks, classes with their methods,
-    interfaces, types, enums and exported constants, with their JSDoc summaries. Local imports,
-    separate exports and re-exports are listed as notes.
+    Outlines a JS/TS file with tree-sitter: top-level functions, components, hooks, classes with their
+    methods, interfaces, types, enums and exported constants, with their JSDoc summaries. Local imports,
+    separate exports and re-exports are listed as notes. The outline is made even if the file has
+    syntax errors, which are reported in syntax_error.
     """
     outline = Outline(count_lines(text), summary=_file_comment_summary(text))
-    no_comments, code = _mask_js(text)
-    line_of = _line_finder(text)
+    # The source and the tree are kept in variables while their nodes are used
+    code = text.encode("utf-8")
+    tree = _JS_PARSERS.get(suffix, _JS_PARSERS[".js"]).parse(code)
+    root = tree.root_node
+    if root.has_error:
+        outline.syntax_error = f"JS/TS syntax error near line {_js_first_error_line(root)}"
 
-    imports = []
-    for match in list(_JS_IMPORT.finditer(no_comments)) + list(_JS_REQUIRE.finditer(no_comments)):
-        source = match.group(1)
-        if source.startswith(".") and source not in imports:
-            imports.append(source)
+    imports, named_exports, default_names, re_exports = [], [], set(), []
+    sections = []  # (section, export, private const) in file order
+    by_key = {}  # Functions by (kind, name), so that overloads form one section
+
+    statements = root.named_children
+
+    def add(index: int, node: Node, export: str | None):
+        statement = statements[index]
+        doc_start, summary = _js_doc(code, statements, index)
+        first, last = _js_lines(statement)
+        start = doc_start or first
+        if node.type in _JS_FUNCTION_NODES:
+            name = _js_name(code, node)
+            kind = _js_kind(name, True, suffix)
+            if (kind, name) in by_key:
+                by_key[(kind, name)].end = last
+                return
+            section = Section(kind, name, start, last, summary=summary)
+            by_key[(kind, name)] = section
+            sections.append((section, export, False))
+        elif node.type in _JS_CLASS_NODES:
+            section = Section("class", _js_name(code, node), start, last, summary=summary, extra=_js_extends(code, node))
+            body = node.child_by_field_name("body")
+            section.children = _js_members(code, body) if body is not None else []
+            sections.append((section, export, False))
+        elif node.type in _JS_TYPE_NODES:
+            sections.append((Section(_JS_TYPE_NODES[node.type], _js_name(code, node), start, last, summary=summary), export, False))
+        elif node.type in _JS_VARIABLE_NODES:
+            declarators = [d for d in node.named_children if d.type == "variable_declarator"]
+            for declarator in declarators:
+                name_node = declarator.child_by_field_name("name")
+                if name_node is None or name_node.type != "identifier":
+                    continue  # Destructuring, e.g. 'const { a } = require("./x")'
+                name = _js_text(code, name_node)
+                kind = _js_value_kind(code, declarator.child_by_field_name("value"), name, suffix)
+                span = (start, last) if len(declarators) == 1 else _js_lines(declarator)
+                sections.append((Section(kind, name, *span, summary=summary), export, kind == "const" and export is None))
+
+    for index, statement in enumerate(statements):
+        if statement.type == "import_statement":
+            source = statement.child_by_field_name("source")
+            if source is not None and _js_string(code, source).startswith("."):
+                imports.append(_js_string(code, source))
+        elif statement.type == "export_statement":
+            source = statement.child_by_field_name("source")
+            clause = next((c for c in statement.named_children if c.type == "export_clause"), None)
+            if source is not None:  # export { a } from "./x", export * from "./x"
+                if _js_string(code, source).startswith("."):
+                    imports.append(_js_string(code, source))
+                namespace = next((c for c in statement.named_children if c.type == "namespace_export"), None)
+                if clause is not None:
+                    label = ", ".join(_js_name(code, s, "alias") if s.child_by_field_name("alias") else _js_name(code, s) for s in clause.named_children)
+                else:
+                    label = f"all as {_js_text(code, namespace.named_children[0])}" if namespace is not None and namespace.named_children else "all"
+                re_exports.append(f"{label} from {_js_string(code, source)}")
+            elif clause is not None:  # export { a, b as c }
+                named_exports.extend(_js_name(code, s) for s in clause.named_children if s.type == "export_specifier")
+            else:
+                export = "default" if any(c.type == "default" for c in statement.children) else "named"
+                node = statement.child_by_field_name("declaration") or statement.child_by_field_name("value")
+                if node is not None and node.type == "identifier":
+                    default_names.add(_js_text(code, node))  # export default Name
+                elif node is not None:
+                    if node.type == "ambient_declaration" and node.named_children:
+                        node = node.named_children[-1]
+                    add(index, node, export)
+        elif statement.type == "ambient_declaration" and statement.named_children:
+            add(index, statement.named_children[-1], None)  # declare function f(): void;
+        elif statement.type == "expression_statement" and statement.named_children and statement.named_children[0].type == "assignment_expression":
+            # CommonJS: module.exports = { a, b: local }, module.exports = name, exports.name = ...
+            assignment = statement.named_children[0]
+            target, value = _js_text(code, assignment.child_by_field_name("left")), assignment.child_by_field_name("right")
+            if target == "module.exports" and value is not None and value.type == "object":
+                for part in value.named_children:
+                    local = part if part.type == "shorthand_property_identifier" else part.child_by_field_name("value") if part.type == "pair" else None
+                    if local is not None and local.type in ("shorthand_property_identifier", "identifier"):
+                        named_exports.append(_js_text(code, local))
+            elif target == "module.exports" and value is not None and value.type == "identifier":
+                default_names.add(_js_text(code, value))
+            elif target.startswith(("exports.", "module.exports.")):
+                named_exports.append(target.rsplit(".", 1)[1])
+        else:
+            add(index, statement, None)
+
+    # require("./x") and import("./x") anywhere in the file
+    for node in _js_walk(root):
+        if node.type == "call_expression":
+            function, arguments = node.child_by_field_name("function"), node.child_by_field_name("arguments")
+            if function is not None and _js_text(code, function) in ("require", "import") and arguments is not None:
+                source = next((a for a in arguments.named_children if a.type == "string"), None)
+                if source is not None and _js_string(code, source).startswith("."):
+                    imports.append(_js_string(code, source))
     if imports:
-        outline.notes.append(f"Imports: {', '.join(imports)}")
+        outline.notes.append(f"Imports: {', '.join(dict.fromkeys(imports))}")
 
-    # Names exported separately from their declarations
-    default_names = {m.group(1) for m in _JS_DEFAULT_NAME.finditer(code)} - {"function", "class", "async"}
-    named_exports = []
-    re_exports = []
-    for match in _JS_EXPORT_LIST.finditer(no_comments):
-        pairs = _parse_export_names(match.group(1))
-        if match.group(2):
-            re_exports.append(f"{', '.join(e for _, e in pairs)} from {match.group(2)}")
-        else:
-            named_exports.extend(local for local, _ in pairs)
-    for match in _JS_EXPORT_ALL.finditer(no_comments):
-        label = f"all as {match.group(1)}" if match.group(1) else "all"
-        re_exports.append(f"{label} from {match.group(2)}")
-    for match in _JS_CJS_OBJECT.finditer(code):
-        # module.exports = { a, b: localName }
-        for part in match.group(1).split(","):
-            local = part.split(":")[-1].strip()
-            if re.fullmatch(_JS_IDENT, local):
-                named_exports.append(local)
-    for match in _JS_CJS_NAME.finditer(code):
-        if match.group(1):
-            default_names.add(match.group(1))  # module.exports = name
-        else:
-            named_exports.append(match.group(2))  # exports.name = ...
-
-    # Declarations as (position, kind, name, export, extra, members, block). A block ends at the brace
-    # closing its body (functions, classes, interfaces, enums), other declarations at ';' or a line break.
-    declarations = []
-    seen = set()
-    last_positions = {}  # Overloaded functions end where their last declaration (the implementation) ends
-
-    def add(pos, kind, name, export, extra="", members=None, block=False):
-        if (kind, name) in seen:
-            if kind in ("Function", "Component", "Hook"):
-                last_positions[(kind, name)] = pos
-            return
-        seen.add((kind, name))
-        declarations.append((pos, kind, name, export, extra, members or [], block))
-
-    def export_type(prefix):
-        if not prefix:
-            return None
-        return "default" if "default" in prefix else "named"
-
-    for match in _JS_FUNCTION.finditer(code):
-        name = match.group(2)
-        if name:
-            add(match.start(), _js_kind(name, True, suffix), name, export_type(match.group(1)), block=True)
-        elif export_type(match.group(1)) == "default":
-            add(match.start(), "Function", "(anonymous)", "default", block=True)
-
-    for match in _JS_CLASS.finditer(code):
-        name = match.group(2) or ("(anonymous)" if export_type(match.group(1)) == "default" else None)
-        if not name:
-            continue
-        extends = re.search(r"\bextends\s+([\w$.]+)", match.group(3))
-        body_end, body_start = _js_statement_end(code, match.start(), True)
-        members = _js_class_members(code, body_start + 1, body_end) if body_start is not None else []
-        add(match.start(), "Class", name, export_type(match.group(1)), f"extends {extends.group(1)}" if extends else "", members, block=True)
-
-    for pattern, kind in [(_JS_INTERFACE, "Interface"), (_JS_TYPE, "Type"), (_JS_ENUM, "Enum")]:
-        for match in pattern.finditer(code):
-            add(match.start(), kind, match.group(2), export_type(match.group(1)), block=kind != "Type")
-
-    for match in _JS_VARIABLE.finditer(code):
-        name = match.group(2)
-        kind = "Component" if _JS_COMPONENT_VALUE.match(code, match.end()) else _js_kind(name, _js_is_function_value(code, match.end()), suffix)
-        export = export_type(match.group(1))
-        if kind != "Const" or export or name in default_names or name in named_exports:
-            add(match.start(), kind, name, export)
-
-    for match in _JS_DEFAULT_ANONYMOUS.finditer(code):
-        add(match.start(), "Function", "(anonymous)", "default")
-
-    # A declaration and its JSDoc form its section; the class body's methods form the class's children
-    declared = {d[2] for d in declarations}
-    for pos, kind, name, export, extra, members, block in sorted(declarations):
-        if name in default_names:
+    # Constants are only listed if they are exported, also when exported separately from their declaration
+    declared = set()
+    for section, export, private_const in sections:
+        if section.name in default_names:
             export = "default"
-        elif name in named_exports and not export:
+        elif section.name in named_exports and not export:
             export = "named"
+        if private_const and not export:
+            continue
         tag = {"default": "(default export)", "named": "(export)"}.get(export, "")
-        start = _jsdoc_start(text, pos)
-        end = _js_statement_end(code, last_positions.get((kind, name), pos), block)[0]
-        section = Section(kind.lower(), name, line_of(pos if start is None else start), line_of(end),
-                          summary=_jsdoc_summary(text, pos), extra=" ".join(part for part in (extra, tag) if part))
-        for member_pos, member_name, is_method, member_last in members:
-            member_start = _jsdoc_start(text, member_pos)
-            section.children.append(Section("method", member_name, line_of(member_pos if member_start is None else member_start),
-                                            line_of(_js_statement_end(code, member_last, is_method)[0]), summary=_jsdoc_summary(text, member_pos)))
+        section.extra = " ".join(part for part in (section.extra, tag) if part)
         outline.sections.append(section)
+        declared.add(section.name)
 
     undeclared = [n for n in dict.fromkeys(named_exports) if n not in declared]
     undeclared += [n for n in sorted(default_names) if n not in declared]
@@ -886,6 +803,9 @@ def outline_after_write(before_text: str | None, after_text: str, suffix: str, m
         else:
             report["warnings"].append(f"Warning: the file could not be outlined: {after.error}.")
         return report
+    if after.syntax_error and not (before and before.syntax_error):
+        # Only a new error is reported, so that syntax the grammar does not know is not reported after every write
+        report["warnings"].append(f"Warning: {after.syntax_error} after this change. Check and fix it; the outline below may be incomplete.")
 
     lines = render(after, NAMES)
     if sum(len(line) + 1 for line in lines) > max_chars:

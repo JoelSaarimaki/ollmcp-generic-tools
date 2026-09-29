@@ -10,7 +10,7 @@ from mcp_common import (
     IGNORED_DIRS,
     MAX_OUTPUT_CHARS,
     access_denied_message,
-    compact_tool_schemas,
+    prepare_tools,
     display_path,
     is_ignored,
     is_path_allowed,
@@ -306,7 +306,7 @@ def search_files_by_pattern(pattern: str, recursive: bool = False) -> str:
     except Exception as e:
         return f"Error: Searching files by pattern failed:\n{e}\n{traceback.format_exc()}"
 
-compact_tool_schemas(mcp)
+prepare_tools(mcp)
 
 if __name__ == "__main__":
     mcp.run()

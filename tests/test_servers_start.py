@@ -63,3 +63,17 @@ def test_tool_definitions_stay_small():
     assert not any('"title"' in schema or '"anyOf"' in schema for schema in schemas)
     total = sum(len(tool.description or "") for tool in tools) + sum(len(schema) for schema in schemas)
     assert total <= MAX_TOOL_DEFINITION_CHARS, f"The tool definitions take {total} characters"
+
+def test_null_arguments_use_the_defaults(project):
+    """Small models often send null for optional parameters they do not use."""
+    project.write("a.txt", "one\ntwo\n")
+    config = project.configure()
+    async def run():
+        params = StdioServerParameters(command=sys.executable, args=[str(SERVERS_DIR / SERVER_FILES["filesystem"])],
+                                       env={**os.environ, "MCP_TOOLS_CONFIG": str(config)}, cwd=str(project.root))
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                return await session.call_tool("read_file_with_metadata", {"path": "a.txt", "section": None, "start_line": None, "line_numbers": None})
+    result = asyncio.run(run())
+    assert not result.is_error and "Lines: 1-2 of 2" in result.content[0].text

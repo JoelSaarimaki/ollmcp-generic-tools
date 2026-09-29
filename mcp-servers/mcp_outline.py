@@ -254,6 +254,7 @@ _JS_TYPE_NODES = {"interface_declaration": "interface", "type_alias_declaration"
 _JS_VARIABLE_NODES = {"lexical_declaration", "variable_declaration"}
 _JS_MEMBER_NODES = {"method_definition", "method_signature", "abstract_method_signature"}
 _JS_FIELD_NODES = {"public_field_definition", "field_definition"}
+_JS_NAMESPACE_NODES = {"internal_module", "module"}  # namespace N { }, declare module "x" { }
 _JS_COMPONENT_WRAPPERS = {"memo", "forwardRef", "React.memo", "React.forwardRef"}
 _JS_NAME = re.compile(r"[A-Za-z_$][\w$.]*")
 
@@ -315,8 +316,10 @@ def _js_doc(code: bytes, siblings: list[Node], index: int) -> tuple[int | None, 
         index -= 1
     previous = siblings[index] if index >= 0 else None
     top = decorated or node.start_point[0] + 1
+    # A comment after code on the same line, e.g. 'foo(); /** x */', belongs to that code
+    after_code = previous is not None and index > 0 and siblings[index - 1].end_point[0] >= previous.start_point[0]
     if (previous is not None and previous.type == "comment" and _js_text(code, previous).startswith("/**")
-            and top - (previous.end_point[0] + 1) <= 1):
+            and top - (previous.end_point[0] + 1) <= 1 and not after_code):
         return previous.start_point[0] + 1, _comment_summary(_js_text(code, previous)[3:-2])
     return decorated, ""
 
@@ -392,9 +395,11 @@ def _js_value_kind(code: bytes, value: Node | None, name: str, suffix: str) -> s
 def _js_members(code: bytes, body: Node) -> list[Section]:
     """
     Returns the methods and function-valued fields directly inside a class body. An overloaded
-    method or a getter and setter pair forms one section spanning all its declarations.
+    method, or a getter and setter pair, declared one after the other forms one section spanning all
+    its declarations; a static and an instance member with the same name stay separate.
     """
-    members, by_name = [], {}
+    members = []
+    previous_key = None
     nodes = body.named_children
     for index, node in enumerate(nodes):
         if node.type in _JS_FIELD_NODES:
@@ -408,33 +413,34 @@ def _js_members(code: bytes, body: Node) -> list[Section]:
             continue
         doc_start, summary = _js_doc(code, nodes, index)
         first, last = _js_lines(node)
-        if name in by_name:
-            by_name[name].end = last
+        key = (name, any(c.type == "static" for c in node.children))
+        if key == previous_key:
+            members[-1].end = last
             continue
-        by_name[name] = Section("method", name, doc_start or first, last, summary=summary)
-        members.append(by_name[name])
+        members.append(Section("method", name, doc_start or first, last, summary=summary))
+        previous_key = key
     return members
 
-def _outline_js(text: str, suffix: str) -> Outline:
+def _js_export_names(code: bytes, clause: Node, exports: dict):
     """
-    Outlines a JS/TS file with tree-sitter: top-level functions, components, hooks, classes with their
-    methods, interfaces, types, enums and exported constants, with their JSDoc summaries. Local imports,
-    separate exports and re-exports are listed as notes. The outline is made even if the file has
-    syntax errors, which are reported in syntax_error.
+    Adds the names of an export list such as '{ a, b as c, d as default }' to the named or default exports.
     """
-    outline = Outline(count_lines(text), summary=_file_comment_summary(text))
-    # The source and the tree are kept in variables while their nodes are used
-    code = text.encode("utf-8")
-    tree = _JS_PARSERS.get(suffix, _JS_PARSERS[".js"]).parse(code)
-    root = tree.root_node
-    if root.has_error:
-        outline.syntax_error = f"JS/TS syntax error near line {_js_first_error_line(root)}"
+    for specifier in clause.named_children:
+        if specifier.type != "export_specifier":
+            continue
+        alias = specifier.child_by_field_name("alias")
+        if alias is not None and _js_text(code, alias) == "default":
+            exports["default"].add(_js_name(code, specifier))
+        else:
+            exports["named"].append(_js_name(code, specifier))
 
-    imports, named_exports, default_names, re_exports = [], [], set(), []
-    sections = []  # (section, export, private const) in file order
-    by_key = {}  # Functions by (kind, name), so that overloads form one section
-
-    statements = root.named_children
+def _js_statements(code: bytes, statements: list[Node], suffix: str, exports: dict) -> list[tuple[Section, str | None, bool]]:
+    """
+    Returns (section, export, private const) for the declarations among statements, in file order, and adds
+    the imports, separate exports and re-exports found to exports. Namespaces are outlined with their contents.
+    """
+    entries = []
+    functions = {}  # Functions by (kind, name), so that overloads declared one after the other form one section
 
     def add(index: int, node: Node, export: str | None):
         statement = statements[index]
@@ -444,19 +450,19 @@ def _outline_js(text: str, suffix: str) -> Outline:
         if node.type in _JS_FUNCTION_NODES:
             name = _js_name(code, node)
             kind = _js_kind(name, True, suffix)
-            if (kind, name) in by_key:
-                by_key[(kind, name)].end = last
+            if (kind, name) in functions and entries and entries[-1][0] is functions[(kind, name)]:
+                functions[(kind, name)].end = last
                 return
             section = Section(kind, name, start, last, summary=summary)
-            by_key[(kind, name)] = section
-            sections.append((section, export, False))
+            functions[(kind, name)] = section
+            entries.append((section, export, False))
         elif node.type in _JS_CLASS_NODES:
             section = Section("class", _js_name(code, node), start, last, summary=summary, extra=_js_extends(code, node))
             body = node.child_by_field_name("body")
             section.children = _js_members(code, body) if body is not None else []
-            sections.append((section, export, False))
+            entries.append((section, export, False))
         elif node.type in _JS_TYPE_NODES:
-            sections.append((Section(_JS_TYPE_NODES[node.type], _js_name(code, node), start, last, summary=summary), export, False))
+            entries.append((Section(_JS_TYPE_NODES[node.type], _js_name(code, node), start, last, summary=summary), export, False))
         elif node.type in _JS_VARIABLE_NODES:
             declarators = [d for d in node.named_children if d.type == "variable_declarator"]
             for declarator in declarators:
@@ -466,53 +472,114 @@ def _outline_js(text: str, suffix: str) -> Outline:
                 name = _js_text(code, name_node)
                 kind = _js_value_kind(code, declarator.child_by_field_name("value"), name, suffix)
                 span = (start, last) if len(declarators) == 1 else _js_lines(declarator)
-                sections.append((Section(kind, name, *span, summary=summary), export, kind == "const" and export is None))
+                entries.append((Section(kind, name, *span, summary=summary), export, kind == "const" and export is None))
+        elif node.type in _JS_NAMESPACE_NODES or node.type == "statement_block":
+            # namespace N { }, declare module "x" { }, and declare global { } (a block inside 'declare')
+            name_node = node.child_by_field_name("name")
+            if node.type == "statement_block":
+                name, body = "global", node
+            else:
+                name = _js_string(code, name_node) if name_node is not None and name_node.type == "string" else _js_name(code, node)
+                body = node.child_by_field_name("body")
+            section = Section("namespace", name, start, last, summary=summary)
+            if body is not None:
+                inner = {"imports": [], "named": [], "default": set(), "re": []}
+                section.children = _js_finish(_js_statements(code, body.named_children, suffix, inner), inner)
+            entries.append((section, export, False))
+        elif export == "default":
+            # export default { ... }, export default memo(Header), export default a + b
+            entries.append((Section(_js_value_kind(code, node, "(anonymous)", suffix), "(anonymous)", start, last, summary=summary), export, False))
 
     for index, statement in enumerate(statements):
         if statement.type == "import_statement":
             source = statement.child_by_field_name("source")
             if source is not None and _js_string(code, source).startswith("."):
-                imports.append(_js_string(code, source))
+                exports["imports"].append(_js_string(code, source))
         elif statement.type == "export_statement":
             source = statement.child_by_field_name("source")
             clause = next((c for c in statement.named_children if c.type == "export_clause"), None)
             if source is not None:  # export { a } from "./x", export * from "./x"
                 if _js_string(code, source).startswith("."):
-                    imports.append(_js_string(code, source))
+                    exports["imports"].append(_js_string(code, source))
                 namespace = next((c for c in statement.named_children if c.type == "namespace_export"), None)
                 if clause is not None:
                     label = ", ".join(_js_name(code, s, "alias") if s.child_by_field_name("alias") else _js_name(code, s) for s in clause.named_children)
                 else:
                     label = f"all as {_js_text(code, namespace.named_children[0])}" if namespace is not None and namespace.named_children else "all"
-                re_exports.append(f"{label} from {_js_string(code, source)}")
+                exports["re"].append(f"{label} from {_js_string(code, source)}")
             elif clause is not None:  # export { a, b as c }
-                named_exports.extend(_js_name(code, s) for s in clause.named_children if s.type == "export_specifier")
+                _js_export_names(code, clause, exports)
             else:
-                export = "default" if any(c.type == "default" for c in statement.children) else "named"
+                # 'export = f' (TypeScript) exports f as the module itself, like a default export
+                export = "default" if any(c.type in ("default", "=") for c in statement.children) else "named"
                 node = statement.child_by_field_name("declaration") or statement.child_by_field_name("value")
+                if node is None and export == "default" and statement.named_children:
+                    node = statement.named_children[-1]
                 if node is not None and node.type == "identifier":
-                    default_names.add(_js_text(code, node))  # export default Name
+                    exports["default"].add(_js_text(code, node))  # export default Name
                 elif node is not None:
                     if node.type == "ambient_declaration" and node.named_children:
                         node = node.named_children[-1]
                     add(index, node, export)
         elif statement.type == "ambient_declaration" and statement.named_children:
-            add(index, statement.named_children[-1], None)  # declare function f(): void;
-        elif statement.type == "expression_statement" and statement.named_children and statement.named_children[0].type == "assignment_expression":
-            # CommonJS: module.exports = { a, b: local }, module.exports = name, exports.name = ...
-            assignment = statement.named_children[0]
-            target, value = _js_text(code, assignment.child_by_field_name("left")), assignment.child_by_field_name("right")
-            if target == "module.exports" and value is not None and value.type == "object":
-                for part in value.named_children:
-                    local = part if part.type == "shorthand_property_identifier" else part.child_by_field_name("value") if part.type == "pair" else None
-                    if local is not None and local.type in ("shorthand_property_identifier", "identifier"):
-                        named_exports.append(_js_text(code, local))
-            elif target == "module.exports" and value is not None and value.type == "identifier":
-                default_names.add(_js_text(code, value))
-            elif target.startswith(("exports.", "module.exports.")):
-                named_exports.append(target.rsplit(".", 1)[1])
+            add(index, statement.named_children[-1], None)  # declare function f(): void; declare module "x" { }
+        elif statement.type == "expression_statement" and statement.named_children:
+            expression = statement.named_children[0]
+            if expression.type in _JS_NAMESPACE_NODES:
+                add(index, expression, None)  # namespace N { } is parsed as an expression
+            elif expression.type == "assignment_expression":
+                # CommonJS: module.exports = { a, b: local } / name / function or class, exports.name = ...
+                target, value = _js_text(code, expression.child_by_field_name("left")), expression.child_by_field_name("right")
+                if target == "module.exports" and value is not None and value.type == "object":
+                    for part in value.named_children:
+                        local = part if part.type == "shorthand_property_identifier" else part.child_by_field_name("value") if part.type == "pair" else None
+                        if local is not None and local.type in ("shorthand_property_identifier", "identifier"):
+                            exports["named"].append(_js_text(code, local))
+                elif target == "module.exports" and value is not None and value.type == "identifier":
+                    exports["default"].add(_js_text(code, value))
+                elif target == "module.exports" and value is not None and (value.type in _JS_FUNCTION_NODES or value.type in _JS_CLASS_NODES):
+                    add(index, value, "default")
+                elif target.startswith(("exports.", "module.exports.")):
+                    exports["named"].append(target.rsplit(".", 1)[1])
         else:
             add(index, statement, None)
+    return entries
+
+def _js_finish(entries: list[tuple[Section, str | None, bool]], exports: dict) -> list[Section]:
+    """
+    Returns the sections of entries with their export tags. Constants are only included if they are
+    exported, also when exported separately from their declaration.
+    """
+    sections = []
+    for section, export, private_const in entries:
+        if section.name in exports["default"]:
+            export = "default"
+        elif section.name in exports["named"] and not export:
+            export = "named"
+        if private_const and not export:
+            continue
+        tag = {"default": "(default export)", "named": "(export)"}.get(export, "")
+        section.extra = " ".join(part for part in (section.extra, tag) if part)
+        sections.append(section)
+    return sections
+
+def _outline_js(text: str, suffix: str) -> Outline:
+    """
+    Outlines a JS/TS file with tree-sitter: top-level functions, components, hooks, classes with their
+    methods, interfaces, types, enums, namespaces and exported constants, with their JSDoc summaries.
+    Local imports, separate exports and re-exports are listed as notes. The outline is made even if
+    the file has syntax errors, which are reported in syntax_error.
+    """
+    outline = Outline(count_lines(text), summary=_file_comment_summary(text))
+    # The source and the tree are kept in variables while their nodes are used
+    code = text.encode("utf-8")
+    tree = _JS_PARSERS.get(suffix, _JS_PARSERS[".js"]).parse(code)
+    root = tree.root_node
+    if root.has_error:
+        outline.syntax_error = f"JS/TS syntax error near line {_js_first_error_line(root)}"
+
+    exports = {"imports": [], "named": [], "default": set(), "re": []}
+    outline.sections = _js_finish(_js_statements(code, root.named_children, suffix, exports), exports)
 
     # require("./x") and import("./x") anywhere in the file
     for node in _js_walk(root):
@@ -521,29 +588,16 @@ def _outline_js(text: str, suffix: str) -> Outline:
             if function is not None and _js_text(code, function) in ("require", "import") and arguments is not None:
                 source = next((a for a in arguments.named_children if a.type == "string"), None)
                 if source is not None and _js_string(code, source).startswith("."):
-                    imports.append(_js_string(code, source))
-    if imports:
-        outline.notes.append(f"Imports: {', '.join(dict.fromkeys(imports))}")
+                    exports["imports"].append(_js_string(code, source))
+    if exports["imports"]:
+        outline.notes.append(f"Imports: {', '.join(dict.fromkeys(exports['imports']))}")
 
-    # Constants are only listed if they are exported, also when exported separately from their declaration
-    declared = set()
-    for section, export, private_const in sections:
-        if section.name in default_names:
-            export = "default"
-        elif section.name in named_exports and not export:
-            export = "named"
-        if private_const and not export:
-            continue
-        tag = {"default": "(default export)", "named": "(export)"}.get(export, "")
-        section.extra = " ".join(part for part in (section.extra, tag) if part)
-        outline.sections.append(section)
-        declared.add(section.name)
-
-    undeclared = [n for n in dict.fromkeys(named_exports) if n not in declared]
-    undeclared += [n for n in sorted(default_names) if n not in declared]
+    declared = {section.name for section in outline.sections}
+    undeclared = [n for n in dict.fromkeys(exports["named"]) if n not in declared]
+    undeclared += [n for n in sorted(exports["default"]) if n not in declared]
     if undeclared:
         outline.notes.append(f"Exports: {', '.join(undeclared)}")
-    outline.notes.extend(f"Re-exports {re_export}" for re_export in re_exports)
+    outline.notes.extend(f"Re-exports {re_export}" for re_export in exports["re"])
     return outline
 
 # --- Markdown ---

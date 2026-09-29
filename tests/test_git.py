@@ -94,3 +94,7 @@ def test_file_and_all_changes_diffs_have_the_same_fields(repo):
     for result in (file_diff, all_changes):
         assert {"success", "mode", "output_limited", "diff", "message", "command"} <= set(result)
         assert "stderr" not in result  # git warnings such as line ending notices are left out on success
+
+def test_get_diff_of_an_untracked_file_says_it_is_new(repo):
+    result = json.loads(repo.load("git").get_diff("unstaged", "src/new.py"))
+    assert result["success"] and result["diff"] == "" and "new and not tracked by git" in result["message"]

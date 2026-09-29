@@ -8,7 +8,7 @@ from mcp_common import (
     CONTEXT_FOLDER,
     MAX_OUTPUT_CHARS,
     READ_ONLY_FILES,
-    compact_tool_schemas
+    prepare_tools
 )
 from mcp_outline import (
     NAMES,
@@ -307,6 +307,8 @@ def read_context_file(filename: str = "", section: str = "", start_line: int | N
     """
     try:
         if not filename:
+            if section or start_line is not None or end_line is not None:
+                return "Error: section, start_line and end_line need a filename. Use list_context_files to see the files and their headings."
             return _read_all()
 
         read_only = READ_ONLY_BY_NAME.get(filename.lower())
@@ -380,7 +382,7 @@ def remove_context_file(filename: str) -> str:
     except Exception as e:
         return f"Error: Removing context file failed:\n{e}\n{traceback.format_exc()}"
 
-compact_tool_schemas(mcp)
+prepare_tools(mcp)
 
 if __name__ == "__main__":
     mcp.run()

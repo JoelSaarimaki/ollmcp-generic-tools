@@ -367,3 +367,35 @@ def test_large_js_file_is_outlined():
 def test_points_are_read_by_index():
     source = open(outline_module.__file__, encoding="utf-8").read()
     assert not re.search(r"_point\.(row|column)", source), "Read tree-sitter Points by index: Point.row crashes Python 3.14"
+
+# --- Regressions found in the second review ---
+
+def test_namespaces_and_modules_are_outlined_with_their_contents():
+    text = ("namespace Foo {\n  export function a() {}\n}\nexport namespace N {\n  class B {}\n}\n"
+            "declare module 'x' {\n  function c(): void\n}\ndeclare global {\n  interface W {}\n}\n")
+    assert spans(text, ".ts") == {"Foo": (1, 3), "Foo.a": (2, 2), "N": (4, 6), "N.B": (5, 5),
+                                  "x": (7, 9), "x.c": (8, 8), "global": (10, 12), "global.W": (11, 11)}
+
+def test_only_adjacent_accessors_of_the_same_kind_are_merged():
+    text = "class A {\n  get x() { return 1 }\n  big() {\n    return 2\n  }\n  set x(v) {}\n  static x() {}\n}\n"
+    members = outline_text(text, ".ts").sections[0].children
+    assert [(m.name, m.start, m.end) for m in members] == [("x", 2, 2), ("big", 3, 5), ("x", 6, 6), ("x", 7, 7)]
+
+def test_non_adjacent_overloads_are_not_merged():
+    text = "export function f(a: string): void;\nexport function g() {}\nexport function f(a: any) {}\n"
+    assert [(s.name, s.start, s.end) for s in outline_text(text, ".ts").sections] == [("f", 1, 1), ("g", 2, 2), ("f", 3, 3)]
+
+@pytest.mark.parametrize("text, suffix, expected", [
+    ("export default { name: 'x', data() { return {} } }\n", ".js", "1-1 const (anonymous) (default export)"),
+    ("export default memo(Foo)\n", ".jsx", "1-1 component (anonymous) (default export)"),
+    ("module.exports = function run() {}\n", ".js", "1-1 run() (default export)"),
+    ("module.exports = class Foo {}\n", ".js", "1-1 class Foo (default export)"),
+    ("function f() {}\nexport = f;\n", ".ts", "1-1 f() (default export)"),
+    ("function a() {}\nexport { a as default };\n", ".js", "1-1 a() (default export)"),
+])
+def test_other_forms_of_default_exports(text, suffix, expected):
+    assert render(outline_text(text, suffix), NAMES) == [expected]
+
+def test_jsdoc_after_code_on_the_same_line_is_not_the_next_declarations():
+    section = outline_text("foo(); /** x */\nfunction a() {}\n", ".js").sections[0]
+    assert (section.start, section.summary) == (2, "")

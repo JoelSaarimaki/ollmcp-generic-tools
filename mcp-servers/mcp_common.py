@@ -304,14 +304,18 @@ def get_repo_root(directory: Path) -> Path | None:
         return None
     return Path(result.stdout.strip()).resolve()
 
-def compact_tool_schemas(server) -> None:
+def prepare_tools(server) -> None:
     """
-    Shortens the parameter schemas of a server's tools, as they are sent to the model with every request:
-    removes the titles generated from the parameter names, and turns 'anyOf: [type, null]' of optional
-    parameters into the type. Arguments are still validated from the function signatures.
-    Uses the server's tool manager, as MCPServer has no option for this.
+    Prepares a server's tools for small models, after they are defined:
+    - Shortens the parameter schemas, which are sent to the model with every request: removes the titles
+      generated from the parameter names, and turns 'anyOf: [type, null]' of optional parameters into the type.
+    - Makes an argument given as null use the parameter's default, as small models often send null for
+      optional parameters they do not use. A required parameter given as null is reported as missing.
+    Uses the server's tool manager, as MCPServer has no options for this. Arguments are still validated
+    from the function signatures.
     """
-    for tool in server._tool_manager.list_tools():
+    manager = server._tool_manager
+    for tool in manager.list_tools():
         schema = tool.parameters
         schema.pop("title", None)
         for prop in schema.get("properties", {}).values():
@@ -320,3 +324,10 @@ def compact_tool_schemas(server) -> None:
             if "anyOf" in prop and len(types) == 1:
                 del prop["anyOf"]
                 prop.update(types[0])
+
+    call_tool = manager.call_tool
+
+    async def call_tool_without_nulls(name, arguments, *args, **kwargs):
+        return await call_tool(name, {key: value for key, value in (arguments or {}).items() if value is not None}, *args, **kwargs)
+
+    manager.call_tool = call_tool_without_nulls

@@ -138,3 +138,6 @@ def test_append_creates_a_missing_file(project):
     context = project.load("context")
     assert context.write_context_file("new.md", "# New", append=True).startswith("Successfully appended to")
     assert (project.root / "_context/new.md").read_text(encoding="utf-8") == "# New"
+
+def test_section_without_filename_is_an_error(context):
+    assert context.read_context_file(section="Goals").startswith("Error: section, start_line and end_line need a filename")

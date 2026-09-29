@@ -8,7 +8,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp_common import (
     MAX_OUTPUT_CHARS,
     OLLAMA_API_KEY,
-    compact_tool_schemas
+    prepare_tools
 )
 
 # --- Constants & Config ---
@@ -137,7 +137,7 @@ def web_fetch(url: str, start_char: int = 0) -> str:
     except Exception as e:
         return _text_error("fetch_error", f"Fetching the page failed: {e}\n{traceback.format_exc()}")
 
-compact_tool_schemas(mcp)
+prepare_tools(mcp)
 
 if __name__ == "__main__":
     mcp.run()

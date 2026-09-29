@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from conftest import content_of, sha_of
+from conftest import content_of, sha_of, windows_only
 
 # A file with CRLF line endings, a BOM, quotes, backslashes, a tab and trailing whitespace
 TRICKY = ('import os\r\n'
@@ -325,3 +325,16 @@ def test_move_creates_missing_destination_folders(project):
     fs = project.load("filesystem")
     assert json.loads(fs.move_file("a.txt", "new/deep/a.txt"))["success"]
     assert (project.root / "new/deep/a.txt").read_text() == "x"
+
+def test_folder_cannot_be_moved_into_itself(project):
+    project.write("mv/a.txt", "x")
+    fs = project.load("filesystem")
+    assert json.loads(fs.move_file("mv", "mv/deep/er/mv"))["error"] == "invalid_destination"
+    assert not (project.root / "mv/deep").exists()
+
+@windows_only
+def test_rename_that_only_changes_letter_case(project):
+    project.write("app.py", "x")
+    fs = project.load("filesystem")
+    assert json.loads(fs.move_file("app.py", "App.py"))["success"]
+    assert [p.name for p in project.root.iterdir() if p.suffix == ".py"] == ["App.py"]

@@ -9,7 +9,7 @@ from mcp_common import (
     IGNORED_DIRS,
     MAX_OUTPUT_CHARS,
     access_denied_message,
-    compact_tool_schemas,
+    prepare_tools,
     is_ignored,
     is_path_allowed,
     load_gitignore_patterns,
@@ -283,7 +283,7 @@ def get_outline(path: str = "") -> str:
     except Exception as e:
         return f"Error: Generating outline failed:\n{e}\n{traceback.format_exc()}"
 
-compact_tool_schemas(mcp)
+prepare_tools(mcp)
 
 if __name__ == "__main__":
     mcp.run()

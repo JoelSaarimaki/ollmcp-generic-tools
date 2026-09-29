@@ -24,7 +24,7 @@ from mcp_common import (
     PROTECTED_FILE_NAMES,
     READ_ONLY_FILES,
     access_denied_message,
-    compact_tool_schemas,
+    prepare_tools,
     contains_forbidden,
     display_path,
     get_repo_root,
@@ -801,8 +801,17 @@ def move_file(source: str, destination: str) -> str:
 
         if not src.exists():
             return json.dumps({"success": False, "error": "source_not_found", "message": f"Source not found: {_rel(src)}"}, indent=2, ensure_ascii=False)
+        if dst.exists() and os.path.samefile(src, dst):
+            # Only the letter case changes, e.g. 'app.py' to 'App.py' on Windows, where both name the same file
+            new_name = Path(destination).name
+            if new_name == src.name:
+                return json.dumps({"success": False, "error": "same_path", "message": f"Source and destination are the same: {_rel(src)}"}, indent=2, ensure_ascii=False)
+            os.rename(src, src.with_name(new_name))
+            return json.dumps({"success": True, "message": f"Renamed {_rel(src)} to {_rel(src.with_name(new_name))}"}, indent=2, ensure_ascii=False)
         if dst.exists():
             return json.dumps({"success": False, "error": "destination_exists", "message": f"Destination already exists: {_rel(dst)}"}, indent=2, ensure_ascii=False)
+        if src.is_dir() and dst.is_relative_to(src):
+            return json.dumps({"success": False, "error": "invalid_destination", "message": f"A folder cannot be moved into itself: {_rel(dst)} is inside {_rel(src)}."}, indent=2, ensure_ascii=False)
 
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(src), str(dst))
@@ -906,7 +915,7 @@ def get_config() -> str:
     except Exception as e:
         return json.dumps({"success": False, "error": "config_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
 
-compact_tool_schemas(mcp)
+prepare_tools(mcp)
 
 if __name__ == "__main__":
     mcp.run()

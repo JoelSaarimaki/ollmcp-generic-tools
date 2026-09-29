@@ -13,7 +13,7 @@ from mcp_common import (
     MAX_OUTPUT_CHARS,
     PROTECTED_FILE_NAMES,
     access_denied_message,
-    compact_tool_schemas,
+    prepare_tools,
     display_path,
     get_repo_root,
     is_path_allowed,
@@ -173,6 +173,13 @@ def _file_diff(path: str, p: Path, cwd: Path, repo_root: Path, mode: str) -> str
             "command": result["command"]
         }, indent=2, ensure_ascii=False)
 
+    message = ""
+    if not result["stdout"].strip():
+        # A new file that git does not track yet has no diff, which must not look like an unchanged file
+        tracked = _run_git_command(["ls-files", "--error-unmatch", "--", p.relative_to(repo_root).as_posix()], cwd=repo_root)
+        message = ("No differences detected." if tracked["success"] else
+                   "The file is new and not tracked by git, so it has no diff. Read it with read_file_with_metadata.")
+
     result = _limit_stdout(result, "The diff is too long to show completely: read the current version of the file with read_file_with_metadata instead.")
     return json.dumps({
         "success": True,
@@ -180,7 +187,7 @@ def _file_diff(path: str, p: Path, cwd: Path, repo_root: Path, mode: str) -> str
         "path": display_path(p, ALLOWED_DIR),
         "output_limited": result.get("output_limited"),
         "diff": result["stdout"],
-        "message": "" if result["stdout"].strip() else "No differences detected.",
+        "message": message,
         "command": result["command"]
     }, indent=2, ensure_ascii=False)
 
@@ -235,7 +242,7 @@ def _all_changes_diff(p: Path, repo_root: Path, mode: str) -> str:
 def get_diff(mode: str, path: str = "") -> str:
     """
     Shows the git changes of one file, or of all changed files with lists of the changed and
-    new untracked files. Use it to review changes.
+    new untracked files (which have no diff). Use it to review changes.
 
     Args:
         mode: 'unstaged' (changes not staged yet), 'staged' (changes staged for commit) or
@@ -263,10 +270,10 @@ def get_diff(mode: str, path: str = "") -> str:
 @mcp.tool()
 def get_file_history(path: str, limit: int = 10) -> str:
     """
-    Shows the recent commits of a file with their changes.
+    Shows the recent commits of a file or folder with their changes.
 
     Args:
-        path: The file.
+        path: The file or folder.
         limit: The number of commits. Defaults to 10.
     """
     try:
@@ -319,7 +326,7 @@ def get_git_status(path: str = "") -> str:
     except Exception as e:
         return json.dumps({"success": False, "error": "status_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
 
-compact_tool_schemas(mcp)
+prepare_tools(mcp)
 
 if __name__ == "__main__":
     mcp.run()

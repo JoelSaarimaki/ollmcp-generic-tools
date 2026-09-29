@@ -13,7 +13,7 @@ from mcp_common import (
     ALLOWED_DIR,
     COMMANDS_CONFIG,
     MAX_OUTPUT_CHARS,
-    compact_tool_schemas
+    prepare_tools
 )
 
 # --- Constants & Config ---
@@ -253,7 +253,7 @@ def run_predefined_command(command_name: str, argument: str = "") -> str:
             "traceback": traceback.format_exc()
         }, indent=2, ensure_ascii=False)
 
-compact_tool_schemas(mcp)
+prepare_tools(mcp)
 
 if __name__ == "__main__":
     mcp.run()

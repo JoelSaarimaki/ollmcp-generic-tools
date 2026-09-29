@@ -28,18 +28,8 @@
         "description": "Shows the Python version used by the project's virtual environment."
     },
     "run_tests": {
-        "template": "poetry run pytest -q",
+        "template": "pytest tests",
         "description": "Runs the whole test suite. Use this to verify changes before considering a task done.",
-        "timeout": 600
-    },
-    "run_tests_in_path": {
-        "template": "poetry run pytest -q {arg}",
-        "description": "Runs the tests in one file, folder or single test. Argument: a path relative to the project root (e.g., 'tests/test_api.py' or 'tests/test_api.py::test_login').",
-        "timeout": 600
-    },
-    "run_tests_matching": {
-        "template": "poetry run pytest -q -k {arg}",
-        "description": "Runs the tests whose names match a pytest -k expression. Argument: the expression (e.g., 'login' or 'login and not slow').",
         "timeout": 600
     },
     "lint": {

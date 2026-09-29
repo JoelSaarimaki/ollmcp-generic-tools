@@ -64,6 +64,17 @@ Most of the MCP servers use environment variables for configuration. These shoul
   "FORBIDDEN_PATHS": ""
   ```
 - In `safe-filesystem-mcp`, forbidden paths are hidden from `list_directory`, and deleting or moving a folder that contains a forbidden path is denied.
+- There is no need to add the [ignored directories](#ignored-directories) to `FORBIDDEN_PATHS` for `generate-map-mcp` or `search-tool-mcp`, as they are already skipped by default.
+
+#### Ignored directories
+
+`generate-map-mcp` and `search-tool-mcp` always skip folders with the following names, at any depth within `INPUT_DIR` (defined as `IGNORED_DIRS` in the scripts):
+
+`node_modules`, `.git`, `__pycache__`, `dist`, `build`, `.next`, `.venv`, `venv`, `env`, `.pytest_cache`, `.idea`, `.vscode`, `target`, `out`, `.mypy_cache`, `.ruff_cache`
+
+`generate-map-mcp` additionally skips files matched by the `.gitignore` file (see `GITIGNORE_PATH`).
+
+`safe-filesystem-mcp` has no ignored directories, because it only accesses the paths the AI explicitly asks for. To block it from folders such as `.git` or `.venv`, add them to its `FORBIDDEN_PATHS`.
 
 ### Running
 

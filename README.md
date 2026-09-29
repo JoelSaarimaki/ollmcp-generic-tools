@@ -142,10 +142,15 @@ Retrieves project-specific instructions from a designated Markdown file.
 
 Provides safe and robust file system operations, including metadata retrieval and atomic writes.
 
-- **write_file** Safely replaces the whole content of an existing file with hash validation.
-- **edit_file** Changes part of an existing file by replacing an exact piece of text, with hash validation. Keeps the file's line endings and BOM, and reports ambiguous or missing matches with line numbers.
+- **write_file** Safely replaces the whole content of an existing file with hash validation. Rejects placeholder comments such as `// ... existing code ...` and warns if the file shrinks to less than half.
+- **edit_file** Changes part of an existing file by replacing an exact piece of text, with hash validation. Keeps the file's line endings and BOM, and shows the changed lines and the new SHA-256 after the edit.
 - **create_file** Creates a new file with the provided content.
-- **read_file_with_metadata** Reads a file and returns its content along with metadata (sha256, encoding, etc.).
+- **read_file_with_metadata** Reads a text file and returns its exact content along with metadata (sha256, line count, encoding, etc.). Can read a range of lines (`start_line`, `end_line`) with optional line numbers, and reads long files in parts of up to 1000 lines.
+
+The file reading and editing tools are designed to let local AI models read and edit files accurately:
+- File content is returned as plain text between `----- BEGIN CONTENT -----` and `----- END CONTENT -----` markers, not inside JSON, so quotes, backslashes and line breaks appear exactly as in the file and can be copied into `edit_file` as-is.
+- `edit_file` tolerates common copying mistakes: line number prefixes copied from `read_file_with_metadata` are removed, and trailing whitespace does not need to match. If the text is not found, the error shows the closest matching lines to copy.
+- Placeholder comments such as `// ... existing code ...` are rejected, as they would otherwise replace real code.
 - **read_image** Reads a PNG, JPEG, GIF or WebP image (up to 10 MB) and returns it as an image the AI can see, along with its metadata. Requires a vision-capable model; with other models, ollmcp skips the image and shows a warning.
 - **get_file_stats** Retrieves metadata about a file without reading its content.
 - **list_directory** Lists all files and directories within the specified path.

@@ -3,6 +3,7 @@ import datetime
 import hashlib
 import json
 import os
+import re
 import shutil
 import traceback
 from dataclasses import asdict, dataclass
@@ -16,6 +17,24 @@ mcp = MCPServer("Safe-Filesystem-Server")
 ALLOWED_DIR = Path(os.getenv("ALLOWED_DIR", os.getcwd())).resolve()
 PROTECTED_FILE_NAMES = {".mcp.json"}  # MCP server configuration, never accessible regardless of FORBIDDEN_PATHS
 MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10MB limit
+MAX_READ_LINES = 1000  # Longer files are read in parts, to protect the context window
+MAX_READ_CHARS = 60000
+EDIT_SNIPPET_CONTEXT_LINES = 3  # Lines shown around a change after an edit
+MAX_EDIT_SNIPPET_LINES = 40
+SHRINK_WARNING_RATIO = 0.5  # write_file warns if a file of 20+ lines shrinks below this ratio
+CONTENT_START = "----- BEGIN CONTENT -----"
+CONTENT_END = "----- END CONTENT -----"
+# 'N| ' prefixes of read_file_with_metadata(line_numbers=True), removed if copied into edit_file
+LINE_NUMBER_PREFIX = re.compile(r"^ *\d+\| ?")
+# Comments that stand in for code, e.g. '// ... existing code ...', which would replace real code if written
+PLACEHOLDER_COMMENT = re.compile(
+    r"(?:#|//|/\*|<!--|--)[ \t]*(?:\.\.\.|…)?[ \t]*\(?[ \t]*"
+    r"(?:rest of (?:the )?(?:code|file|implementation|function|class|component|module|content|methods)"
+    r"|existing (?:code|content|implementation|methods|imports)"
+    r"|(?:code|content|everything else|the rest|other methods) (?:remains?|stays?|is) (?:the same|unchanged)"
+    r"|unchanged (?:code|content|methods)|same as (?:before|above)|previous (?:code|content|implementation))",
+    re.IGNORECASE
+)
 
 @dataclass
 class FileMetadata:
@@ -119,17 +138,36 @@ def _is_path_allowed(path: Path) -> bool:
     except (ValueError, OSError):
         return False
 
+def _access_denied_message(path: Path, label: str = "Path") -> str:
+    """
+    Returns the reason why access to the given path was denied.
+    """
+    if _is_protected(path):
+        return f"{label} is protected: '{path.name}' files contain the MCP server configuration and cannot be accessed."
+    if _is_forbidden(path):
+        return f"{label} is forbidden: {path}"
+    return f"{label} is not within the allowed directory: {ALLOWED_DIR}"
+
 def _access_denied(path: Path, label: str = "Path") -> str:
     """
     Returns the JSON access_denied response, stating why access to the given path was denied.
     """
-    if _is_protected(path):
-        message = f"{label} is protected: '{path.name}' files contain the MCP server configuration and cannot be accessed."
-    elif _is_forbidden(path):
-        message = f"{label} is forbidden: {path}"
-    else:
-        message = f"{label} is not within the allowed directory: {ALLOWED_DIR}"
-    return json.dumps({"success": False, "error": "access_denied", "message": message}, indent=2)
+    return json.dumps({"success": False, "error": "access_denied", "message": _access_denied_message(path, label)}, indent=2)
+
+def _text_error(error: str, message: str) -> str:
+    """
+    Returns a plain-text error response, used by the tools whose responses contain file content.
+    """
+    return f"Error ({error}): {message}"
+
+class _EditError(Exception):
+    """
+    Raised when an edit cannot be applied, with an error code and a message for the AI.
+    """
+    def __init__(self, error: str, message: str):
+        super().__init__(message)
+        self.error = error
+        self.message = message
 
 def _get_file_info(path: Path) -> FileMetadata:
     """
@@ -152,7 +190,7 @@ def _get_file_info(path: Path) -> FileMetadata:
     try:
         raw_data.decode(decode_encoding)
     except UnicodeDecodeError:
-        raise Exception(f"Could not decode file {path} using UTF-8.")
+        raise Exception(f"{path} is not a UTF-8 text file. For images, use 'read_image'.")
 
     # Detect line endings, defaulting to LF
     line_ending = "CRLF" if b"\r\n" in raw_data else "LF"
@@ -245,80 +283,158 @@ def _line_number(content: str, index: int) -> int:
     """
     return content.count("\n", 0, index) + 1
 
-def _find_whitespace_insensitive_match(content: str, old_text: str) -> int | None:
+def _read_text(path: Path, has_bom: bool) -> str:
     """
-    Returns the line number where old_text appears when the indentation and trailing whitespace
-    of each line are ignored, or None if it does not appear.
+    Reads a UTF-8 text file with its line endings converted to LF.
     """
-    stripped_content = "\n".join(line.strip() for line in content.split("\n"))
-    stripped_old = "\n".join(line.strip() for line in old_text.split("\n")).strip("\n")
-    if not stripped_old:
+    with open(path, "r", encoding="utf-8-sig" if has_bom else "utf-8", newline="") as f:
+        return _normalize_newlines(f.read())
+
+def _split_lines(content: str) -> list[str]:
+    """
+    Splits content into lines, without an empty last line for a final line break.
+    """
+    lines = content.split("\n")
+    return lines[:-1] if lines and lines[-1] == "" else lines
+
+def _content_block(lines: list[str], first_line: int, line_numbers: bool = False) -> str:
+    """
+    Returns the lines between the content markers, optionally prefixed with 'N| ' line numbers.
+    """
+    if line_numbers:
+        width = len(str(first_line + len(lines) - 1))
+        lines = [f"{first_line + i:>{width}}| {line}" for i, line in enumerate(lines)]
+    return "\n".join([CONTENT_START, *lines, CONTENT_END])
+
+def _find_placeholder(new_text: str, original: str) -> str | None:
+    """
+    Returns a placeholder comment such as '// ... existing code ...' found in new_text,
+    unless the original content already contains one.
+    """
+    match = PLACEHOLDER_COMMENT.search(new_text)
+    if match and not PLACEHOLDER_COMMENT.search(original):
+        return match.group(0).strip()
+    return None
+
+def _strip_line_numbers(text: str) -> str | None:
+    """
+    Removes 'N| ' line number prefixes if every non-empty line has one, otherwise returns None.
+    """
+    lines = text.split("\n")
+    numbered = [line for line in lines if line.strip()]
+    if not numbered or not all(LINE_NUMBER_PREFIX.match(line) for line in numbered):
         return None
-    index = stripped_content.find(stripped_old)
-    return None if index == -1 else _line_number(stripped_content, index)
+    return "\n".join(LINE_NUMBER_PREFIX.sub("", line, count=1) for line in lines)
+
+def _find_line_matches(lines: list[str], old_lines: list[str], strip) -> list[int]:
+    """
+    Returns the 0-based indexes where old_lines match consecutive lines, comparing lines with strip.
+    """
+    n = len(old_lines)
+    targets = [strip(line) for line in old_lines]
+    return [i for i in range(len(lines) - n + 1) if all(strip(lines[i + k]) == targets[k] for k in range(n))]
+
+def _apply_edit(content: str, old: str, new: str, replace_all: bool) -> tuple[str, int, int, int, str]:
+    """
+    Replaces old with new in content and returns (new content, first changed line, last changed line,
+    number of replacements, note). If old does not match exactly, it is retried without copied
+    line number prefixes, and then line by line ignoring trailing whitespace.
+    Raises _EditError if old matches nowhere, or more than once without replace_all.
+    """
+    note = ""
+    if old not in content:
+        stripped = _strip_line_numbers(old)
+        if stripped and stripped in content:
+            old, new = stripped, _strip_line_numbers(new) or new
+            note = " Line number prefixes were removed from old_text."
+
+    count = content.count(old)
+    if count:
+        starts = []
+        index = content.find(old)
+        while index != -1:
+            starts.append(_line_number(content, index))
+            index = content.find(old, index + len(old))
+        if count > 1 and not replace_all:
+            raise _EditError("multiple_matches", f"old_text matches {count} times, at lines {starts}. Include more surrounding lines in old_text to make it unique, or set replace_all to replace every match.")
+        new_content = content.replace(old, new) if replace_all else content.replace(old, new, 1)
+        first = starts[0]
+        return new_content, first, first + new.count("\n"), count if replace_all else 1, note
+
+    # Retry line by line, ignoring trailing whitespace, which models often drop or add
+    lines = content.split("\n")
+    old_lines = _split_lines(old)
+    new_lines = [] if new == "" else (_split_lines(new) if old.endswith("\n") else new.split("\n"))
+    matches = _find_line_matches(lines, old_lines, str.rstrip) if old_lines else []
+    if len(matches) > 1 and not replace_all:
+        raise _EditError("multiple_matches", f"old_text matches {len(matches)} times when trailing whitespace is ignored, at lines {[m + 1 for m in matches]}. Include more surrounding lines in old_text to make it unique, or set replace_all to replace every match.")
+    if matches:
+        for i in reversed(matches):
+            lines[i:i + len(old_lines)] = new_lines
+        first = matches[0] + 1
+        note += " Matched ignoring trailing whitespace."
+        return "\n".join(lines), first, first + max(len(new_lines), 1) - 1, len(matches), note
+
+    # No match: show the lines that match when indentation is also ignored, so they can be copied exactly
+    message = "old_text was not found in the file."
+    near = _find_line_matches(lines, old_lines, str.strip) if old_lines else []
+    if near:
+        start = near[0]
+        actual = lines[start:start + len(old_lines)]
+        message += (f" Lines {start + 1}-{start + len(actual)} match when indentation is ignored."
+                    f" Copy them exactly as they appear in the file, including indentation:\n"
+                    f"{_content_block(actual, start + 1)}")
+    else:
+        message += " Read the file again with 'read_file_with_metadata' and copy the text exactly as it appears in the file."
+    raise _EditError("no_match", message)
 
 def _edit_logic(path: Path, old_text: str, new_text: str, expected_sha256: str, replace_all: bool) -> str:
     """
     Validates the file hash, replaces old_text with new_text and writes the file with _write_logic.
-    Line endings are ignored when matching. old_text must match exactly once unless replace_all is set.
+    Returns a plain-text response with the new SHA-256 and the changed lines, or an error.
     """
-    if not path.exists():
-        return json.dumps({"success": False, "error": "file_not_found", "message": f"File not found: {path}"}, indent=2)
+    if not path.is_file():
+        return _text_error("file_not_found", f"File not found: {path}")
 
     try:
         info = _get_file_info(path)
     except Exception as e:
-        return json.dumps({"success": False, "error": "read_error", "message": str(e)}, indent=2)
+        return _text_error("read_error", str(e))
 
     if info.sha256 != expected_sha256:
-        return json.dumps({
-            "success": False,
-            "error": "hash_mismatch",
-            "message": "File changed since it was read.",
-            "current_sha256": info.sha256
-        }, indent=2)
+        return _text_error("hash_mismatch", f"File changed since it was read. Current SHA-256: {info.sha256}. Read the file again with 'read_file_with_metadata' before editing it.")
 
     old = _normalize_newlines(old_text)
     new = _normalize_newlines(new_text)
     if not old:
-        return json.dumps({"success": False, "error": "empty_old_text", "message": "old_text must not be empty. Use write_file to replace the whole file."}, indent=2)
+        return _text_error("empty_old_text", "old_text must not be empty. Use write_file to replace the whole file.")
     if old == new:
-        return json.dumps({"success": False, "error": "no_change", "message": "old_text and new_text are identical."}, indent=2)
+        return _text_error("no_change", "old_text and new_text are identical.")
 
-    with open(path, "r", encoding="utf-8-sig" if info.has_bom else "utf-8", newline="") as f:
-        content = _normalize_newlines(f.read())
+    content = _read_text(path, info.has_bom)
+    placeholder = _find_placeholder(new, content)
+    if placeholder:
+        return _text_error("placeholder_in_new_text", f"new_text contains the placeholder comment '{placeholder}'. Text is written literally, so the placeholder would replace real code. Write out the full code in new_text, or make old_text cover only the lines you change.")
 
-    count = content.count(old)
-    if count == 0:
-        message = "old_text was not found in the file."
-        line = _find_whitespace_insensitive_match(content, old)
-        if line:
-            message += f" A match with different indentation or trailing whitespace starts at line {line}. Copy the text exactly as it appears in the file."
-        else:
-            message += " Read the file again and copy the text exactly as it appears in the file."
-        return json.dumps({"success": False, "error": "no_match", "message": message}, indent=2)
-
-    if count > 1 and not replace_all:
-        lines = []
-        index = content.find(old)
-        while index != -1:
-            lines.append(_line_number(content, index))
-            index = content.find(old, index + len(old))
-        return json.dumps({
-            "success": False,
-            "error": "multiple_matches",
-            "message": f"old_text matches {count} times, at lines {lines}. Include more surrounding lines in old_text to make it unique, or set replace_all to replace every match.",
-            "match_lines": lines
-        }, indent=2)
-
-    first_line = _line_number(content, content.find(old))
-    new_content = content.replace(old, new) if replace_all else content.replace(old, new, 1)
+    try:
+        new_content, first_line, last_line, replacements, note = _apply_edit(content, old, new, replace_all)
+    except _EditError as e:
+        return _text_error(e.error, e.message)
 
     result = json.loads(_write_logic(path, new_content, expected_sha256))
-    if result.get("success"):
-        result["replacements"] = count if replace_all else 1
-        result["first_changed_line"] = first_line
-    return json.dumps(result, indent=2)
+    if not result.get("success"):
+        return _text_error(result.get("error", "write_error"), result.get("message", ""))
+
+    new_lines = _split_lines(new_content)
+    snippet_start = max(1, first_line - EDIT_SNIPPET_CONTEXT_LINES)
+    snippet_end = min(len(new_lines), last_line + EDIT_SNIPPET_CONTEXT_LINES, snippet_start + MAX_EDIT_SNIPPET_LINES - 1)
+    plural = "replacement" if replacements == 1 else "replacements"
+    return "\n".join([
+        f"Edited {path}: {replacements} {plural}, starting at line {first_line}.{note}",
+        f"New SHA-256: {result['sha256']} (use it as expected_sha256 for the next edit to this file)",
+        f"Lines {snippet_start}-{snippet_end} of {len(new_lines)} after the edit:" if new_lines else "The file is now empty.",
+        _content_block(new_lines[snippet_start - 1:snippet_end], snippet_start) if new_lines else ""
+    ]).rstrip()
 
 def _detect_neighbor_line_ending(directory: Path) -> tuple[str, str]:
     """
@@ -357,22 +473,47 @@ def write_file(path: str, content: str, expected_sha256: str) -> str:
     to ensure no one else has modified it since you last read it.
     To change only part of a file, use 'edit_file' instead.
 
+    The content must be the complete new file. Never use placeholder comments such as
+    '// ... existing code ...': the content is written literally, so they are rejected.
+
     IMPORTANT: If you receive a 'hash_mismatch' error, it means the file has
     changed on disk. You MUST call 'read_file_with_metadata' to get the
     new content and the new SHA-256 before attempting to write again.
 
     Args:
         path (str): Path to the file to update.
-        content (str): The new content to write.
+        content (str): The complete new content of the file.
         expected_sha256 (str): The SHA-256 hash of the file as it was when last read.
 
     Returns:
-        str: JSON response indicating success or error (e.g., hash_mismatch).
+        str: JSON response indicating success or error (e.g., hash_mismatch), with a warning
+            if the file became much shorter.
     """
     try:
         p = Path(path).resolve()
         if not _is_path_allowed(p):
             return _access_denied(p)
+
+        if p.is_file():
+            try:
+                info = _get_file_info(p)
+                original = _read_text(p, info.has_bom)
+            except Exception as e:
+                return json.dumps({"success": False, "error": "read_error", "message": str(e)}, indent=2)
+
+            placeholder = _find_placeholder(_normalize_newlines(content), original)
+            if placeholder:
+                return json.dumps({
+                    "success": False,
+                    "error": "placeholder_in_content",
+                    "message": f"content contains the placeholder comment '{placeholder}'. The content is written literally, so the placeholder would replace real code. Write out the complete file, or use edit_file to change only part of it."
+                }, indent=2)
+
+            result = json.loads(_write_logic(p, content, expected_sha256))
+            old_count, new_count = len(_split_lines(original)), len(_split_lines(_normalize_newlines(content)))
+            if result.get("success") and old_count >= 20 and new_count < old_count * SHRINK_WARNING_RATIO:
+                result["warning"] = f"The file shrank from {old_count} to {new_count} lines. If you meant to change only part of it, restore the missing lines: write_file replaces the whole file, while edit_file changes only part of it."
+            return json.dumps(result, indent=2)
 
         return _write_logic(p, content, expected_sha256)
     except Exception as e:
@@ -387,12 +528,17 @@ def edit_file(path: str, old_text: str, new_text: str, expected_sha256: str, rep
     to ensure no one else has modified it since you last read it.
 
     Copy old_text exactly from the file content returned by 'read_file_with_metadata',
-    including indentation. Line endings do not need to match. old_text must match exactly
-    once: include enough surrounding lines to make it unique, or set replace_all to True.
-    To delete text, use an empty new_text.
+    including indentation, and without line number prefixes. Line endings and trailing
+    whitespace do not need to match. old_text must match exactly once: include a few
+    surrounding lines to make it unique, or set replace_all to True.
+    To delete lines, use an empty new_text.
 
-    The response contains the file's new SHA-256. Use it as expected_sha256 for the next
-    edit to the same file, without reading the file again.
+    new_text is written literally: never use placeholder comments such as
+    '// ... existing code ...' in it. Keep old_text short, covering only the lines you change.
+
+    The response shows the changed lines after the edit and the file's new SHA-256.
+    Use the new SHA-256 as expected_sha256 for the next edit to the same file,
+    without reading the file again.
 
     IMPORTANT: If you receive a 'hash_mismatch' error, it means the file has
     changed on disk. You MUST call 'read_file_with_metadata' to get the
@@ -406,17 +552,18 @@ def edit_file(path: str, old_text: str, new_text: str, expected_sha256: str, rep
         replace_all (bool): If True, replaces every match of old_text. Defaults to False.
 
     Returns:
-        str: JSON response with the new file metadata, the number of replacements and the first
-            changed line, or an error (e.g., hash_mismatch, no_match, multiple_matches).
+        str: Plain text with the number of replacements, the new SHA-256 and the changed lines
+            after the edit, or an error (e.g., hash_mismatch, no_match with the closest matching
+            lines, multiple_matches with their line numbers).
     """
     try:
         p = Path(path).resolve()
         if not _is_path_allowed(p):
-            return _access_denied(p)
+            return _text_error("access_denied", _access_denied_message(p))
 
         return _edit_logic(p, old_text, new_text, expected_sha256, replace_all)
     except Exception as e:
-        return json.dumps({"success": False, "error": "edit_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
+        return _text_error("edit_error", f"{e}\n{traceback.format_exc()}")
 
 @mcp.tool()
 def create_file(path: str, content: str) -> str:
@@ -461,39 +608,84 @@ def create_file(path: str, content: str) -> str:
         return json.dumps({"success": False, "error": "create_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
 
 @mcp.tool()
-def read_file_with_metadata(path: str) -> str:
+def read_file_with_metadata(path: str, start_line: int | None = None, end_line: int | None = None, line_numbers: bool = False) -> str:
     """
-    Reads a file and returns its content along with SHA-256 hash, encoding, line ending, and size.
+    Reads a text file and returns its exact content along with its SHA-256 hash, line count,
+    line ending, encoding and size. The content is shown as-is between the lines
+    '----- BEGIN CONTENT -----' and '----- END CONTENT -----'.
+
+    Long files are returned in parts of up to 1000 lines: the response then says which
+    start_line to use to read the next part. Use start_line and end_line to read only the
+    lines you need, e.g. around a line number found with a search tool.
 
     MANDATORY WORKFLOW:
     1. Read the file with this tool.
     2. Decide on the change.
     3. Use the returned SHA-256 when calling edit_file (to change part of the file)
-       or write_file (to replace the whole file).
+       or write_file (to replace the whole file, only after reading the whole file).
 
     Never guess SHA-256 values.
     Never edit files without reading them first.
 
     Args:
         path (str): Path to the file.
+        start_line (int, optional): The first line to read, starting from 1. Defaults to 1.
+        end_line (int, optional): The last line to read. Defaults to the end of the file.
+        line_numbers (bool): If True, prefixes each line with its number as 'N| '. The prefixes
+            are not part of the content. Defaults to False.
 
     Returns:
-        str: JSON string containing file content and metadata, or error message.
+        str: The file's metadata followed by its content as plain text, or an error message.
     """
     try:
         p = Path(path).resolve()
         if not _is_path_allowed(p):
-            return _access_denied(p)
+            return _text_error("access_denied", _access_denied_message(p))
+        if p.is_dir():
+            return _text_error("is_a_directory", f"{p} is a directory. Use 'list_directory' to see its contents.")
+        if not p.exists():
+            return _text_error("file_not_found", f"File not found: {p}")
 
         info = _get_file_info(p)
-        with open(p, "r", encoding="utf-8-sig" if info.has_bom else "utf-8") as f:
-            content = f.read()
+        lines = _split_lines(_read_text(p, info.has_bom))
+        total = len(lines)
 
-        return json.dumps({"success": True, **asdict(info), "content": content}, indent=2, ensure_ascii=False)
-    except FileNotFoundError as e:
-        return json.dumps({"success": False, "error": "file_not_found", "message": str(e)}, indent=2)
+        start = 1 if start_line is None else int(start_line)
+        end = total if end_line is None else min(int(end_line), total)
+        if start < 1 or (total and start > total):
+            return _text_error("invalid_range", f"start_line must be between 1 and {total}, the number of lines in the file.")
+        if end < start and total:
+            return _text_error("invalid_range", f"end_line must not be smaller than start_line ({start}).")
+
+        # Keep large reads within MAX_READ_LINES and MAX_READ_CHARS
+        limited_end = min(end, start + MAX_READ_LINES - 1)
+        chars = 0
+        for i in range(start - 1, limited_end):
+            chars += len(lines[i]) + 1
+            if chars > MAX_READ_CHARS and i > start - 1:
+                limited_end = i
+                break
+        truncated = limited_end < end
+        end = limited_end
+
+        encoding = "utf-8 with BOM" if info.has_bom else "utf-8"
+        header = [f"File: {info.path}", f"SHA-256: {info.sha256}"]
+        if not total:
+            header.append("Lines: 0 (empty file)")
+        else:
+            partial = start > 1 or end < total
+            header.append(f"Lines: {start}-{end} of {total}" + (" (partial)" if partial else ""))
+        header.append(f"Line ending: {info.line_ending} | Encoding: {encoding} | Size: {info.size_bytes} bytes | Modified: {info.modified_at}")
+        if truncated:
+            header.append(f"Note: The file is too long to read at once. Read the next part with start_line={end + 1}.")
+        if total and (start > 1 or end < total):
+            header.append("Note: This is only part of the file. Change it with edit_file: write_file would replace the whole file with only this part.")
+        if line_numbers:
+            header.append("Note: The 'N| ' line number prefixes are not part of the content. Do not copy them into edit_file.")
+
+        return "\n".join(header) + "\n" + _content_block(lines[start - 1:end], start, line_numbers)
     except Exception as e:
-        return json.dumps({"success": False, "error": "read_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2)
+        return _text_error("read_error", str(e))
 
 @mcp.tool()
 def read_image(path: str) -> list[str | Image] | str:

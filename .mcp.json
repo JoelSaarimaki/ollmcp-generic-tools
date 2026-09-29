@@ -61,7 +61,11 @@
           "command": "python",
           "args": [
             ".\\mcp-servers\\git-diff-mcp.py"
-          ]
+          ],
+          "env": {
+            "ALLOWED_DIR": ".\\",
+            "FORBIDDEN_PATHS": ""
+          }
         }
     }
 }

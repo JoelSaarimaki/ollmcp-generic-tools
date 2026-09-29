@@ -42,6 +42,10 @@ Most of the MCP servers use environment variables for configuration. These shoul
 - `GITIGNORE_PATH`: Path to the `.gitignore` file to use for excluding files. (Optional)
 - `FORBIDDEN_PATHS`: List of folders and/or files the tool must never access, even within `INPUT_DIR`. See [Forbidden paths](#forbidden-paths). (Optional)
 
+#### git-diff-mcp
+- `ALLOWED_DIR`: The directory within which git history and changes can be inspected. Use the same value as for `safe-filesystem-mcp`. (Defaults to current working directory)
+- `FORBIDDEN_PATHS`: List of folders and/or files the tool must never show, even within `ALLOWED_DIR`. Use the same value as for `safe-filesystem-mcp`. See [Forbidden paths](#forbidden-paths). (Optional)
+
 #### instructions-mcp
 - `PROJECT_INSTRUCTIONS_FILE`: Path to the project-specific instructions Markdown file.
 
@@ -55,7 +59,7 @@ Most of the MCP servers use environment variables for configuration. These shoul
 
 #### Forbidden paths
 
-`generate-map-mcp`, `search-tool-mcp` and `safe-filesystem-mcp` accept a `FORBIDDEN_PATHS` list of sub-folders and individual files that are excluded from all tool operations. A forbidden folder also forbids everything inside it. Leave the value empty (or omit it) to forbid nothing.
+`generate-map-mcp`, `search-tool-mcp`, `safe-filesystem-mcp` and `git-diff-mcp` accept a `FORBIDDEN_PATHS` list of sub-folders and individual files that are excluded from all tool operations. A forbidden folder also forbids everything inside it. Leave the value empty (or omit it) to forbid nothing.
 
 - Relative paths are resolved against `INPUT_DIR` / `ALLOWED_DIR`. Absolute paths are also accepted.
 - Separate paths with commas. Whitespace around each path is ignored:
@@ -64,7 +68,12 @@ Most of the MCP servers use environment variables for configuration. These shoul
   "FORBIDDEN_PATHS": ""
   ```
 - In `safe-filesystem-mcp`, forbidden paths are hidden from `list_directory`, and deleting or moving a folder that contains a forbidden path is denied.
+- In `git-diff-mcp`, forbidden paths are denied and left out of status and diff output. Otherwise a file's history would reveal its contents.
 - There is no need to add the [ignored directories](#ignored-directories) to `FORBIDDEN_PATHS` for `generate-map-mcp` or `search-tool-mcp`, as they are already skipped by default.
+
+Limitations:
+- `commands-mcp` does not use `FORBIDDEN_PATHS`. Do not register commands that can print arbitrary files (e.g., `git show` or `cat {arg}`) if some files must stay hidden.
+- In `git-diff-mcp`, a file that was moved into a forbidden folder can still be seen in the history of its old, allowed path. Commit messages are not filtered either.
 
 #### Ignored directories
 
@@ -75,6 +84,8 @@ Most of the MCP servers use environment variables for configuration. These shoul
 `generate-map-mcp` additionally skips files matched by the `.gitignore` file (see `GITIGNORE_PATH`).
 
 `safe-filesystem-mcp` has no ignored directories, because it only accesses the paths the AI explicitly asks for. To block it from folders such as `.git` or `.venv`, add them to its `FORBIDDEN_PATHS`.
+
+`git-diff-mcp` has no ignored directories either. Git's own `.gitignore` rules decide which untracked files it lists.
 
 ### Running
 
@@ -142,8 +153,11 @@ Generates a comprehensive structure map and summary of a codebase, supporting Py
 Provides tools to inspect git history and differences for files within a repository.
 
 - **get_file_diff** Retrieves the differences for a specified file.
+- **get_all_changes_diff** Retrieves the differences for all changed files at once, with a list of changed and new untracked files. Useful for reviewing all changes before committing.
 - **get_file_history** Retrieves the commit history and associated diffs for a specified file.
-- **is_git_repository** Checks if the current working directory or a specified directory is a Git repository.
+- **get_git_status** Returns the results of `git status`.
+- **is_git_repository** Checks if the allowed directory or a specified directory is a Git repository.
+- **get_git_config** Returns the allowed directory, its repository root and forbidden paths, to explain why a path may be denied or missing from the output.
 
 ### instructions-mcp
 

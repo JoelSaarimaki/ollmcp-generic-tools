@@ -288,9 +288,25 @@ def _parse_js_ts(filepath: Path, input_dir: Path) -> str:
 
     return "".join(out)
 
-def _get_project_metadata(root_dir: Path) -> dict:
+def _iter_files(input_dir: Path, gitignore_patterns: list[str]):
     """
-    Scans the project's Python files for the names of its modules, classes and functions.
+    Yields the files within input_dir that are not ignored, in sorted order.
+    Ignored folders are skipped without being entered, which keeps large folders such as node_modules fast.
+    """
+    for dirpath, dirnames, filenames in os.walk(input_dir):
+        current_dir = Path(dirpath)
+        dirnames[:] = sorted(
+            (d for d in dirnames if not _is_ignored(current_dir / d, input_dir, IGNORED_DIRS, gitignore_patterns)),
+            key=str.lower
+        )
+        for name in sorted(filenames, key=str.lower):
+            path = current_dir / name
+            if not _is_ignored(path, input_dir, IGNORED_DIRS, gitignore_patterns):
+                yield path
+
+def _get_project_metadata(input_dir: Path, gitignore_patterns: list[str]) -> dict:
+    """
+    Scans the project's own Python files for the names of its modules, classes and functions.
     """
     metadata = {
         "symbols": set(),
@@ -298,8 +314,8 @@ def _get_project_metadata(root_dir: Path) -> dict:
         "modules": set()
     }
 
-    for path in root_dir.rglob("*"):
-        if path.is_file() and path.suffix in PYTHON_SUFFIXES and not _is_forbidden(path):
+    for path in _iter_files(input_dir, gitignore_patterns):
+        if path.suffix in PYTHON_SUFFIXES:
             module_name = path.stem
             metadata["modules"].add(module_name)
 
@@ -365,7 +381,7 @@ def _create_map_content(input_dir: Path) -> str:
     Creates the full codebase map content: the file tree followed by per-file summaries.
     """
     gitignore_patterns = _load_gitignore_patterns(input_dir)
-    metadata = _get_project_metadata(input_dir)
+    metadata = _get_project_metadata(input_dir, gitignore_patterns)
 
     content = ["# Codebase Structure & Summaries\n\n"]
     content.append("## File Map\n")
@@ -373,13 +389,7 @@ def _create_map_content(input_dir: Path) -> str:
     content.append(f"```\n{map_tree}```\n\n")
     content.append("## Detailed Descriptions\n\n")
 
-    for path in input_dir.rglob("*"):
-        if path.is_dir():
-            continue
-
-        if _is_ignored(path, input_dir, IGNORED_DIRS, gitignore_patterns):
-            continue
-
+    for path in _iter_files(input_dir, gitignore_patterns):
         file_content = ""
         if path.suffix in PYTHON_SUFFIXES:
             file_content = _parse_python(path, input_dir, metadata)

@@ -1,6 +1,7 @@
 # --- test_map.py ---
 """
-Tests for generate-map-mcp: the file tree, the codebase map and the Python and JS/TS parsers.
+Tests for generate-map-mcp: get_outline for folders and files, its detail levels and limits.
+The parsers themselves are tested in test_outline.py.
 """
 import pytest
 
@@ -66,91 +67,139 @@ function run() { return formatDate(new Date()); }
 '''
 
 @pytest.fixture
-def js_map(project):
+def js_outline(project):
     project.write("src/components/App.tsx", APP_TSX)
     project.write("src/utils/format.ts", FORMAT_TS)
     project.write("src/index.js", INDEX_JS)
-    return project.load("map").generate_codebase_map()
+    return project.load("map").get_outline()
 
-def test_js_ts_declarations_are_listed(js_map):
+def test_folder_outline_lists_js_ts_sections_with_line_spans(js_outline):
     for line in [
-        "> Root application component.",
-        "- Imports: `../utils/format`",
-        "- **Interface** `AppProps` (export): *Props for the App component.*",
-        "- **Component** `App` (default export): *Renders the main layout.*",
-        "- **Hook** `useWindowWidth` (export): *Tracks window width.*",
-        "- **Component** `Header` (export)",
-        "- `internalHelper()`",
-        "- `formatDate()` (export): *Formats a date as YYYY-MM-DD.*",
-        "- **Enum** `Status` (export)",
-        "- **Class** `Cache` extends `Base` (export): *Caches values in memory.*",
-        "  - `get()`: *Gets a cached value.*",
-        "  - `create()`",
-        "- `parse()` (export)",
-        "- Re-exports all from `./dates`",
-        "- `run()` (export)",
+        "src/components/App.tsx (30 lines): Root application component.",
+        "  7-10 interface AppProps (export): Props for the App component.",
+        "  12-15 component App (default export): Renders the main layout.",
+        "  17-18 hook useWindowWidth() (export): Tracks window width.",
+        "  20-22 component Header (export)",
+        "  28-30 internalHelper()",
+        "  1-4 formatDate() (export): Formats a date as YYYY-MM-DD.",
+        "  6-6 enum Status (export)",
+        "  8-17 class Cache extends Base (export): Caches values in memory.",
+        "    10-14 get(): Gets a cached value.",
+        "    16-16 create()",
+        "  19-19 parse() (export)",
+        "  3-3 run() (export)",
     ]:
-        assert line in js_map, line
+        assert line in js_outline.split("\n"), line
+    assert "Output limited" not in js_outline
 
-def test_commented_out_code_is_not_listed(js_map):
-    assert "commentedOut" not in js_map and "AlsoCommented" not in js_map
+def test_commented_out_code_is_not_listed(js_outline):
+    assert "commentedOut" not in js_outline and "AlsoCommented" not in js_outline
 
-def test_python_functions_classes_and_calls(project):
+def test_folder_outline_lists_every_file(project):
+    project.write("src/app.py", "def main():\n    pass\n")
+    project.write("pyproject.toml", "[project]\nname = 'x'\n")
+    project.write("Dockerfile", "FROM python\n")
+    project.write("logo.png", b"\x89PNG\r\n\x1a\n\x00\xff\xfe")
+    lines = project.load("map").get_outline().split("\n")
+    assert "pyproject.toml (2 lines)" in lines and "Dockerfile (1 line)" in lines
+    assert "logo.png (binary, 11 B)" in lines
+    assert "src/app.py (2 lines)" in lines and "  1-2 main()" in lines
+
+def test_file_outline_shows_calls_into_the_rest_of_the_project(project):
     project.write("src/app.py", 'def own():\n    """Own function."""\n    helper()\n\nclass Service:\n    """A service."""\n    def run(self):\n        """Runs it."""\n        return Service()\n')
-    project.write("src/pkg/util.py", "def helper():\n    pass\n")
+    project.write("lib/util.py", "def helper():\n    pass\n")
     project.write(".venv/lib/ext.py", "def external_helper():\n    pass\n")
     project.write("src/uses_external.py", "def caller():\n    external_helper()\n")
-    project.configure()
-    map_text = project.load("map").generate_codebase_map()
-    assert "- `own()`: *Own function.*\n  - Calls: helper" in map_text
-    assert "- **Class** `Service`: *A service.*" in map_text and "  - `run()`: *Runs it.*" in map_text
-    assert "Instantiates: Service" in map_text
-    assert "external_helper" not in map_text.split("uses_external.py")[1].split("###")[0]  # .venv is not parsed
+    outline = project.load("map")
+    lines = outline.get_outline("src/app.py").split("\n")
+    assert lines[0] == "src/app.py (9 lines)"
+    assert lines[lines.index("1-3 own(): Own function.") + 1] == "  Calls: helper"
+    assert "5-9 class Service: A service." in lines and "  7-9 run(): Runs it." in lines
+    assert "    Instantiates: Service" in lines
+    assert "Calls" not in outline.get_outline("src/uses_external.py")  # .venv is not scanned
 
-def test_map_limited_to_a_subfolder_still_finds_calls_into_other_folders(project):
-    project.write("src/app.py", "def own():\n    helper()\n")
-    project.write("lib/util.py", "def helper():\n    pass\n")
-    map_text = project.load("map").generate_codebase_map("src")
-    assert "Calls: helper" in map_text and "lib/util.py" not in map_text
+def test_folder_outline_leaves_out_calls(project):
+    project.write("src/app.py", "def own():\n    helper()\n\ndef helper():\n    pass\n")
+    assert "Calls" not in project.load("map").get_outline("src")
+
+def test_file_outline_of_an_unsupported_type(project):
+    project.write("config.toml", "a = 1\n")
+    response = project.load("map").get_outline("config.toml")
+    assert response.startswith("config.toml (1 line)") and "read_file_with_metadata" in response
+
+def test_file_outline_reports_a_syntax_error(project):
+    project.write("broken.py", "def broken(:\n    pass\n")
+    response = project.load("map").get_outline("broken.py")
+    assert "not outlined: Python syntax error at line 1" in response
 
 @pytest.mark.parametrize("path, message", [
-    ("node_modules", "ignored or forbidden"),
-    ("missing", "not a directory"),
-    ("src/app.py", "not a directory"),
+    ("node_modules", "is ignored: it is an ignored folder"),
+    ("missing", "does not exist"),
     ("../elsewhere", "not within the allowed directory"),
 ])
-def test_invalid_map_paths(project, path, message):
+def test_invalid_outline_paths(project, path, message):
     project.write("src/app.py", "x = 1\n")
     project.write("node_modules/dep/index.js", "")
-    assert message in project.load("map").generate_codebase_map(path)
+    assert message in project.load("map").get_outline(path)
 
 def test_ignored_folders_and_gitignored_files_are_left_out(project):
     project.write("src/app.py", "x = 1\n")
     project.write("node_modules/dep/index.js", "export function dep() {}\n")
     project.write("generated/gen.py", "def gen(): pass\n")
     project.write(".gitignore", "generated\n")
-    tree = project.load("map").generate_file_map()
-    assert "app.py" in tree and "node_modules" not in tree and "generated" not in tree
+    outline = project.load("map").get_outline()
+    assert "app.py" in outline and "node_modules" not in outline and "generated" not in outline
 
 def test_project_inside_a_folder_named_like_an_ignored_folder(make_project):
     project = make_project("out/myproject")
     project.write("src/app.py", "x = 1\n")
-    assert "app.py" in project.load("map").generate_file_map()
+    assert "app.py" in project.load("map").get_outline()
 
-def test_large_map_is_limited_with_folder_suggestions(project):
-    for i in range(40):
-        project.write(f"src/api/handler_{i}.py", f'def handle_{i}():\n    """Handles request {i}."""\n')
-    for i in range(25):
+def test_empty_folder(project):
+    (project.root / "empty").mkdir()
+    assert "No files found" in project.load("map").get_outline("empty")
+
+def make_large_project(project, handlers=40, widgets=25):
+    for i in range(handlers):
+        project.write(f"src/api/handler_{i}.py", f'class Handler{i}:\n    """Handles request {i}."""\n    def get(self):\n        pass\n\n    def post(self):\n        pass\n\ndef route_{i}():\n    pass\n')
+    for i in range(widgets):
         project.write(f"src/ui/Widget{i}.tsx", f"export default function Widget{i}() {{ return null; }}\n")
-    project.configure(max_output_chars=4000)
-    map_text = project.load("map").generate_codebase_map()
-    assert len(map_text) <= 4000
-    assert "Output limited: the map reached its limit" in map_text
-    assert "path='src/api'" in map_text and "path='src/ui'" in map_text  # descends past 'src', which holds everything
 
-def test_long_file_tree_is_cut_short(project):
-    for i in range(450):
-        project.write(f"src/file_{i:03}.py", "")
-    tree = project.load("map").generate_file_map()
-    assert "Output limited: the file tree has more than 400 lines" in tree
-    assert "(file tree cut short)" in tree
+@pytest.mark.parametrize("max_chars, note", [
+    (8200, "summaries are left out"),
+    (7000, "only top-level sections are shown"),
+    (5000, "only the files are listed, without their sections"),
+    (2500, "only the files directly in the folder and the subfolders with their file counts are listed"),
+])
+def test_large_folders_are_shown_with_less_detail(project, max_chars, note):
+    make_large_project(project)
+    project.configure(max_output_chars=max_chars)
+    outline = project.load("map").get_outline()
+    assert len(outline) <= max_chars
+    assert f"Output limited: {note}" in outline
+    assert "path='src/api'" in outline and "path='src/ui'" in outline  # descends past 'src', which holds everything
+
+def test_files_level_lists_section_counts(project):
+    make_large_project(project)
+    project.configure(max_output_chars=5000)
+    assert "src/api/handler_0.py (10 lines, 4 sections)" in project.load("map").get_outline()
+
+def test_folders_level_lists_subfolders_with_file_counts(project):
+    make_large_project(project)
+    project.configure(max_output_chars=2500)
+    lines = project.load("map").get_outline().split("\n")
+    assert "src/api/ (40 files)" in lines and "src/ui/ (25 files)" in lines
+
+def test_long_file_outline_is_limited(project):
+    project.write("big.py", "".join(f'def function_{i}():\n    """Does thing number {i} in a rather long summary line."""\n\n' for i in range(400)))
+    project.configure(max_output_chars=4000)
+    outline = project.load("map").get_outline("big.py")
+    assert len(outline) <= 4000
+    assert "Output limited: summaries are left out" in outline or "more sections not shown" in outline
+
+def test_file_outline_points_to_the_right_tool(project):
+    project.write("logo.png", b"\x89PNG\r\n\x1a\n\x00")
+    project.write("src/app.py", "def main():\n    pass\n")
+    outline = project.load("map")
+    assert "read_image" in outline.get_outline("logo.png")
+    assert "read_file_with_metadata(path='src/app.py', section=...)" in outline.get_outline("src/app.py")

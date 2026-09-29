@@ -13,6 +13,7 @@ from mcp_common import (
     MAX_OUTPUT_CHARS,
     PROTECTED_FILE_NAMES,
     access_denied_message,
+    display_path,
     get_repo_root,
     is_path_allowed,
     resolve_path
@@ -64,7 +65,7 @@ def _run_git_command(args: list[str], cwd: str | Path | None = None) -> dict[str
     except Exception as e:
         return {
             "success": False,
-            "error": "execution_failed",
+            "error": "execution_error",
             "message": str(e),
             "traceback": traceback.format_exc()
         }
@@ -114,7 +115,7 @@ def _prepare(path: str | None) -> tuple[Path, Path, Path | None, str | None]:
         return p, cwd, None, json.dumps({
             "success": False,
             "error": "not_a_repository",
-            "message": f"{p} is not inside a git repository."
+            "message": f"{display_path(p, ALLOWED_DIR)} is not inside a git repository."
         }, indent=2, ensure_ascii=False)
     return p, cwd, repo_root, None
 

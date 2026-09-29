@@ -16,7 +16,7 @@ from conftest import REPO_DIR, SERVER_FILES, SERVERS_DIR
 EXPECTED_TOOLS = {
     "filesystem": ["write_file", "edit_file", "create_file", "read_file_with_metadata", "read_image",
                    "list_directory", "create_directory", "move_file", "delete_file", "get_config"],
-    "map": ["generate_codebase_map", "generate_file_map"],
+    "map": ["get_outline"],
     "search": ["search_text_in_files", "search_files_by_pattern"],
     "git": ["get_file_diff", "get_all_changes_diff", "get_file_history", "get_git_status"],
     "commands": ["list_available_commands", "run_predefined_command"],

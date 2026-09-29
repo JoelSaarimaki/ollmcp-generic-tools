@@ -138,11 +138,11 @@ def _execute_command_logic(command_key: str, argument: str | None = None) -> dic
     Returns the success status (exit code 0), exit code, stdout, stderr and the command used.
     """
     if command_key not in COMMAND_REGISTRY:
-        available = list(COMMAND_REGISTRY.keys())
+        available = ", ".join(COMMAND_REGISTRY) or "(none)"
         return {
             "success": False,
             "error": "command_not_found",
-            "message": f"'{command_key}' is not recognized. Available: {available}"
+            "message": f"'{command_key}' is not a registered command. Available commands: {available}. Use list_available_commands to see what each one does."
         }
 
     cmd_info = COMMAND_REGISTRY[command_key]
@@ -155,14 +155,14 @@ def _execute_command_logic(command_key: str, argument: str | None = None) -> dic
 
     executable = shutil.which(tokens[0])
     if not executable:
-        return {"success": False, "error": "program_not_found", "message": f"Program '{tokens[0]}' was not found on PATH."}
+        return {"success": False, "error": "program_not_found", "message": f"Program '{tokens[0]}' was not found on PATH. Tell the user that it is not installed or not on PATH."}
 
     if ARG_PLACEHOLDER in template:
         if not argument:
             return {
                 "success": False,
                 "error": "missing_argument",
-                "message": f"Command '{command_key}' requires an argument."
+                "message": f"Command '{command_key}' requires an argument. {cmd_info['description']}"
             }
         reason = _validate_argument(argument, tokens, executable)
         if reason:
@@ -208,7 +208,7 @@ def _execute_command_logic(command_key: str, argument: str | None = None) -> dic
     except Exception as e:
         return {
             "success": False,
-            "error": "execution_failed",
+            "error": "execution_error",
             "message": str(e),
             "traceback": traceback.format_exc()
         }
@@ -219,12 +219,10 @@ def _execute_command_logic(command_key: str, argument: str | None = None) -> dic
 def list_available_commands() -> str:
     """
     Returns a list of all allowed console commands and their descriptions.
+    Use this tool to discover what commands can be run with 'run_predefined_command'.
 
     Returns:
         str: A JSON-formatted string containing the list of commands or an error message.
-
-    Usage Notes:
-        Use this tool to discover what commands can be run via 'run_predefined_command'.
     """
     try:
         commands = _list_commands_logic()
@@ -232,7 +230,7 @@ def list_available_commands() -> str:
     except Exception as e:
         return json.dumps({
             "success": False,
-            "error": "listing_failed",
+            "error": "list_error",
             "message": str(e),
             "traceback": traceback.format_exc()
         }, indent=2, ensure_ascii=False)
@@ -241,20 +239,18 @@ def list_available_commands() -> str:
 def run_predefined_command(command_name: str, argument: str | None = None) -> str:
     """
     Executes a specific console command from the allowed registry, in the project directory.
+    Use 'list_available_commands' first to see which commands exist.
     The command succeeds only if it exits with code 0. Long output is cut from the middle:
     then output_limited is set and tells how to see more.
 
     Args:
-        command_name (str): The key of the command (from list_available_commands).
+        command_name (str): The name of the command (from list_available_commands).
         argument (str, optional): An optional string argument required by some commands.
             It is passed to the command as a single argument and must not start with '-'.
 
     Returns:
         str: A JSON-formatted string containing the success status, exit code, stdout and stderr,
             or an error message (e.g., timeout or invalid_argument).
-
-    Usage Notes:
-        Use 'list_available_commands' before calling this tool to ensure the command exists.
     """
     try:
         result = _execute_command_logic(command_name, argument)
@@ -262,7 +258,7 @@ def run_predefined_command(command_name: str, argument: str | None = None) -> st
     except Exception as e:
         return json.dumps({
             "success": False,
-            "error": "command_execution_wrapper_failed",
+            "error": "command_error",
             "message": str(e),
             "traceback": traceback.format_exc()
         }, indent=2, ensure_ascii=False)

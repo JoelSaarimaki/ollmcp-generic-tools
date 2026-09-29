@@ -11,7 +11,6 @@ from pathlib import Path
 
 from mcp.server.mcpserver import Image, MCPServer
 from mcp_common import (
-    ALL_ALLOWED_SUFFIXES,
     ALLOWED_DIR,
     COMMANDS_CONFIG,
     CONFIG,
@@ -32,6 +31,12 @@ from mcp_common import (
     load_gitignore_patterns,
     resolve_path
 )
+from mcp_outline import (
+    OUTLINE_SUFFIXES,
+    locate_section,
+    outline_after_write,
+    outline_text
+)
 
 # --- Constants & Config ---
 mcp = MCPServer("Safe-Filesystem-Server")
@@ -45,6 +50,7 @@ MAX_LIST_ENTRIES = 250
 EDIT_SNIPPET_CONTEXT_LINES = 3  # Lines shown around a change after an edit
 MAX_EDIT_SNIPPET_LINES = 40
 SHRINK_WARNING_RATIO = 0.5  # write_file warns if a file of 20+ lines shrinks below this ratio
+OUTLINE_AFTER_WRITE_CHARS = min(2500, MAX_OUTPUT_CHARS // 8)  # Room for the outline shown after a write
 CONTENT_START = "----- BEGIN CONTENT -----"
 CONTENT_END = "----- END CONTENT -----"
 # 'N| ' prefixes of read_file_with_metadata(line_numbers=True), removed if copied into edit_file
@@ -70,6 +76,12 @@ class FileMetadata:
     modified_at: str
 
 # --- Internal Helpers ---
+
+def _rel(path: Path) -> str:
+    """
+    Returns a path as shown in responses: relative to ALLOWED_DIR, like the paths given to and shown by the other tools.
+    """
+    return display_path(path, ALLOWED_DIR)
 
 def _access_denied(path: Path, label: str = "Path") -> str:
     """
@@ -98,7 +110,7 @@ def _get_file_info(path: Path) -> FileMetadata:
     Raises FileNotFoundError if the file does not exist.
     """
     if not path.exists():
-        raise FileNotFoundError(f"File not found: {path}")
+        raise FileNotFoundError(f"File not found: {_rel(path)}")
 
     with open(path, "rb") as f:
         raw_data = f.read()
@@ -113,7 +125,7 @@ def _get_file_info(path: Path) -> FileMetadata:
     try:
         raw_data.decode(decode_encoding)
     except UnicodeDecodeError:
-        raise Exception(f"{path} is not a UTF-8 text file. For images, use 'read_image'.")
+        raise Exception(f"{_rel(path)} is not a UTF-8 text file. For images, use 'read_image'.")
 
     # Detect line endings, defaulting to LF
     line_ending = "CRLF" if b"\r\n" in raw_data else "LF"
@@ -122,7 +134,7 @@ def _get_file_info(path: Path) -> FileMetadata:
     modified_at = datetime.datetime.fromtimestamp(mtime, tz=datetime.timezone.utc).isoformat()
 
     return FileMetadata(
-        path=str(path),
+        path=_rel(path),
         sha256=sha256,
         size_bytes=size_bytes,
         line_ending=line_ending,
@@ -137,7 +149,7 @@ def _write_logic(path: Path, content: str, expected_sha256: str) -> str:
     original line endings and BOM. Returns a JSON response with the new metadata.
     """
     if not path.exists():
-        return json.dumps({"success": False, "error": "file_not_found", "message": f"File not found: {path}. To create a new file, use create_file."}, indent=2, ensure_ascii=False)
+        return json.dumps({"success": False, "error": "file_not_found", "message": f"File not found: {_rel(path)}. To create a new file, use create_file."}, indent=2, ensure_ascii=False)
 
     # 1. Read metadata to validate
     try:
@@ -234,6 +246,17 @@ def _shorten_lines(lines: list[str], first_line: int) -> tuple[list[str], list[i
         result.append(line)
     return result, shortened
 
+def _fit_lines(lines: list[str], max_chars: int) -> list[str]:
+    """
+    Returns the first lines that fit in max_chars characters, at least one line.
+    """
+    total = 0
+    for i, line in enumerate(lines):
+        total += len(line) + 1
+        if total > max_chars and i > 0:
+            return lines[:i]
+    return lines
+
 def _shortened_lines_note(line_numbers: list[int]) -> str:
     """
     Returns the instruction shown when lines were shortened, or an empty string.
@@ -263,6 +286,30 @@ def _find_placeholder(new_text: str, original: str) -> str | None:
     if match and not PLACEHOLDER_COMMENT.search(original):
         return match.group(0).strip()
     return None
+
+def _write_report(path: Path, before: str | None, after: str) -> dict | None:
+    """
+    Returns the outline of a file after a write and the sections the write removed or added
+    (see outline_after_write), or None if the file type has no outline.
+    """
+    return outline_after_write(before, _normalize_newlines(after), path.suffix, OUTLINE_AFTER_WRITE_CHARS)
+
+def _add_report(result: dict, report: dict | None) -> dict:
+    """
+    Adds the outline, the removed and added sections and their warnings to a JSON write response.
+    """
+    if not report or not result.get("success"):
+        return result
+    if report["outline"]:
+        result["outline"] = report["outline"]
+    if report["removed"]:
+        result["removed_sections"] = report["removed"]
+    if report["added"]:
+        result["added_sections"] = report["added"]
+    warnings = [w for w in [result.get("warning")] + report["warnings"] if w]
+    if warnings:
+        result["warning"] = " ".join(warnings)
+    return result
 
 def _strip_line_numbers(text: str) -> str | None:
     """
@@ -329,10 +376,11 @@ def _apply_edit(content: str, old: str, new: str, replace_all: bool) -> tuple[st
     if near:
         start = near[0]
         actual, shortened = _shorten_lines(lines[start:start + len(old_lines)][:MAX_EDIT_SNIPPET_LINES], start + 1)
+        actual = _fit_lines(actual, MAX_OUTPUT_CHARS - min(1500, MAX_OUTPUT_CHARS // 4))
         message += (f" Lines {start + 1}-{start + len(old_lines)} match when indentation is ignored."
                     f" Copy them exactly as they appear in the file, including indentation:\n"
                     f"{_content_block(actual, start + 1)}")
-        if shortened or len(old_lines) > MAX_EDIT_SNIPPET_LINES:
+        if shortened or len(actual) < len(old_lines):
             message += f"\nOutput limited: only part of these lines is shown. Read them with read_file_with_metadata(start_line={start + 1})."
     else:
         message += " Read the file again with 'read_file_with_metadata' and copy the text exactly as it appears in the file."
@@ -344,7 +392,7 @@ def _edit_logic(path: Path, old_text: str, new_text: str, expected_sha256: str, 
     Returns a plain-text response with the new SHA-256 and the changed lines, or an error.
     """
     if not path.is_file():
-        return _text_error("file_not_found", f"File not found: {path}")
+        return _text_error("file_not_found", f"File not found: {_rel(path)}")
 
     try:
         info = _get_file_info(path)
@@ -375,23 +423,35 @@ def _edit_logic(path: Path, old_text: str, new_text: str, expected_sha256: str, 
     if not result.get("success"):
         return _text_error(result.get("error", "write_error"), result.get("message", ""))
 
+    report = _write_report(path, content, new_content)
+    warnings = report["warnings"] if report else []
+    outline = ["Outline after the edit:", *report["outline"]] if report and report["outline"] else []
+    if report and report["added"]:
+        outline.append(f"Added sections: {', '.join(report['added'][:20])}")
+
+    # Show the changed lines within MAX_EDIT_SNIPPET_LINES and what is left of MAX_OUTPUT_CHARS after the rest of the response
     new_lines = _split_lines(new_content)
     snippet_start = max(1, first_line - EDIT_SNIPPET_CONTEXT_LINES)
     snippet_end = min(len(new_lines), last_line + EDIT_SNIPPET_CONTEXT_LINES, snippet_start + MAX_EDIT_SNIPPET_LINES - 1)
     plural = "replacement" if replacements == 1 else "replacements"
     snippet, shortened = _shorten_lines(new_lines[snippet_start - 1:snippet_end], snippet_start)
+    snippet = _fit_lines(snippet, MAX_OUTPUT_CHARS - min(1500, MAX_OUTPUT_CHARS // 4) - sum(len(line) + 1 for line in warnings + outline))
+    snippet_end = snippet_start + len(snippet) - 1 if new_lines else snippet_end
+    shortened = [n for n in shortened if n <= snippet_end]
     limited = []
     if last_line + EDIT_SNIPPET_CONTEXT_LINES > snippet_end and snippet_end < len(new_lines):
-        limited.append(f"Output limited: the change continues after line {snippet_end}. Check the rest with read_file_with_metadata(start_line={snippet_end + 1}) if needed.")
+        limited.append(f"Output limited: the change continues after line {snippet_end}. Check the rest with read_file_with_metadata(path='{_rel(path)}', start_line={snippet_end + 1}) if needed.")
     if shortened:
         limited.append(_shortened_lines_note(shortened))
     return "\n".join([
-        f"Edited {path}: {replacements} {plural}, starting at line {first_line}.{note}",
+        f"Edited {_rel(path)}: {replacements} {plural}, starting at line {first_line}.{note}",
         f"New SHA-256: {result['sha256']} (use it as expected_sha256 for the next edit to this file)",
+        *warnings,
         *limited,
         f"Lines {snippet_start}-{snippet_end} of {len(new_lines)} after the edit:" if new_lines else "The file is now empty.",
-        _content_block(snippet, snippet_start) if new_lines else ""
-    ]).rstrip()
+        _content_block(snippet, snippet_start) if new_lines else "",
+        *outline
+    ]).strip()
 
 def _detect_neighbor_line_ending(directory: Path) -> tuple[str, str]:
     """
@@ -443,8 +503,9 @@ def write_file(path: str, content: str, expected_sha256: str) -> str:
         expected_sha256 (str): The SHA-256 hash of the file as it was when last read.
 
     Returns:
-        str: JSON response indicating success or error (e.g., hash_mismatch), with a warning
-            if the file became much shorter.
+        str: JSON response indicating success or error (e.g., hash_mismatch). For code and Markdown
+            files it includes the new outline with line spans and the sections that were removed or
+            added: check that no section was removed by mistake.
     """
     try:
         p = resolve_path(path)
@@ -470,7 +531,7 @@ def write_file(path: str, content: str, expected_sha256: str) -> str:
             old_count, new_count = len(_split_lines(original)), len(_split_lines(_normalize_newlines(content)))
             if result.get("success") and old_count >= 20 and new_count < old_count * SHRINK_WARNING_RATIO:
                 result["warning"] = f"The file shrank from {old_count} to {new_count} lines. If you meant to change only part of it, restore the missing lines: write_file replaces the whole file, while edit_file changes only part of it."
-            return json.dumps(result, indent=2, ensure_ascii=False)
+            return json.dumps(_add_report(result, _write_report(p, original, content)), indent=2, ensure_ascii=False)
 
         return _write_logic(p, content, expected_sha256)
     except Exception as e:
@@ -493,7 +554,8 @@ def edit_file(path: str, old_text: str, new_text: str, expected_sha256: str, rep
     new_text is written literally: never use placeholder comments such as
     '// ... existing code ...' in it. Keep old_text short, covering only the lines you change.
 
-    The response shows the changed lines after the edit and the file's new SHA-256.
+    The response shows the changed lines after the edit, the file's new SHA-256 and, for code and
+    Markdown files, the new outline with line spans and a warning if a section was removed.
     Use the new SHA-256 as expected_sha256 for the next edit to the same file,
     without reading the file again.
 
@@ -533,7 +595,7 @@ def create_file(path: str, content: str) -> str:
         content (str): Content to write to the file.
 
     Returns:
-        str: JSON response indicating success or error.
+        str: JSON response indicating success or error, with the outline of code and Markdown files.
     """
     try:
         p = resolve_path(path)
@@ -557,7 +619,8 @@ def create_file(path: str, content: str) -> str:
         message = f"File created successfully.{note}"
         try:
             new_info = _get_file_info(p)
-            return json.dumps({"success": True, **asdict(new_info), "message": message}, indent=2, ensure_ascii=False)
+            result = {"success": True, **asdict(new_info), "message": message}
+            return json.dumps(_add_report(result, _write_report(p, None, content)), indent=2, ensure_ascii=False)
         except Exception:
             # Fallback if metadata retrieval fails
             return json.dumps({"success": True, "message": message}, indent=2, ensure_ascii=False)
@@ -565,15 +628,16 @@ def create_file(path: str, content: str) -> str:
         return json.dumps({"success": False, "error": "create_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
-def read_file_with_metadata(path: str, start_line: int | None = None, end_line: int | None = None, line_numbers: bool = False) -> str:
+def read_file_with_metadata(path: str, start_line: int | None = None, end_line: int | None = None, line_numbers: bool = False, section: str | None = None) -> str:
     """
     Reads a text file and returns its exact content along with its SHA-256 hash, line count,
     line ending, encoding and size. The content is shown as-is between the lines
     '----- BEGIN CONTENT -----' and '----- END CONTENT -----'.
 
     Long files are returned in parts of up to 1000 lines: the response then says which
-    start_line to use to read the next part. Use start_line and end_line to read only the
-    lines you need, e.g. around a line number found with a search tool.
+    start_line to use to read the next part. Read only what you need: a class, function or
+    Markdown heading by its name with section, or lines with start_line and end_line, e.g. a
+    line span from get_outline or around a line number found with a search tool.
 
     MANDATORY WORKFLOW:
     1. Read the file with this tool.
@@ -590,6 +654,8 @@ def read_file_with_metadata(path: str, start_line: int | None = None, end_line: 
         end_line (int, optional): The last line to read. Defaults to the end of the file.
         line_numbers (bool): If True, prefixes each line with its number as 'N| '. The prefixes
             are not part of the content. Defaults to False.
+        section (str, optional): The name of a class, function or Markdown heading to read, as shown
+            by get_outline, e.g. 'App.run', 'run' or 'Install'. Used instead of start_line and end_line.
 
     Returns:
         str: The file's metadata followed by its content as plain text, or an error message.
@@ -599,17 +665,30 @@ def read_file_with_metadata(path: str, start_line: int | None = None, end_line: 
         if not is_path_allowed(p):
             return _text_error("access_denied", access_denied_message(p))
         if p.is_dir():
-            return _text_error("is_a_directory", f"{p} is a directory. Use 'list_directory' to see its contents.")
+            return _text_error("is_a_directory", f"{_rel(p)} is a directory. Use 'list_directory' to see its contents.")
         if not p.exists():
-            return _text_error("file_not_found", f"File not found: {p}")
+            return _text_error("file_not_found", f"File not found: {_rel(p)}")
 
         size = p.stat().st_size
         if size > MAX_TEXT_FILE_BYTES:
             return _text_error("too_large", f"File is {size} bytes, larger than the {MAX_TEXT_FILE_BYTES} byte limit for reading text files. Find the relevant lines with search_text_in_files instead.")
 
         info = _get_file_info(p)
-        lines = _split_lines(_read_text(p, info.has_bom))
+        text = _read_text(p, info.has_bom)
+        lines = _split_lines(text)
         total = len(lines)
+
+        section_line = ""
+        if section:
+            if start_line is not None or end_line is not None:
+                return _text_error("invalid_arguments", "Give either section, or start_line and end_line, not both.")
+            found, error, message = locate_section(outline_text(text, p.suffix), section)
+            if not found:
+                if error == "section_not_found":
+                    message += f" Use get_outline(path='{_rel(p)}') to see the sections with their line spans."
+                return _text_error(error, message)
+            start_line, end_line = found.start, found.end
+            section_line = f"Section: {found.label} (lines {found.start}-{found.end})"
 
         start = 1 if start_line is None else int(start_line)
         end = total if end_line is None else min(int(end_line), total)
@@ -629,6 +708,7 @@ def read_file_with_metadata(path: str, start_line: int | None = None, end_line: 
                 break
         shortened = [n for n in shortened if n < start + len(shown)]
         truncated = start + len(shown) - 1 < end
+        requested_end = end
         end = start + len(shown) - 1 if total else end
 
         encoding = "utf-8 with BOM" if info.has_bom else "utf-8"
@@ -638,10 +718,12 @@ def read_file_with_metadata(path: str, start_line: int | None = None, end_line: 
         else:
             partial = start > 1 or end < total
             header.append(f"Lines: {start}-{end} of {total}" + (" (partial)" if partial else ""))
+        if section_line:
+            header.append(section_line)
         header.append(f"Line ending: {info.line_ending} | Encoding: {encoding} | Size: {info.size_bytes} bytes | Modified: {info.modified_at}")
         if truncated:
             header.append(f"Output limited: lines {start}-{end} of {total} are shown, as one read is limited to {MAX_READ_LINES} lines or {MAX_OUTPUT_CHARS} characters."
-                          f" Read the next part with start_line={end + 1}, or read only the lines you need with start_line and end_line (e.g. around a line number found with search_text_in_files).")
+                          f" Read the next part with start_line={end + 1}{f', end_line={requested_end}' if requested_end < total else ''}, or read only the lines you need with start_line and end_line (e.g. around a line number found with search_text_in_files).")
         if shortened:
             header.append(_shortened_lines_note(shortened))
         if total and (start > 1 or end < total):
@@ -674,7 +756,7 @@ def read_image(path: str) -> list[str | Image] | str:
             return _access_denied(p)
 
         if not p.is_file():
-            return json.dumps({"success": False, "error": "file_not_found", "message": f"File not found: {p}"}, indent=2, ensure_ascii=False)
+            return json.dumps({"success": False, "error": "file_not_found", "message": f"File not found: {_rel(p)}"}, indent=2, ensure_ascii=False)
 
         stats = p.stat()
         if stats.st_size > MAX_IMAGE_BYTES:
@@ -696,7 +778,7 @@ def read_image(path: str) -> list[str | Image] | str:
 
         metadata = json.dumps({
             "success": True,
-            "path": str(p),
+            "path": _rel(p),
             "mime_type": f"image/{image_format}",
             "size_bytes": stats.st_size,
             "modified_at": datetime.datetime.fromtimestamp(stats.st_mtime, tz=datetime.timezone.utc).isoformat()
@@ -722,7 +804,7 @@ def list_directory(path: str) -> str:
         if not is_path_allowed(p):
             return _access_denied(p)
         if not p.is_dir():
-            return json.dumps({"success": False, "error": "not_a_directory", "message": f"{p} is not a directory."}, indent=2, ensure_ascii=False)
+            return json.dumps({"success": False, "error": "not_a_directory", "message": f"{_rel(p)} is not a directory."}, indent=2, ensure_ascii=False)
 
         entries = []
         for entry in p.iterdir():
@@ -779,7 +861,7 @@ def create_directory(path: str) -> str:
             return json.dumps({"success": False, "error": "file_exists", "message": "A file already exists at this path."}, indent=2, ensure_ascii=False)
 
         p.mkdir(parents=True, exist_ok=True)
-        return json.dumps({"success": True, "message": f"Directory created: {p}"}, indent=2, ensure_ascii=False)
+        return json.dumps({"success": True, "message": f"Directory created: {_rel(p)}"}, indent=2, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"success": False, "error": "create_dir_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
 
@@ -804,15 +886,15 @@ def move_file(source: str, destination: str) -> str:
         if not is_path_allowed(dst):
             return _access_denied(dst, "Destination path")
         if contains_forbidden(src):
-            return json.dumps({"success": False, "error": "access_denied", "message": f"Source path contains forbidden or protected files or folders: {src}"}, indent=2, ensure_ascii=False)
+            return json.dumps({"success": False, "error": "access_denied", "message": f"Source path contains forbidden or protected files or folders: {_rel(src)}"}, indent=2, ensure_ascii=False)
 
         if not src.exists():
-            return json.dumps({"success": False, "error": "source_not_found", "message": f"Source not found: {src}"}, indent=2, ensure_ascii=False)
+            return json.dumps({"success": False, "error": "source_not_found", "message": f"Source not found: {_rel(src)}"}, indent=2, ensure_ascii=False)
         if dst.exists():
-            return json.dumps({"success": False, "error": "destination_exists", "message": f"Destination already exists: {dst}"}, indent=2, ensure_ascii=False)
+            return json.dumps({"success": False, "error": "destination_exists", "message": f"Destination already exists: {_rel(dst)}"}, indent=2, ensure_ascii=False)
 
         shutil.move(str(src), str(dst))
-        return json.dumps({"success": True, "message": f"Moved {src} to {dst}"}, indent=2, ensure_ascii=False)
+        return json.dumps({"success": True, "message": f"Moved {_rel(src)} to {_rel(dst)}"}, indent=2, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"success": False, "error": "move_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
 
@@ -832,16 +914,16 @@ def delete_file(path: str) -> str:
         if not is_path_allowed(p):
             return _access_denied(p)
         if contains_forbidden(p):
-            return json.dumps({"success": False, "error": "access_denied", "message": f"Path contains forbidden or protected files or folders: {p}"}, indent=2, ensure_ascii=False)
+            return json.dumps({"success": False, "error": "access_denied", "message": f"Path contains forbidden or protected files or folders: {_rel(p)}"}, indent=2, ensure_ascii=False)
         if not p.exists():
-            return json.dumps({"success": False, "error": "not_found", "message": f"Path not found: {p}"}, indent=2, ensure_ascii=False)
+            return json.dumps({"success": False, "error": "not_found", "message": f"Path not found: {_rel(p)}"}, indent=2, ensure_ascii=False)
 
         if p.is_dir():
             shutil.rmtree(p)
         else:
             p.unlink()
 
-        return json.dumps({"success": True, "message": f"Deleted: {p}"}, indent=2, ensure_ascii=False)
+        return json.dumps({"success": True, "message": f"Deleted: {_rel(p)}"}, indent=2, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"success": False, "error": "delete_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
 
@@ -849,7 +931,7 @@ def delete_file(path: str) -> str:
 def get_config() -> str:
     """
     Returns the configuration shared by all MCP servers: the allowed directory, forbidden and protected
-    paths and the output limit, followed by what each server sees: the files the maps and searches skip,
+    paths and the output limit, followed by what each server sees: the files the outline and searches skip,
     the git repository, the command registry and the context files.
     Use this tool to find out why a file is missing, a path is denied or a tool does not find something.
 
@@ -884,7 +966,7 @@ def get_config() -> str:
                 "max_line_chars": MAX_LINE_CHARS,
                 "max_list_entries": MAX_LIST_ENTRIES
             },
-            "map_and_search": {
+            "outline_and_search": {
                 "ignored_dirs": sorted(IGNORED_DIRS),
                 "ignored_dirs_source": "default" if CONFIG.get("ignored_dirs") is None else "tools config",
                 "gitignore": {
@@ -892,7 +974,7 @@ def get_config() -> str:
                     "found": GITIGNORE_PATH.exists(),
                     "patterns": gitignore_patterns
                 },
-                "map_file_types": sorted(ALL_ALLOWED_SUFFIXES)
+                "outline_file_types": sorted(OUTLINE_SUFFIXES)
             },
             "git": {
                 "repository_root": repo_root.as_posix() if repo_root else None
@@ -910,8 +992,8 @@ def get_config() -> str:
                 "All servers read the same config_file, so they all use the same allowed_dir, forbidden_paths and max_output_chars.",
                 "Only paths within allowed_dir can be accessed. Relative paths given to the tools are resolved against allowed_dir.",
                 "Forbidden paths and everything inside forbidden folders are denied and hidden, and so are protected files: files named in protected_file_names and the config_file itself.",
-                "The map and search tools also skip folders named in ignored_dirs at any depth, files matching the .gitignore patterns and, for search, binary files.",
-                "The maps only list files of the map_file_types.",
+                "The outline and search tools also skip folders named in ignored_dirs at any depth, files matching the .gitignore patterns and, for search, binary files.",
+                "get_outline lists every file that is not ignored, with the sections of the outline_file_types.",
                 "Git's own .gitignore rules decide which untracked files the git tools list. If repository_root is null, allowed_dir is not in a git repository.",
                 "The web search tools only work if ollama_api_key_set is true. The key itself is never shown.",
                 "Responses longer than max_output_chars are cut short with an 'Output limited:' message that explains how to see the rest."

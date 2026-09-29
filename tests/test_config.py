@@ -101,10 +101,10 @@ def test_get_config_reports_the_shared_settings(project):
     assert config["shared"]["forbidden_paths"] == ["secret"]
     assert config["shared"]["max_output_chars"] == 5000
     assert config["shared"]["protected_file_names"] == [".mcp.json"]
-    assert config["map_and_search"]["ignored_dirs_source"] == "default"
+    assert config["outline_and_search"]["ignored_dirs_source"] == "default"
 
 def test_get_config_reports_custom_ignored_dirs(project):
     project.configure(ignored_dirs=["coverage"])
     config = json.loads(project.load("filesystem").get_config())
-    assert config["map_and_search"]["ignored_dirs"] == ["coverage"]
-    assert config["map_and_search"]["ignored_dirs_source"] == "tools config"
+    assert config["outline_and_search"]["ignored_dirs"] == ["coverage"]
+    assert config["outline_and_search"]["ignored_dirs_source"] == "tools config"

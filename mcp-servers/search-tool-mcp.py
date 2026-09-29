@@ -9,9 +9,12 @@ from mcp_common import (
     ALLOWED_DIR,
     IGNORED_DIRS,
     MAX_OUTPUT_CHARS,
+    access_denied_message,
     display_path,
     is_ignored,
+    is_path_allowed,
     load_gitignore_patterns,
+    resolve_path,
     walk
 )
 
@@ -33,16 +36,13 @@ def _resolve_scope(path: str | None, gitignore_patterns: list[str]) -> tuple[Pat
     """
     if not path:
         return ALLOWED_DIR, None
-    p = Path(path)
-    if not p.is_absolute():
-        p = ALLOWED_DIR / p
-    p = p.resolve()
-    if not p.is_relative_to(ALLOWED_DIR):
-        return p, f"Error: Path '{path}' is not within the allowed directory {ALLOWED_DIR.as_posix()}."
+    p = resolve_path(path)
+    if not is_path_allowed(p):
+        return p, f"Error: {access_denied_message(p)}"
     if not p.exists():
         return p, f"Error: Path '{path}' does not exist in the allowed directory {ALLOWED_DIR.as_posix()}."
     if p != ALLOWED_DIR and is_ignored(p, ALLOWED_DIR, IGNORED_DIRS, gitignore_patterns):
-        return p, f"Error: Path '{path}' is ignored or forbidden. Use get_config to see why."
+        return p, f"Error: Path '{path}' is ignored: it is in an ignored folder or matched by .gitignore. Use get_config to see why."
     return p, None
 
 def _glob_to_regex(pattern: str) -> re.Pattern:
@@ -191,8 +191,8 @@ def search_text_in_files(query: str, case_sensitive: bool = False, path: str | N
     Very long lines are shortened around the match.
 
     Args:
-        query (str): The text or regex pattern to search for. Escape regex special characters
-            such as '(' or '.' to search for them literally.
+        query (str): The text or regex pattern to search for. If it is not a valid regex
+            (e.g. 'foo(' or 'a[0'), it is searched for as literal text.
         case_sensitive (bool): Whether the search should be case-sensitive. The default is False
         path (str, optional): A folder or file to limit the search to, relative to the allowed
             directory (e.g., 'src/components'). Defaults to the whole allowed directory.
@@ -207,10 +207,13 @@ def search_text_in_files(query: str, case_sensitive: bool = False, path: str | N
     """
     try:
         flags = 0 if case_sensitive else re.IGNORECASE
+        # Small models often search for code such as 'functionName(', which is not a valid regex
+        literal_note = ""
         try:
             pattern = re.compile(query, flags)
         except re.error as e:
-            return f"Error: Invalid regular expression '{query}': {e}. Escape special characters to search for them literally."
+            pattern = re.compile(re.escape(query), flags)
+            literal_note = f"Note: '{query}' is not a valid regular expression ({e}), so it was searched for as literal text.\n"
 
         gitignore_patterns = load_gitignore_patterns()
         scope, error = _resolve_scope(path, gitignore_patterns)
@@ -253,9 +256,9 @@ def search_text_in_files(query: str, case_sensitive: bool = False, path: str | N
         location = display_path(scope, ALLOWED_DIR) if scope != ALLOWED_DIR else ALLOWED_DIR.as_posix()
         if not total_matches:
             filter_note = f" (files matching '{file_pattern}')" if file_pattern else ""
-            return f"No matches found for '{query}' in {location}{filter_note}"
+            return f"{literal_note}No matches found for '{query}' in {location}{filter_note}"
 
-        result = f"Found {total_matches} matches in {matched_files} files in {location}:\n\n"
+        result = f"{literal_note}Found {total_matches} matches in {matched_files} files in {location}:\n\n"
         if shown_matches < total_matches:
             hints = []
             suggestion = _suggest_folder(scope, file_matches) if scope.is_dir() else None

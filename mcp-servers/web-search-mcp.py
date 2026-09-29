@@ -98,7 +98,7 @@ def web_search(query: str, max_results: int = 3) -> str:
             "message": "" if results else "No results found. Try a different or shorter query."
         }, indent=2, ensure_ascii=False)
     except Exception as e:
-        return _json_error("search_failed", f"Web search failed: {e}", with_traceback=True)
+        return _json_error("search_error", f"Web search failed: {e}", with_traceback=True)
 
 @mcp.tool()
 def web_fetch(url: str, start_char: int = 0) -> str:
@@ -145,7 +145,7 @@ def web_fetch(url: str, start_char: int = 0) -> str:
 
         return "\n".join(header) + f"\n{CONTENT_START}\n{shown}\n{CONTENT_END}"
     except Exception as e:
-        return _text_error("fetch_failed", f"Fetching the page failed: {e}\n{traceback.format_exc()}")
+        return _text_error("fetch_error", f"Fetching the page failed: {e}\n{traceback.format_exc()}")
 
 if __name__ == "__main__":
     mcp.run()

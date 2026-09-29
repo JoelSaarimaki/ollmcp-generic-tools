@@ -106,7 +106,7 @@ def test_web_search_limits_long_results(project):
 def test_web_search_reports_errors(web):
     web.CLIENT = FakeClient(error=RuntimeError("unauthorized"))
     data = json.loads(web.web_search("python"))
-    assert data["error"] == "search_failed" and "unauthorized" in data["message"]
+    assert data["error"] == "search_error" and "unauthorized" in data["message"]
 
 def test_web_fetch_returns_the_page(web):
     web.CLIENT = FakeClient(page=page('code "quoted"\nline 2', links=["https://example.com/a"]))
@@ -151,4 +151,4 @@ def test_web_fetch_rejects_start_char_beyond_the_content(web):
 def test_web_fetch_reports_errors(web):
     web.CLIENT = FakeClient(error=RuntimeError("timed out"))
     response = web.web_fetch("https://example.com")
-    assert response.startswith("Error (fetch_failed):") and "timed out" in response
+    assert response.startswith("Error (fetch_error):") and "timed out" in response

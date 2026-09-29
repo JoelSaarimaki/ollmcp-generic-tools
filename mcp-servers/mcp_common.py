@@ -26,11 +26,6 @@ DEFAULT_IGNORED_DIRS = {
     ".venv", "venv", "env", ".pytest_cache", ".idea", ".vscode",
     "target", "out", ".mypy_cache", ".ruff_cache"
 }
-# File types included in the codebase maps
-PYTHON_SUFFIXES = {".py"}
-JS_TS_SUFFIXES = {".js", ".jsx", ".ts", ".tsx"}
-OTHER_SUFFIXES = {".md", ".json", ".css", ".scss", ".html"}
-ALL_ALLOWED_SUFFIXES = PYTHON_SUFFIXES | JS_TS_SUFFIXES | OTHER_SUFFIXES
 
 # --- Config Loading ---
 
@@ -216,8 +211,8 @@ def access_denied_message(path: Path, label: str = "Path") -> str:
     if is_protected(path):
         return f"{label} is protected: '{path.name}' contains the MCP server or tools configuration and cannot be accessed."
     if is_forbidden(path):
-        return f"{label} is forbidden: {path}"
-    return f"{label} is not within the allowed directory: {ALLOWED_DIR}"
+        return f"{label} is forbidden: {display_path(path, ALLOWED_DIR)}"
+    return f"{label} is not within the allowed directory: {ALLOWED_DIR.as_posix()}"
 
 def display_path(path: Path, base_dir: Path) -> str:
     """

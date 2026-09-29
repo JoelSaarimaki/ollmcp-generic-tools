@@ -20,6 +20,12 @@ For the design principles behind the servers and the planned improvements, see [
     pip install ollmcp
     ```
 
+3.  **Install the packages the servers use**:
+    The servers are developed and tested with Python 3.14 and need at least Python 3.10. They use the `mcp` package, and `web-search-mcp` also uses `ollama`:
+    ```bash
+    pip install mcp ollama
+    ```
+
 ### Configuration
 
 The tools are configured with two files:
@@ -40,7 +46,7 @@ The tools are configured with two files:
 }
 ```
 
-Add every server the same way (see this repository's [`.mcp.json`](.mcp.json)). The server scripts share code in `mcp-servers/mcp_common.py`, so keep all the scripts in the same folder. The scripts, the tools config file and the special directories (`_context`, `_instructions` and `_commands`) do **not** need to be located within your project folder.
+Add every server the same way (see this repository's [`.mcp.json`](.mcp.json)). The server scripts share code in `mcp-servers/mcp_common.py` (configuration and access checks) and `mcp-servers/mcp_outline.py` (the outline parsers), so keep all the scripts in the same folder. The scripts, the tools config file and the special directories (`_context`, `_instructions` and `_commands`) do **not** need to be located within your project folder.
 
 ### Tools config file
 
@@ -64,15 +70,15 @@ Relative paths are resolved against the folder of the config file, except `forbi
 
 | Setting | Description |
 |---|---|
-| `allowed_dir` | The project directory the tools can access. Relative paths given to the tools are resolved against it, so a path returned by one tool (e.g. `src/app.py` from a search) works as-is in the others. To focus the AI on part of the project, such as `src`, it can limit maps and searches with their `path` argument. (Required) |
+| `allowed_dir` | The project directory the tools can access. Relative paths given to the tools are resolved against it, so a path returned by one tool (e.g. `src/app.py` from a search) works as-is in the others. To focus the AI on part of the project, such as `src`, it can limit outlines and searches with their `path` argument. (Required) |
 | `forbidden_paths` | List of folders and/or files the tools must never access, even within `allowed_dir`. See [Forbidden paths](#forbidden-paths). (Optional) |
 | `max_output_chars` | The largest size of a tool response in characters, about 4 characters per token. Lower it for models with small context windows, e.g. `12000` for an 8k-token context. See [Output limits](#output-limits). (Optional, defaults to `40000`, at least `2000`) |
-| `gitignore_path` | The `.gitignore` file used by the map and search tools. (Optional, defaults to `.gitignore` in `allowed_dir`) |
+| `gitignore_path` | The `.gitignore` file used by the outline and search tools. (Optional, defaults to `.gitignore` in `allowed_dir`) |
 | `commands_config` | The command registry of `commands-mcp`. See [commands-mcp](#commands-mcp). (Optional) |
 | `context_folder` | The folder of the context Markdown files of `context-record-mcp`. (Optional) |
 | `read_only_files` | List of files maintained by you, such as project instructions, that the AI can read with `context-record-mcp` but not change or remove. They can be located anywhere, and are read by their file name. (Optional) |
 | `ollama_api_key` | The Ollama API key used by `web-search-mcp`. Create one at [ollama.com/settings/keys](https://ollama.com/settings/keys). The key is never shown to the AI, as the config file is [protected](#protected-files). If the config file is committed to git, do not commit the key. (Optional, without it the web search tools only return a `not_configured` error) |
-| `ignored_dirs` | List of folder names the map and search tools skip at any depth. Replaces the defaults completely. See [Ignored directories](#ignored-directories). (Optional, defaults to `node_modules`, `.git`, `build` and other common build and cache folders) |
+| `ignored_dirs` | List of folder names the outline and search tools skip at any depth. Replaces the defaults completely. See [Ignored directories](#ignored-directories). (Optional, defaults to `node_modules`, `.git`, `build` and other common build and cache folders) |
 
 The AI can see the effective configuration with the `get_config` tool of `safe-filesystem-mcp`.
 
@@ -137,23 +143,35 @@ This tool manages a context folder containing Markdown files, allowing for listi
 
 It also gives the AI your project instructions: list them in `read_only_files`, and they are listed and read first, marked `(read-only)`, while writing, appending to or removing them is refused. A context file with the same name as a read-only file is hidden and cannot be created, so it cannot take the instructions' place.
 
-- **list_context_files** Lists all Markdown files in the context folder and the read-only files.
-- **read_context_file** Reads the content of a specific Markdown file in the context folder, or of a read-only file.
-- **write_context_file** Creates a new Markdown file or overwrites an existing one in the context folder.
-- **append_to_context_file** Appends content to a specific Markdown file in the context folder.
-- **read_all_context_files** Reads the read-only files and all Markdown files in the context folder at once. Meant to be called at the start of a session.
+- **list_context_files** Lists the read-only files and all Markdown files in the context folder, with their line counts and headings with line spans.
+- **read_context_file** Reads a Markdown file in the context folder, or a read-only file: the whole file, the section of one heading (`section`), or a range of lines (`start_line`, `end_line`). Long files are read in parts.
+- **write_context_file** Creates a new Markdown file or overwrites an existing one in the context folder. The response shows the new headings with their line spans, and warns if headings of the old content are gone.
+- **append_to_context_file** Appends content to a specific Markdown file in the context folder, and shows its headings with their line spans.
+- **read_all_context_files** Reads the read-only files and all Markdown files in the context folder at once. Context files that do not fit are shown as their headings with line spans, to be read by section with `read_context_file`. Meant to be called at the start of a session.
 - **remove_context_file** Removes a specific Markdown file from the context folder.
 
 Read-only only applies to `context-record-mcp`. If the instructions file is inside the project, `safe-filesystem-mcp` can still change it: add its folder (e.g. `_instructions`) to `forbidden_paths` to prevent that. `context-record-mcp` does not use `forbidden_paths`, so it can still read the file.
 
 ### generate-map-mcp
 
-Generates a comprehensive structure map and summary of a codebase, supporting Python (via AST) and JS/TS (via regex).
+Gives the AI an outline of the project, so that it can find the code it needs and then read only that part, instead of reading whole files or a map that is cut off at the output limit. The parsers are in `mcp_outline.py`: Python via `ast`, JS/TS via regular expressions (code in comments and strings is ignored), and Markdown by its headings.
 
-- **generate_codebase_map** Generates a structuremap of the codebase, optionally limited to a subfolder (`path`). Lists for each file:
-  - Python: functions, classes and methods, docstring summaries, and calls to the project's own functions and classes.
-  - JS/TS: local imports, functions, React components and hooks, classes and methods, interfaces, types, enums, exported constants, default and named exports, re-exports and JSDoc summaries. Code in comments is ignored.
-- **generate_file_map** Generates the file tree map of the codebase without detailed summaries, optionally limited to a subfolder (`path`).
+- **get_outline** Returns an outline with the line span (`first-last`) of each section.
+  - For a folder (by default the whole allowed directory): every file that is not ignored, with its line count, and for Python, JS/TS and Markdown files their sections: classes and methods, functions, React components and hooks, interfaces, types, enums, exported constants, blocks of top-level statements, and headings, with docstring and JSDoc summaries.
+  - For a file (`path='src/app.py'`): all its sections with their summaries, and for Python the calls to the project's own functions and classes, and for JS/TS the local imports, exports and re-exports.
+
+```
+src/app.py (120 lines): Application entry point.
+  1-16 docstring, imports, assignments: LIMIT, TIMEOUT
+  18-60 class App: Main application
+    20-34 run(): Starts the server
+  63-120 main(): Entry point
+docs/guide.md (80 lines)
+  1-80 # Guide
+    13-40 ## Install
+```
+
+The AI then reads a section by its name, e.g. `read_file_with_metadata(path, section="App.run")`, or by its line span. An outline that does not fit in `max_output_chars` is not cut short: its detail is reduced step by step until it fits, first leaving out the summaries, then showing only top-level sections, then only the files with their section counts, and finally only the files in the folder and its subfolders with their file counts. The response says what was left out and suggests subfolders to outline with `path`.
 
 ### git-diff-mcp
 
@@ -164,6 +182,34 @@ Provides tools to inspect git history and differences for files within a reposit
 - **get_file_history** Retrieves the commit history and associated diffs for a specified file.
 - **get_git_status** Returns the results of `git status`. Also tells whether a folder is in a git repository: if not, the error is `not_a_repository`.
 
+### safe-filesystem-mcp
+
+Provides safe and robust file system operations, including metadata retrieval and atomic writes.
+
+- **write_file** Safely replaces the whole content of an existing file with hash validation. Rejects placeholder comments such as `// ... existing code ...` and warns if the file shrinks to less than half.
+- **edit_file** Changes part of an existing file by replacing an exact piece of text, with hash validation. Keeps the file's line endings and BOM, and shows the changed lines, the new SHA-256 and the file's outline after the edit.
+- **create_file** Creates a new file with the provided content, and shows its outline.
+- **read_file_with_metadata** Reads a text file and returns its exact content along with metadata (sha256, line count, encoding, etc.). Can read a class, function or Markdown heading by its name (`section`, e.g. `App.run` or `Install`) or a range of lines (`start_line`, `end_line`) with optional line numbers, and reads long files in parts of up to 1000 lines.
+- **read_image** Reads a PNG, JPEG, GIF or WebP image (up to 10 MB) and returns it as an image the AI can see, along with its metadata. Requires a vision-capable model; with other models, ollmcp skips the image and shows a warning.
+- **list_directory** Lists all files and directories within the specified path.
+- **create_directory** Creates a new directory at the specified path.
+- **move_file** Moves or renames a file or directory.
+- **delete_file** Deletes a file or a directory.
+- **get_config** Returns the configuration shared by all servers (allowed directory, forbidden and protected paths, output limit) and what each server sees: the files the outline and searches skip, the git repository, the command registry and the context files. Helps the AI find out why a file is missing or a path is denied.
+
+The file reading and editing tools are designed to let local AI models read and edit files accurately:
+- File content is returned as plain text between `----- BEGIN CONTENT -----` and `----- END CONTENT -----` markers, not inside JSON, so quotes, backslashes and line breaks appear exactly as in the file and can be copied into `edit_file` as-is.
+- `edit_file` tolerates common copying mistakes: line number prefixes copied from `read_file_with_metadata` are removed, and trailing whitespace does not need to match. If the text is not found, the error shows the closest matching lines to copy.
+- Placeholder comments such as `// ... existing code ...` are rejected, as they would otherwise replace real code.
+- After every write to a Python, JS/TS or Markdown file (`edit_file`, `write_file`, `create_file`), the response shows the file's outline with line spans, lists the sections that were added, and warns about sections that are no longer in the file and about a Python file that no longer parses. An accidental overwrite or deletion is noticed right away, instead of relying on the AI to spot a missing entry.
+
+### search-tool-mcp
+
+Performs text or regex searches across files in a specified directory.
+
+- **search_text_in_files** Search for text or regex patterns from code files in the codebase. A query that is not a valid regex, such as `foo(`, is searched for as literal text, and the response says so. Can be limited to a folder or file (`path`) and to matching file names (`file_pattern`, e.g. `*.py`), and can show lines around each match (`context_lines`). Very long lines are shortened around the match.
+- **search_files_by_pattern** Searches for files and directories that match a glob-style pattern, such as `src/**/*.test.ts`.
+
 ### web-search-mcp
 
 Searches the web and reads web pages using Ollama's hosted [web search API](https://docs.ollama.com/capabilities/web-search). Requires `ollama_api_key` in the [tools config file](#tools-config-file) and the `ollama` Python package (`pip install ollama`). The queries and URLs are sent to ollama.com.
@@ -172,33 +218,6 @@ Searches the web and reads web pages using Ollama's hosted [web search API](http
 - **web_fetch** Fetches a web page and returns its title, links and text content. The content is shown as-is between `----- BEGIN CONTENT -----` and `----- END CONTENT -----` markers, so code copied from a page is not JSON-escaped. Long pages are read in parts with `start_char`.
 
 Web pages can contain text written to mislead the AI (prompt injection). Review the AI's changes when it has read web content.
-
-### safe-filesystem-mcp
-
-Provides safe and robust file system operations, including metadata retrieval and atomic writes.
-
-- **write_file** Safely replaces the whole content of an existing file with hash validation. Rejects placeholder comments such as `// ... existing code ...` and warns if the file shrinks to less than half.
-- **edit_file** Changes part of an existing file by replacing an exact piece of text, with hash validation. Keeps the file's line endings and BOM, and shows the changed lines and the new SHA-256 after the edit.
-- **create_file** Creates a new file with the provided content.
-- **read_file_with_metadata** Reads a text file and returns its exact content along with metadata (sha256, line count, encoding, etc.). Can read a range of lines (`start_line`, `end_line`) with optional line numbers, and reads long files in parts of up to 1000 lines.
-
-The file reading and editing tools are designed to let local AI models read and edit files accurately:
-- File content is returned as plain text between `----- BEGIN CONTENT -----` and `----- END CONTENT -----` markers, not inside JSON, so quotes, backslashes and line breaks appear exactly as in the file and can be copied into `edit_file` as-is.
-- `edit_file` tolerates common copying mistakes: line number prefixes copied from `read_file_with_metadata` are removed, and trailing whitespace does not need to match. If the text is not found, the error shows the closest matching lines to copy.
-- Placeholder comments such as `// ... existing code ...` are rejected, as they would otherwise replace real code.
-- **read_image** Reads a PNG, JPEG, GIF or WebP image (up to 10 MB) and returns it as an image the AI can see, along with its metadata. Requires a vision-capable model; with other models, ollmcp skips the image and shows a warning.
-- **list_directory** Lists all files and directories within the specified path.
-- **create_directory** Creates a new directory at the specified path.
-- **move_file** Moves or renames a file or directory.
-- **delete_file** Deletes a file or a directory.
-- **get_config** Returns the configuration shared by all servers (allowed directory, forbidden and protected paths, output limit) and what each server sees: the files the maps and searches skip, the git repository, the command registry and the context files. Helps the AI find out why a file is missing or a path is denied.
-
-### search-tool-mcp
-
-Performs text or regex searches across files in a specified directory.
-
-- **search_text_in_files** Search for text or regex patterns from code files in the codebase. Can be limited to a folder or file (`path`) and to matching file names (`file_pattern`, e.g. `*.py`), and can show lines around each match (`context_lines`). Very long lines are shortened around the match.
-- **search_files_by_pattern** Searches for files and directories that match a glob-style pattern, such as `src/**/*.test.ts`.
 
 ## Details and patterns
 
@@ -223,7 +242,7 @@ Limitations:
 Files named `.mcp.json` contain the MCP server configuration, which servers run and which tools config file they read, and the [tools config file](#tools-config-file) contains the allowed directory, forbidden paths and command registry. If the AI could change them, it could remove its own restrictions, which would take effect the next time the servers start. Therefore `.mcp.json` files, at any depth, and the tools config file in use are always protected, regardless of `forbidden_paths` (defined as `PROTECTED_FILE_NAMES` and `CONFIG_PATH` in `mcp_common.py`):
 
 - `safe-filesystem-mcp` denies reading, writing, editing, moving and deleting them, and creating a file or renaming a file to that name. Folders containing one cannot be moved or deleted either.
-- `generate-map-mcp` and `search-tool-mcp` leave them out of maps and search results.
+- `generate-map-mcp` and `search-tool-mcp` leave them out of outlines and search results.
 - `git-diff-mcp` leaves them out of diffs, status and history.
 - `context-record-mcp` only accepts plain `.md` file names directly inside its context folder, so it cannot reach them either.
 
@@ -250,7 +269,7 @@ For the same reason, keep the `mcp-servers` scripts and the `commands_config` re
 A list in the config file replaces the defaults completely: copy the list above and add or remove names to suit the project. For example, remove `build` or `env` if the project has real source code in folders with those names, or add `coverage` or `.gradle`. An empty list skips no folders by name.
 
 - The entries are folder names, not paths: `build` skips every folder named `build`. To exclude one specific folder, such as `docs/build`, add it to `forbidden_paths` instead.
-- These folders are skipped without being entered, so even a large `node_modules` does not slow the tools down. Removing `node_modules` from the list makes maps and searches of JS/TS projects much slower.
+- These folders are skipped without being entered, so even a large `node_modules` does not slow the tools down. Removing `node_modules` from the list makes outlines and searches of JS/TS projects much slower.
 - Ignored folders are not a security measure: `safe-filesystem-mcp` and `git-diff-mcp` can still access them. Use `forbidden_paths` for files the AI must not access.
 
 Both tools additionally skip files matched by the `.gitignore` file (see `gitignore_path`). `search-tool-mcp` also skips binary files.
@@ -261,22 +280,23 @@ Both tools additionally skip files matched by the `.gitignore` file (see `gitign
 
 ### Output limits
 
-Local models have small context windows, so every tool response is limited to `max_output_chars` characters (40 000 by default, about 10 000 tokens). When a limit is applied, the response contains a message starting with `Output limited:` that says what was left out and exactly how to get the rest, for example which `start_line` to read next or which folder to map with `path`. In JSON responses, the message is in the `output_limited` field.
+Local models have small context windows, so every tool response is limited to `max_output_chars` characters (40 000 by default, about 10 000 tokens). When a limit is applied, the response contains a message starting with `Output limited:` that says what was left out and exactly how to get the rest, for example which `start_line` to read next or which folder to outline with `path`. In JSON responses, the message is in the `output_limited` field.
 
 | Tool | Limit | How the rest can be seen |
 |---|---|---|
 | `read_file_with_metadata` | 1000 lines or `max_output_chars` per read; lines over 2000 characters are shortened; files over 50 MB are not read | Next part with `start_line`; long lines can still be edited using a unique part of the shown text |
 | `edit_file` | Shows up to 40 changed lines after the edit | `read_file_with_metadata` from the given line |
+| `edit_file`, `write_file`, `create_file` | The outline after a write is limited to 2500 characters, or `max_output_chars / 8` if smaller: then only top-level sections are shown, or the list is cut short | `get_outline` for the file |
 | `list_directory` | Up to 250 entries, fewer for small budgets; folders are listed first | `search_files_by_pattern` with a suggested pattern |
-| `generate_codebase_map` | `max_output_chars`; the file tree is limited to 400 lines; files over 1 MB are not parsed | Suggested subfolders to map with `path`, with their file counts |
-| `generate_file_map` | 400 lines | Suggested subfolders to map with `path` |
+| `get_outline` | `max_output_chars`: the detail is reduced step by step instead of cutting the outline; files over 1 MB are not outlined; folders with over 1000 files are listed by subfolder only | Suggested subfolders to outline with `path`, with their file counts, or one file with `path` |
 | `search_text_in_files` | 100 matches or `max_output_chars`; lines over 300 characters are shortened | A suggested `path` with the most matches, `file_pattern`, fewer `context_lines` |
 | `search_files_by_pattern` | 100 matches | A more specific pattern |
 | `get_file_diff`, `get_file_history`, `get_git_status` | `max_output_chars` | Read the file instead, a smaller `limit`, or a `path` |
 | `get_all_changes_diff` | `max_output_chars`; up to 200 changed and 200 untracked files are listed | `get_file_diff` for the files listed in `changed_files`, or a `path` |
 | `run_predefined_command` | `max_output_chars`, split between stdout and stderr; the middle of long output is cut, as errors are usually at the end | A narrower command, such as tests for a single file |
-| `read_all_context_files` | `max_output_chars`; read-only files always come first, then whole context files are left out | `read_context_file` for the listed files |
-| `read_context_file` | `max_output_chars` | Keep context and read-only files short |
+| `read_all_context_files` | `max_output_chars`; read-only files always come first, then context files that do not fit are shown as their headings with line spans, or left out | `read_context_file` with `section` or `start_line` for the listed files |
+| `read_context_file` | `max_output_chars` per read | Next part with `start_line`; keep context and read-only files short |
+| `list_context_files` | `max_output_chars`: only top-level headings, or only the file names, are shown | `read_context_file` |
 | `web_search` | `max_output_chars`, shared equally by the results | `web_fetch` for a whole page |
 | `web_fetch` | `max_output_chars` per part; up to 50 links, listed in the first part only | Next part with `start_char` |
 

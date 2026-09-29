@@ -42,8 +42,23 @@ def test_context_lines_are_shown_grep_style(project):
     response = project.load("search").search_text_in_files("three", context_lines=1)
     assert "a.py-2- two\na.py:3: three\na.py-4- four" in response
 
-def test_invalid_regex_explains_how_to_search_literally(project):
-    assert "Escape special characters" in project.load("search").search_text_in_files("foo(")
+@pytest.mark.parametrize("query", ["foo(", "items[0", "a+*"])
+def test_invalid_regex_is_searched_as_literal_text(project, query):
+    project.write("a.py", f"x = {query}\nfoo\nitems\n")
+    response = project.load("search").search_text_in_files(query)
+    assert response.startswith(f"Note: '{query}' is not a valid regular expression")
+    assert "searched for as literal text" in response
+    assert "Found 1 matches in 1 files" in response and f"a.py:1: x = {query}" in response
+
+def test_invalid_regex_without_matches_still_says_it_was_literal(project):
+    project.write("a.py", "x = 1\n")
+    response = project.load("search").search_text_in_files("missing(")
+    assert "searched for as literal text" in response and "No matches found for 'missing('" in response
+
+def test_valid_regex_is_used_as_a_regex(project):
+    project.write("a.py", "value_1\nvalue_22\n")
+    response = project.load("search").search_text_in_files(r"value_\d+$")
+    assert "Found 2 matches" in response and "Note:" not in response
 
 def test_no_matches_message(search_project):
     assert search_project.load("search").search_text_in_files("zzz", file_pattern="*.py").startswith("No matches found for 'zzz'")

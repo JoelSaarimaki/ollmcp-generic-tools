@@ -215,3 +215,101 @@ def test_json_responses_keep_non_ascii_characters_readable(project):
     project.write("ääkköset.txt")
     response = project.load("filesystem").list_directory(".")
     assert "ääkköset.txt" in response and "\\u00e4" not in response
+
+# --- Sections and outlines ---
+
+SERVICE = ('class Service:\n'
+           '    """A service."""\n'
+           '\n'
+           '    def start(self):\n'
+           '        return 1\n'
+           '\n'
+           '    def stop(self):\n'
+           '        return 2\n'
+           '\n'
+           '\n'
+           'def main():\n'
+           '    Service().start()\n')
+
+@pytest.fixture
+def service(project):
+    project.write("service.py", SERVICE)
+    return project.load("filesystem")
+
+@pytest.mark.parametrize("section", ["Service.stop", "stop", "stop()"])
+def test_read_a_section_by_name(service, section):
+    response = service.read_file_with_metadata("service.py", section=section)
+    assert "Section: stop() (lines 7-8)" in response and "Lines: 7-8 of 12 (partial)" in response
+    assert content_of(response) == "    def stop(self):\n        return 2"
+
+def test_read_a_markdown_section_by_heading(project):
+    project.write("guide.md", "# Guide\n\n## Install\npip install x\n\n## Use\nRun it.\n")
+    response = project.load("filesystem").read_file_with_metadata("guide.md", section="Install")
+    assert content_of(response) == "## Install\npip install x"
+
+@pytest.mark.parametrize("kwargs, error, message", [
+    ({"section": "missing"}, "section_not_found", "Sections in the file: 'Service', 'Service.start', 'Service.stop', 'main'. Use get_outline(path='service.py')"),
+    ({"section": "stop", "start_line": 1}, "invalid_arguments", "not both"),
+])
+def test_section_read_errors(service, kwargs, error, message):
+    response = service.read_file_with_metadata("service.py", **kwargs)
+    assert response.startswith(f"Error ({error}):") and message in response
+
+def test_sections_need_an_outlined_file_type(project):
+    project.write("config.toml", "a = 1\n")
+    response = project.load("filesystem").read_file_with_metadata("config.toml", section="a")
+    assert response.startswith("Error (no_outline):") and "start_line and end_line" in response
+
+def test_long_section_is_read_in_parts_within_the_section(project):
+    project.write("big.py", "def big():\n" + "".join(f"    x_{i} = {i}\n" for i in range(1500)) + "\ndef after():\n    pass\n")
+    response = project.load("filesystem").read_file_with_metadata("big.py", section="big")
+    assert "Read the next part with start_line=1001, end_line=1501" in response
+
+def test_edit_shows_the_outline_and_warns_about_removed_sections(service):
+    sha = sha_of(service.read_file_with_metadata("service.py"))
+    response = service.edit_file("service.py", "    def stop(self):\n        return 2\n", "", sha)
+    assert "Warning: these sections are no longer in the file: class Service > stop()." in response
+    assert response.endswith("Outline after the edit:\n1-5 class Service\n  4-5 start()\n9-10 main()")
+
+def test_edit_reports_added_sections_without_a_warning(service):
+    sha = sha_of(service.read_file_with_metadata("service.py"))
+    response = service.edit_file("service.py", "def main():", "def helper():\n    pass\n\n\ndef main():", sha)
+    assert "Warning" not in response and response.endswith("Added sections: helper()")
+
+def test_edit_warns_when_the_file_no_longer_parses(service):
+    sha = sha_of(service.read_file_with_metadata("service.py"))
+    response = service.edit_file("service.py", "def main():", "def main(:", sha)
+    assert "Warning: the file could be outlined before this change, but not anymore: Python syntax error at line 11" in response
+
+def test_edit_of_a_file_without_an_outline_has_no_outline(project):
+    project.write("notes.txt", "a\nb\n")
+    fs = project.load("filesystem")
+    response = fs.edit_file("notes.txt", "a", "c", sha_of(fs.read_file_with_metadata("notes.txt")))
+    assert "Outline" not in response
+
+def test_write_file_reports_removed_sections(service):
+    sha = sha_of(service.read_file_with_metadata("service.py"))
+    result = json.loads(service.write_file("service.py", "def main():\n    pass\n", sha))
+    assert result["success"] and result["outline"] == ["1-2 main()"]
+    assert result["removed_sections"] == ["class Service", "class Service > start()", "class Service > stop()"]
+    assert "no longer in the file" in result["warning"]
+
+def test_create_file_shows_the_outline(project):
+    result = json.loads(project.load("filesystem").create_file("new.md", "# Title\n## Part\n"))
+    assert result["outline"] == ["1-2 # Title", "  2-2 ## Part"] and "warning" not in result
+
+def test_responses_show_paths_relative_to_the_allowed_directory(service):
+    response = service.read_file_with_metadata("service.py")
+    assert response.startswith("File: service.py\n")
+    edit = service.edit_file("service.py", "return 1", "return 3", sha_of(response))
+    assert edit.startswith("Edited service.py:")
+    assert json.loads(service.write_file("service.py", SERVICE, sha_of(edit)))["path"] == "service.py"
+
+def test_edit_response_stays_within_the_limit(project):
+    project.write("wide.py", "".join(f"x_{i} = '{'a' * 150}'\n" for i in range(60)))
+    project.configure(max_output_chars=2000)
+    fs = project.load("filesystem")
+    sha = sha_of(fs.read_file_with_metadata("wide.py", end_line=1))
+    old = "".join(f"x_{i} = '{'a' * 150}'\n" for i in range(40))
+    response = fs.edit_file("wide.py", old, old.replace("'a", "'b"), sha)
+    assert len(response) <= 2000 and "Output limited: the change continues after line" in response

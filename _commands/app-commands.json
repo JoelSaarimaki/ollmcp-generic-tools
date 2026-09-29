@@ -1,14 +1,72 @@
 {
-    "poetry_add": {
-        "template": "poetry add {arg}",
-        "description": "Adds a specific python package to the project (e.g., 'requests')."
-    },
-    "poetry_remove": {
-        "template": "poetry remove {arg}",
-        "description": "Removes a specific python package to the project (e.g., 'requests')."
-    },
     "install_deps": {
         "template": "poetry install",
-        "description": "Installs all project dependencies defined in pyproject.toml."
+        "description": "Installs all project dependencies defined in pyproject.toml. Run this after pulling changes or when imports fail with ModuleNotFoundError.",
+        "timeout": 600
+    },
+    "add_package": {
+        "template": "poetry add {arg}",
+        "description": "Adds a runtime dependency to the project. Argument: the package name, optionally with a version constraint (e.g., 'requests' or 'requests@^2.31').",
+        "timeout": 300
+    },
+    "add_dev_package": {
+        "template": "poetry add --group dev {arg}",
+        "description": "Adds a development-only dependency, such as a test or lint tool. Argument: the package name (e.g., 'pytest-mock').",
+        "timeout": 300
+    },
+    "remove_package": {
+        "template": "poetry remove {arg}",
+        "description": "Removes a dependency from the project. Argument: the package name (e.g., 'requests').",
+        "timeout": 300
+    },
+    "list_packages": {
+        "template": "poetry show --top-level",
+        "description": "Lists the project's direct dependencies and their installed versions."
+    },
+    "python_version": {
+        "template": "poetry run python -c \"import sys; print(sys.version)\"",
+        "description": "Shows the Python version used by the project's virtual environment."
+    },
+    "run_tests": {
+        "template": "poetry run pytest -q",
+        "description": "Runs the whole test suite. Use this to verify changes before considering a task done.",
+        "timeout": 600
+    },
+    "run_tests_in_path": {
+        "template": "poetry run pytest -q {arg}",
+        "description": "Runs the tests in one file, folder or single test. Argument: a path relative to the project root (e.g., 'tests/test_api.py' or 'tests/test_api.py::test_login').",
+        "timeout": 600
+    },
+    "run_tests_matching": {
+        "template": "poetry run pytest -q -k {arg}",
+        "description": "Runs the tests whose names match a pytest -k expression. Argument: the expression (e.g., 'login' or 'login and not slow').",
+        "timeout": 600
+    },
+    "lint": {
+        "template": "poetry run ruff check .",
+        "description": "Checks the code for lint errors with ruff."
+    },
+    "lint_rule": {
+        "template": "poetry run ruff check --select={arg} .",
+        "description": "Checks the code for a single ruff rule or rule group only. Argument: the rule code (e.g., 'F401' for unused imports or 'E' for all pycodestyle errors)."
+    },
+    "format_check": {
+        "template": "poetry run ruff format --check .",
+        "description": "Checks whether the code follows the project's formatting, without changing any files."
+    },
+    "type_check": {
+        "template": "poetry run mypy .",
+        "description": "Checks the code for type errors with mypy.",
+        "timeout": 300
+    },
+    "npm_install": {
+        "template": "npm install",
+        "description": "Installs the JS/TS dependencies defined in package.json.",
+        "timeout": 600
+    },
+    "npm_run_script": {
+        "template": "npm run {arg}",
+        "description": "Runs a script defined in the 'scripts' section of package.json. Argument: the script name (e.g., 'build', 'test' or 'lint'). Do not use for long-running scripts such as 'dev' or 'start', as they are stopped at the timeout.",
+        "timeout": 600
     }
 }

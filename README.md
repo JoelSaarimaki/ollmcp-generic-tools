@@ -93,6 +93,31 @@ This is a tool for allowing AI Agent access to very specific console commands an
 - **list_available_commands** Returns a list of all allowed console commands and their descriptions.
 - **run_predefined_command** Executes a specific console command from the allowed registry.
 
+Commands are defined in the `COMMANDS_CONFIG` JSON file:
+
+```json
+{
+    "add_package": {
+        "template": "poetry add {arg}",
+        "description": "Adds a runtime dependency to the project. Argument: the package name (e.g., 'requests').",
+        "timeout": 300
+    }
+}
+```
+
+See [`_commands/app-commands.json`](_commands/app-commands.json) for a fuller example covering dependencies, tests, linting, type checking and npm scripts.
+
+- `template`: A single program and its arguments. `{arg}` is replaced with the argument given by the AI, which is always passed as one argument.
+- `description`: Tells the AI when to use the command.
+- `timeout`: Seconds before the command is stopped. (Optional, defaults to 120)
+
+To keep the AI from running anything other than the defined commands:
+- Commands run without a shell, so shell features such as pipes (`|`), chaining (`&&`), redirection (`>`) and shell built-ins (`echo`, `dir`, `cd`) are not available in templates. Put such logic in a script and call the script from the template.
+- Arguments that start with `-`, or contain line breaks, are rejected so the AI cannot add unintended options.
+- On Windows, if the program is a batch file (`.bat` / `.cmd`, e.g. `npm`), arguments containing `& | < > ^ % ! " ( )` are rejected.
+- Commands cannot read input, so interactive prompts end immediately instead of hanging.
+- A command succeeds only if it exits with code 0, and output longer than 20 000 characters per stream is truncated in the middle.
+
 ### context-record-mcp
 
 This tool manages a context folder containing Markdown files, allowing for listing, reading, writing, appending, and removing context files.

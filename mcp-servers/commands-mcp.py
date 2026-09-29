@@ -2,6 +2,7 @@
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import traceback
 from pathlib import Path
@@ -24,11 +25,69 @@ if CONFIG_PATH:
     except Exception:
         COMMAND_REGISTRY = {}
 
+ARG_PLACEHOLDER = "{arg}"
+DEFAULT_TIMEOUT_SECONDS = 120
+MAX_OUTPUT_CHARS = 20000  # Per stream, to protect the context window
+OUTPUT_HEAD_CHARS = 5000  # Kept from the start of truncated output, the rest is kept from the end
+IS_WINDOWS = os.name == "nt"
+# Characters cmd.exe interprets even when Windows batch files (.bat/.cmd) are run without a shell
+BATCH_UNSAFE_CHARS = set('&|<>^%!"()')
+
 # --- Internal Helpers ---
 
-def _list_commands_logic() -> list[dict[str, str]]:
+def _split_template(template: str) -> list[str]:
     """
-    Returns the name, template and description of each command in the registry.
+    Splits a command template into the program and its arguments, keeping quoted parts together.
+    Backslashes are kept as-is on Windows so that Windows paths work in templates.
+    """
+    if not IS_WINDOWS:
+        return shlex.split(template)
+    tokens = shlex.split(template, posix=False)
+    return [t[1:-1] if len(t) >= 2 and t[0] == t[-1] == '"' else t for t in tokens]
+
+def _format_command(args: list[str]) -> str:
+    """
+    Returns the command as a single string for display.
+    """
+    return subprocess.list2cmdline(args) if IS_WINDOWS else shlex.join(args)
+
+def _validate_argument(argument: str, tokens: list[str], executable: str) -> str | None:
+    """
+    Returns the reason why the argument is unsafe to insert into the command, or None if it is safe.
+    """
+    if any(c in argument for c in "\0\r\n"):
+        return "The argument must not contain line breaks or null characters."
+    if ARG_PLACEHOLDER in tokens and argument.startswith("-"):
+        return "The argument must not start with '-', as it could add unintended options to the command."
+    if IS_WINDOWS and Path(executable).suffix.lower() in {".bat", ".cmd"}:
+        unsafe = sorted(BATCH_UNSAFE_CHARS.intersection(argument))
+        if unsafe:
+            return f"The argument must not contain the characters {' '.join(unsafe)}, as this command runs as a Windows batch file."
+    return None
+
+def _truncate_output(text: str) -> str:
+    """
+    Shortens output longer than MAX_OUTPUT_CHARS, keeping its start and its end.
+    """
+    if len(text) <= MAX_OUTPUT_CHARS:
+        return text
+    tail_chars = MAX_OUTPUT_CHARS - OUTPUT_HEAD_CHARS
+    omitted = len(text) - MAX_OUTPUT_CHARS
+    return f"{text[:OUTPUT_HEAD_CHARS]}\n... ({omitted} characters truncated) ...\n{text[-tail_chars:]}"
+
+def _decode_output(output: str | bytes | None) -> str:
+    """
+    Returns captured process output as text.
+    """
+    if output is None:
+        return ""
+    if isinstance(output, bytes):
+        return output.decode("utf-8", errors="replace")
+    return output
+
+def _list_commands_logic() -> list[dict[str, Any]]:
+    """
+    Returns the name, template, description, argument requirement and timeout of each command in the registry.
     """
     if not COMMAND_REGISTRY:
         return []
@@ -37,15 +96,18 @@ def _list_commands_logic() -> list[dict[str, str]]:
         {
             "name": name,
             "template": info["template"],
-            "description": info["description"]
+            "description": info["description"],
+            "requires_argument": ARG_PLACEHOLDER in info["template"],
+            "timeout_seconds": info.get("timeout", DEFAULT_TIMEOUT_SECONDS)
         }
         for name, info in COMMAND_REGISTRY.items()
     ]
 
 def _execute_command_logic(command_key: str, argument: str | None = None) -> dict[str, Any]:
     """
-    Looks up, formats and executes a command from the registry.
-    Returns the success status, stdout, stderr and the command used.
+    Looks up, formats and executes a command from the registry without a shell.
+    The argument is inserted as a single command-line argument, so it cannot add further commands.
+    Returns the success status (exit code 0), exit code, stdout, stderr and the command used.
     """
     if command_key not in COMMAND_REGISTRY:
         available = list(COMMAND_REGISTRY.keys())
@@ -57,35 +119,59 @@ def _execute_command_logic(command_key: str, argument: str | None = None) -> dic
 
     cmd_info = COMMAND_REGISTRY[command_key]
     template = cmd_info["template"]
+    timeout = cmd_info.get("timeout", DEFAULT_TIMEOUT_SECONDS)
 
-    if "{arg}" in template:
+    tokens = _split_template(template)
+    if not tokens:
+        return {"success": False, "error": "invalid_template", "message": f"Command '{command_key}' has an empty template."}
+
+    executable = shutil.which(tokens[0])
+    if not executable:
+        return {"success": False, "error": "program_not_found", "message": f"Program '{tokens[0]}' was not found on PATH."}
+
+    if ARG_PLACEHOLDER in template:
         if not argument:
             return {
                 "success": False,
                 "error": "missing_argument",
                 "message": f"Command '{command_key}' requires an argument."
             }
-        safe_arg = shlex.quote(argument)
-        cmd_to_run = template.format(arg=safe_arg)
-    else:
-        cmd_to_run = template
+        reason = _validate_argument(argument, tokens, executable)
+        if reason:
+            return {"success": False, "error": "invalid_argument", "message": reason}
+        tokens = [t.replace(ARG_PLACEHOLDER, argument) for t in tokens]
+
+    args = [executable] + tokens[1:]
+    command = _format_command(tokens)
 
     try:
         result = subprocess.run(
-            cmd_to_run,
-            shell=True,
+            args,
             capture_output=True,
-            text=True,
+            stdin=subprocess.DEVNULL,  # Interactive prompts get end-of-input instead of hanging
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
             check=False
         )
 
         return {
-            "success": True,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "command": cmd_to_run
+            "success": result.returncode == 0,
+            "returncode": result.returncode,
+            "stdout": _truncate_output(result.stdout),
+            "stderr": _truncate_output(result.stderr),
+            "command": command
         }
 
+    except subprocess.TimeoutExpired as e:
+        return {
+            "success": False,
+            "error": "timeout",
+            "message": f"Command did not finish within {timeout} seconds and was stopped.",
+            "stdout": _truncate_output(_decode_output(e.stdout)),
+            "stderr": _truncate_output(_decode_output(e.stderr)),
+            "command": command
+        }
     except Exception as e:
         return {
             "success": False,
@@ -122,13 +208,16 @@ def list_available_commands() -> str:
 def run_predefined_command(command_name: str, argument: str | None = None) -> str:
     """
     Executes a specific console command from the allowed registry.
+    The command succeeds only if it exits with code 0. Long output is truncated in the middle.
 
     Args:
         command_name (str): The key of the command (from list_available_commands).
         argument (str, optional): An optional string argument required by some commands.
+            It is passed to the command as a single argument and must not start with '-'.
 
     Returns:
-        str: A JSON-formatted string containing the execution results or an error message.
+        str: A JSON-formatted string containing the success status, exit code, stdout and stderr,
+            or an error message (e.g., timeout or invalid_argument).
 
     Usage Notes:
         Use 'list_available_commands' before calling this tool to ensure the command exists.

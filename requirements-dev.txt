@@ -1,0 +1,3 @@
+# Packages needed to run the test suite: python -m pip install -r requirements-dev.txt
+mcp>=2.1
+pytest>=9.0

@@ -93,7 +93,19 @@ Every tool definition is sent with every request, so tools that duplicate others
 
 ## How changes have been verified
 
-There is no automated test suite in the repository yet. Changes were verified with scripts run against temporary test projects, covering among others: exact read/edit round trips with CRLF, BOM, quotes, backslashes and tabs; every `edit_file` recovery path; `.mcp.json` and config-file protection through every server, including Windows aliases; relative paths with the server started from another folder; output limits at 4 000 and 40 000 characters; forbidden paths in git output; command injection attempts; config validation errors; and starting all servers over stdio from `.mcp.json`. See "What should still be done" for turning these into a real test suite.
+The automated test suite in `tests/` (pytest, 154 tests, about a minute) covers every server. Run it from the repository root:
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest tests
+```
+
+- `conftest.py` gives every test its own temporary project and tools config (`project` fixture; `make_project` for projects at a specific path, e.g. inside a folder named `out`). `project.load("filesystem")` loads a server fresh for that config, and `start_server()` imports a server in a separate process to test startup errors. The working directory is outside the project, so resolving paths against the working directory instead of `allowed_dir` fails the tests.
+- One test file per server (`test_filesystem.py`, `test_map.py`, `test_search.py`, `test_git.py`, `test_commands.py`, `test_context.py`), plus `test_config.py` for config validation, `test_protection.py` for the access rules across all servers, and `test_servers_start.py`, which starts every server over stdio, including from the repository's own `.mcp.json` and `tools-config.json`.
+- Windows-only behaviour (name aliases such as `.mcp.json::$DATA`, batch file arguments) is skipped on other systems, and the git tests are skipped if git is not installed.
+- The suite was checked by reintroducing earlier bugs (ignored folders compared on the absolute path, protected files not protected, commands run in the working directory); each made tests fail.
+
+Add tests for every new tool or fixed bug.
 
 ## Accepted limitations
 
@@ -101,7 +113,7 @@ There is no automated test suite in the repository yet. Changes were verified wi
 - In `git-diff-mcp`, a file moved into a forbidden folder is still visible in the history of its old, allowed path, and commit messages are not filtered.
 - The `.gitignore` matcher is simplified, and the JS/TS parser is regex-based: declarations that do not start at the beginning of a line, or a `/` in a regex literal mistaken for a string or comment, can be missed.
 - `ignored_dirs` names are matched case-sensitively.
-- Command output is decoded as UTF-8; programs writing in the Windows code page may show `�` for characters such as `ä`.
+- Command output is decoded as UTF-8. Python programs are made to write UTF-8 (`PYTHONIOENCODING=utf-8`, found by the test suite), but other programs writing in the Windows code page may still show `�` for characters such as `ä`.
 
 ## What should still be done
 
@@ -115,12 +127,10 @@ In recommended order. Items 1–3 were found by measuring the running tools on 2
    - `get_file_diff` + `get_all_changes_diff` → `get_diff(mode, path=None)` for a file or a folder
    - remove `create_directory` (`create_file` creates missing folders)
    - keep `list_directory` (sizes and dates add information).
-4. **Add a web page reader**, e.g. `read_web_page(url)` returning plain text or Markdown within the output limit. Web search alone only gives snippets.
-5. **Add a repo-wide commit log**, e.g. `get_recent_commits(limit, path=None)` and a way to show one commit. Git history is currently only available per file.
-6. **Allow a working folder per command**: an optional `cwd` key in the command registry, relative to `allowed_dir`, for monorepos.
-7. **Add `find_definition(name)`** using the map's Python and JS/TS parsers, returning where a function or class is defined. Regex search finds every use of a name.
-8. **Add an automated test suite** (e.g. `tests/` with pytest) based on the verification scripts described above, so refactors can be checked quickly.
-9. **Remove the stray `¨`** at the end of practice 1 in `_instructions/app-instructions.md`.
+4. **Add a repo-wide commit log**, e.g. `get_recent_commits(limit, path=None)` and a way to show one commit. Git history is currently only available per file.
+5. **Allow a working folder per command**: an optional `cwd` key in the command registry, relative to `allowed_dir`, for monorepos.
+6. **Add `find_definition(name)`** using the map's Python and JS/TS parsers, returning where a function or class is defined. Regex search finds every use of a name.
+7. **Remove the stray `¨`** at the end of practice 1 in `_instructions/app-instructions.md`.
 
 Also worth considering: allowing more than one argument in command templates.
 
@@ -136,5 +146,5 @@ Also worth considering: allowing more than one argument in command templates.
 ## Notes for working on this repository
 
 - Environment: Windows, Python 3.14, `mcp` 2.1.1 (`MCPServer`, `Image` from `mcp.server.mcpserver`), ollmcp 0.35, git 2.54.
-- The servers need `MCP_TOOLS_CONFIG` set to start, also when a script imports them for testing. When loading several servers in one test process, remove `mcp_common` from `sys.modules` before each load so that each gets a fresh config.
+- The servers need `MCP_TOOLS_CONFIG` set to start, also when a script imports them for testing. When loading several servers in one test process, remove `mcp_common` from `sys.modules` before each load so that each gets a fresh config; the test fixtures in `tests/conftest.py` do this.
 - ollmcp passes tool responses to the model as text; `ImageContent` is forwarded only to vision-capable models.

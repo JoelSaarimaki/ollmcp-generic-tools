@@ -82,6 +82,17 @@ Once configured, start `ollmcp` in your project root directory:
 ollmcp
 ```
 
+### Testing
+
+The servers have an automated test suite in `tests/`. Run it from the repository root:
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest tests
+```
+
+See [DEVELOPMENT.md](DEVELOPMENT.md#how-changes-have-been-verified) for how the tests are organized.
+
 ## MCP Servers
 
 ### commands-mcp

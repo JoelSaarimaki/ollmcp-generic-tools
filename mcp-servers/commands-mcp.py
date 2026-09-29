@@ -176,6 +176,8 @@ def _execute_command_logic(command_key: str, argument: str | None = None) -> dic
         result = subprocess.run(
             args,
             cwd=ALLOWED_DIR,  # Commands such as tests and linters work on the project, like the other servers
+            # Python programs (e.g. pytest, poetry) write their output as UTF-8, as it is read, instead of the Windows code page
+            env={**os.environ, "PYTHONIOENCODING": os.environ.get("PYTHONIOENCODING", "utf-8")},
             capture_output=True,
             stdin=subprocess.DEVNULL,  # Interactive prompts get end-of-input instead of hanging
             encoding="utf-8",

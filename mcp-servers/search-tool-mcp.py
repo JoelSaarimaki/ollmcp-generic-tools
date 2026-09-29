@@ -13,6 +13,7 @@ mcp = MCPServer("Search-Tool-Server")
 
 INPUT_DIR = Path(os.getenv("INPUT_DIR", os.getcwd())).resolve()
 GITIGNORE_PATH = os.getenv("GITIGNORE_PATH")
+PROTECTED_FILE_NAMES = {".mcp.json"}  # MCP server configuration, never accessible regardless of FORBIDDEN_PATHS
 IGNORED_DIRS = {
     "node_modules", ".git", "__pycache__", "dist", "build", ".next",
     ".venv", "venv", "env", ".pytest_cache", ".idea", ".vscode",
@@ -49,10 +50,31 @@ def _load_forbidden_paths(base_dir: Path) -> list[Path]:
 
 FORBIDDEN_PATHS = _load_forbidden_paths(INPUT_DIR)
 
+def _is_protected(path: Path) -> bool:
+    """
+    Checks if the given path is a protected file (see PROTECTED_FILE_NAMES), also through a symlink
+    or a Windows alias of the name, such as a trailing dot or a '::$DATA' stream suffix.
+    """
+    names = [path.name]
+    try:
+        if path.is_symlink():
+            names.append(path.resolve().name)
+    except OSError:
+        return True
+    for name in names:
+        name = name.lower()
+        if os.name == "nt":
+            name = name.split(":")[0].rstrip(" .")
+        if name in PROTECTED_FILE_NAMES:
+            return True
+    return False
+
 def _is_forbidden(path: Path) -> bool:
     """
-    Checks if the given path is a forbidden file or is located within a forbidden folder.
+    Checks if the given path is a protected file, a forbidden file or is located within a forbidden folder.
     """
+    if _is_protected(path):
+        return True
     if not FORBIDDEN_PATHS:
         return False
     try:
@@ -400,6 +422,7 @@ def get_search_config() -> str:
             "input_dir_exists": INPUT_DIR.exists(),
             "ignored_dirs": sorted(IGNORED_DIRS),
             "forbidden_paths": [_display_path(p, INPUT_DIR) for p in FORBIDDEN_PATHS],
+            "protected_file_names": sorted(PROTECTED_FILE_NAMES),
             "gitignore": {
                 "applied": True,
                 "path": gitignore_path.as_posix(),
@@ -411,6 +434,7 @@ def get_search_config() -> str:
             "max_line_chars": MAX_LINE_CHARS,
             "max_context_lines": MAX_CONTEXT_LINES,
             "notes": [
+                "Files named in protected_file_names (the MCP server configuration) are always denied and hidden at any depth, even if forbidden_paths is empty.",
                 "Folders named in ignored_dirs are skipped at any depth within input_dir.",
                 "Forbidden paths and everything inside forbidden folders are skipped.",
                 "Files and folders matching the .gitignore patterns are skipped.",

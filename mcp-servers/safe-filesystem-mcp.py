@@ -14,6 +14,7 @@ from mcp.server.mcpserver import Image, MCPServer
 mcp = MCPServer("Safe-Filesystem-Server")
 
 ALLOWED_DIR = Path(os.getenv("ALLOWED_DIR", os.getcwd())).resolve()
+PROTECTED_FILE_NAMES = {".mcp.json"}  # MCP server configuration, never accessible regardless of FORBIDDEN_PATHS
 MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10MB limit
 
 @dataclass
@@ -51,10 +52,31 @@ def _load_forbidden_paths(base_dir: Path) -> list[Path]:
 
 FORBIDDEN_PATHS = _load_forbidden_paths(ALLOWED_DIR)
 
+def _is_protected(path: Path) -> bool:
+    """
+    Checks if the given path is a protected file (see PROTECTED_FILE_NAMES), also through a symlink
+    or a Windows alias of the name, such as a trailing dot or a '::$DATA' stream suffix.
+    """
+    names = [path.name]
+    try:
+        if path.is_symlink():
+            names.append(path.resolve().name)
+    except OSError:
+        return True
+    for name in names:
+        name = name.lower()
+        if os.name == "nt":
+            name = name.split(":")[0].rstrip(" .")
+        if name in PROTECTED_FILE_NAMES:
+            return True
+    return False
+
 def _is_forbidden(path: Path) -> bool:
     """
-    Checks if the given path is a forbidden file or is located within a forbidden folder.
+    Checks if the given path is a protected file, a forbidden file or is located within a forbidden folder.
     """
+    if _is_protected(path):
+        return True
     if not FORBIDDEN_PATHS:
         return False
     try:
@@ -65,16 +87,20 @@ def _is_forbidden(path: Path) -> bool:
 
 def _contains_forbidden(path: Path) -> bool:
     """
-    Checks if the given directory contains any forbidden files or folders.
-    Used to stop recursive operations (delete, move) from touching forbidden paths.
+    Checks if the given directory contains any forbidden or protected files or folders.
+    Used to stop recursive operations (delete, move) from touching forbidden or protected paths.
     """
-    if not FORBIDDEN_PATHS:
-        return False
     try:
         resolved = path.resolve()
     except OSError:
         return True
-    return any(forbidden.is_relative_to(resolved) for forbidden in FORBIDDEN_PATHS)
+    if any(forbidden.is_relative_to(resolved) for forbidden in FORBIDDEN_PATHS):
+        return True
+    if resolved.is_dir():
+        for dirpath, _, filenames in os.walk(resolved):
+            if any(_is_protected(Path(dirpath) / name) for name in filenames):
+                return True
+    return False
 
 def _display_path(path: Path, base_dir: Path) -> str:
     """
@@ -97,7 +123,9 @@ def _access_denied(path: Path, label: str = "Path") -> str:
     """
     Returns the JSON access_denied response, stating why access to the given path was denied.
     """
-    if _is_forbidden(path):
+    if _is_protected(path):
+        message = f"{label} is protected: '{path.name}' files contain the MCP server configuration and cannot be accessed."
+    elif _is_forbidden(path):
         message = f"{label} is forbidden: {path}"
     else:
         message = f"{label} is not within the allowed directory: {ALLOWED_DIR}"
@@ -629,7 +657,7 @@ def move_file(source: str, destination: str) -> str:
         if not _is_path_allowed(dst):
             return _access_denied(dst, "Destination path")
         if _contains_forbidden(src):
-            return json.dumps({"success": False, "error": "access_denied", "message": f"Source path contains forbidden files or folders: {src}"}, indent=2)
+            return json.dumps({"success": False, "error": "access_denied", "message": f"Source path contains forbidden or protected files or folders: {src}"}, indent=2)
 
         if not src.exists():
             return json.dumps({"success": False, "error": "source_not_found", "message": f"Source not found: {src}"}, indent=2)
@@ -657,7 +685,7 @@ def delete_file(path: str) -> str:
         if not _is_path_allowed(p):
             return _access_denied(p)
         if _contains_forbidden(p):
-            return json.dumps({"success": False, "error": "access_denied", "message": f"Path contains forbidden files or folders: {p}"}, indent=2)
+            return json.dumps({"success": False, "error": "access_denied", "message": f"Path contains forbidden or protected files or folders: {p}"}, indent=2)
         if not p.exists():
             return json.dumps({"success": False, "error": "not_found", "message": f"Path not found: {p}"}, indent=2)
 
@@ -689,10 +717,12 @@ def get_filesystem_config() -> str:
             "working_directory": Path.cwd().resolve().as_posix(),
             "ignored_dirs": [],
             "forbidden_paths": [_display_path(p, ALLOWED_DIR) for p in FORBIDDEN_PATHS],
+            "protected_file_names": sorted(PROTECTED_FILE_NAMES),
             "gitignore": {
                 "applied": False
             },
             "notes": [
+                "Files named in protected_file_names (the MCP server configuration) are always denied and hidden at any depth, even if forbidden_paths is empty.",
                 "Only paths within allowed_dir can be accessed.",
                 "Relative paths given to the tools are resolved against working_directory, not allowed_dir.",
                 "Forbidden paths and everything inside forbidden folders are denied and hidden from list_directory.",

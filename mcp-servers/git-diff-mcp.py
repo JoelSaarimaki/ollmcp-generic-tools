@@ -12,6 +12,7 @@ from mcp.server.mcpserver import MCPServer
 mcp = MCPServer("Git-Diff-Server")
 
 ALLOWED_DIR = Path(os.getenv("ALLOWED_DIR", os.getcwd())).resolve()
+PROTECTED_FILE_NAMES = {".mcp.json"}  # MCP server configuration, never accessible regardless of FORBIDDEN_PATHS
 DIFF_MODES = {
     "unstaged": ["diff"],
     "staged": ["diff", "--cached"],
@@ -44,10 +45,31 @@ def _load_forbidden_paths(base_dir: Path) -> list[Path]:
 
 FORBIDDEN_PATHS = _load_forbidden_paths(ALLOWED_DIR)
 
+def _is_protected(path: Path) -> bool:
+    """
+    Checks if the given path is a protected file (see PROTECTED_FILE_NAMES), also through a symlink
+    or a Windows alias of the name, such as a trailing dot or a '::$DATA' stream suffix.
+    """
+    names = [path.name]
+    try:
+        if path.is_symlink():
+            names.append(path.resolve().name)
+    except OSError:
+        return True
+    for name in names:
+        name = name.lower()
+        if os.name == "nt":
+            name = name.split(":")[0].rstrip(" .")
+        if name in PROTECTED_FILE_NAMES:
+            return True
+    return False
+
 def _is_forbidden(path: Path) -> bool:
     """
-    Checks if the given path is a forbidden file or is located within a forbidden folder.
+    Checks if the given path is a protected file, a forbidden file or is located within a forbidden folder.
     """
+    if _is_protected(path):
+        return True
     if not FORBIDDEN_PATHS:
         return False
     try:
@@ -69,7 +91,9 @@ def _access_denied(path: Path, label: str = "Path") -> str:
     """
     Returns the JSON access_denied response, stating why access to the given path was denied.
     """
-    if _is_forbidden(path):
+    if _is_protected(path):
+        message = f"{label} is protected: '{path.name}' files contain the MCP server configuration and cannot be accessed."
+    elif _is_forbidden(path):
         message = f"{label} is forbidden: {path}"
     else:
         message = f"{label} is not within the allowed directory: {ALLOWED_DIR}"
@@ -137,7 +161,7 @@ def _get_repo_root(directory: Path) -> Path | None:
 def _pathspecs(repo_root: Path, target: Path) -> list[str]:
     """
     Returns git pathspecs that limit a command to the target within the repository,
-    excluding all forbidden paths. If the target contains the whole repository, the whole
+    excluding all forbidden and protected paths. If the target contains the whole repository, the whole
     repository is included.
     """
     scope = target if target.is_relative_to(repo_root) else repo_root
@@ -147,6 +171,9 @@ def _pathspecs(repo_root: Path, target: Path) -> list[str]:
     for forbidden in FORBIDDEN_PATHS:
         if forbidden.is_relative_to(repo_root) and forbidden != repo_root:
             specs.append(f":(top,exclude){forbidden.relative_to(repo_root).as_posix()}")
+    # Protected files are excluded by name at any depth, in any letter case
+    for name in sorted(PROTECTED_FILE_NAMES):
+        specs.append(f":(top,exclude,glob,icase)**/{name}")
     return specs
 
 def _prepare(path: str | None) -> tuple[Path, Path, Path | None, str | None]:
@@ -423,10 +450,12 @@ def get_git_config() -> str:
             "working_directory": Path.cwd().resolve().as_posix(),
             "ignored_dirs": [],
             "forbidden_paths": [_display_path(p, ALLOWED_DIR) for p in FORBIDDEN_PATHS],
+            "protected_file_names": sorted(PROTECTED_FILE_NAMES),
             "gitignore": {
                 "applied": True
             },
             "notes": [
+                "Files named in protected_file_names (the MCP server configuration) are always denied and hidden at any depth, even if forbidden_paths is empty.",
                 "Only paths within allowed_dir can be inspected.",
                 "Relative paths given to the tools are resolved against working_directory, not allowed_dir.",
                 "Forbidden paths and everything inside forbidden folders are denied and left out of status and diff output.",

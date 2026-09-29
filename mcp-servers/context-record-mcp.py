@@ -15,13 +15,43 @@ CONTEXT_FOLDER_PATH = os.getenv("CONTEXT_FOLDER_PATH")
 
 def _get_context_folder() -> Path:
     """
-    Returns the path to the context folder.
+    Returns the resolved path to the context folder.
     Raises ValueError if CONTEXT_FOLDER_PATH is not set.
     """
     if not CONTEXT_FOLDER_PATH:
         raise ValueError("Environment variable 'CONTEXT_FOLDER_PATH' is not set.")
 
-    return Path(CONTEXT_FOLDER_PATH)
+    return Path(CONTEXT_FOLDER_PATH).resolve()
+
+def _is_context_file(path: Path, folder: Path) -> bool:
+    """
+    Checks if the path, after following symlinks, is a Markdown file directly inside the context folder.
+    """
+    resolved = path.resolve()
+    return resolved.parent == folder and resolved.suffix.lower() == ".md"
+
+def _get_context_file(filename: str) -> tuple[Path, Path]:
+    """
+    Returns the context folder and the path of the named Markdown file directly inside it.
+    Raises ValueError if the name contains folders, is not a .md file or leads outside the folder,
+    so that the tools can never reach other files such as .mcp.json.
+    """
+    folder = _get_context_folder()
+    if not filename or any(c in filename for c in "/\\:"):
+        raise ValueError(f"'{filename}' is not a plain file name. Use a name such as 'notes.md', without folders.")
+    if not filename.lower().endswith(".md"):
+        raise ValueError(f"'{filename}' is not a Markdown file name. Context file names must end with '.md'.")
+
+    file_path = folder / filename
+    if not _is_context_file(file_path, folder):
+        raise ValueError(f"'{filename}' leads outside the context folder.")
+    return folder, file_path
+
+def _list_context_files(folder: Path) -> list[Path]:
+    """
+    Returns the Markdown files directly inside the context folder, sorted by name.
+    """
+    return sorted(p for p in folder.glob("*.md") if p.is_file() and _is_context_file(p, folder))
 
 # --- Public MCP Tools ---
 
@@ -40,11 +70,13 @@ def list_context_files() -> str:
         if not folder.is_dir():
             return f"Error: Path {folder.as_posix()} is not a directory."
 
-        files = [f.name for f in folder.glob("*.md")]
+        files = [p.name for p in _list_context_files(folder)]
         if not files:
             return "No Markdown (.md) files found in the context folder."
 
-        return "\n".join(sorted(files))
+        return "\n".join(files)
+    except ValueError as e:
+        return f"Error: {e}"
     except Exception as e:
         return f"Error: Listing context files failed:\n{e}\n{traceback.format_exc()}"
 
@@ -60,8 +92,7 @@ def read_context_file(filename: str) -> str:
         str: The content of the file, or an error message.
     """
     try:
-        folder = _get_context_folder()
-        file_path = folder / filename
+        folder, file_path = _get_context_file(filename)
 
         if not file_path.exists():
             return f"Error: File '{filename}' not found in {folder.as_posix()}"
@@ -69,6 +100,8 @@ def read_context_file(filename: str) -> str:
             return f"Error: '{filename}' is not a file."
 
         return file_path.read_text(encoding="utf-8")
+    except ValueError as e:
+        return f"Error: {e}"
     except Exception as e:
         return f"Error: Reading context file failed:\n{e}\n{traceback.format_exc()}"
 
@@ -78,15 +111,14 @@ def write_context_file(filename: str, content: str) -> str:
     Creates a new Markdown file or overwrites an existing one in the context folder.
 
     Args:
-        filename (str): The name of the file to write to.
+        filename (str): The name of the file to write to (e.g., 'example.md').
         content (str): The content to write.
 
     Returns:
         str: A success message or an error message.
     """
     try:
-        folder = _get_context_folder()
-        file_path = folder / filename
+        folder, file_path = _get_context_file(filename)
 
         # Ensure the directory exists
         folder.mkdir(parents=True, exist_ok=True)
@@ -94,6 +126,8 @@ def write_context_file(filename: str, content: str) -> str:
         file_path.write_text(content, encoding="utf-8")
 
         return f"Successfully wrote to context file: {filename} (in {folder.as_posix()})"
+    except ValueError as e:
+        return f"Error: {e}"
     except Exception as e:
         return f"Error: Writing to context file failed:\n{e}\n{traceback.format_exc()}"
 
@@ -104,15 +138,14 @@ def append_to_context_file(filename: str, content: str) -> str:
     If the file doesn't exist, it will be created.
 
     Args:
-        filename (str): The name of the file to append to.
+        filename (str): The name of the file to append to (e.g., 'example.md').
         content (str): The content to append.
 
     Returns:
         str: A success message or an error message.
     """
     try:
-        folder = _get_context_folder()
-        file_path = folder / filename
+        folder, file_path = _get_context_file(filename)
 
         # Ensure the directory exists
         folder.mkdir(parents=True, exist_ok=True)
@@ -124,6 +157,8 @@ def append_to_context_file(filename: str, content: str) -> str:
             f.write(content)
 
         return f"Successfully appended to context file: {filename} (in {folder.as_posix()})"
+    except ValueError as e:
+        return f"Error: {e}"
     except Exception as e:
         return f"Error: Appending to context file failed:\n{e}\n{traceback.format_exc()}"
 
@@ -141,7 +176,7 @@ def read_all_context_files() -> str:
         if not folder.exists():
             return f"Error: Folder does not exist at {folder.as_posix()}"
 
-        md_files = sorted(folder.glob("*.md"))
+        md_files = _list_context_files(folder)
         if not md_files:
             return "No Markdown files found in the context folder."
 
@@ -154,6 +189,8 @@ def read_all_context_files() -> str:
             output.append("\n")  # Add extra newline after content
 
         return "\n".join(output)
+    except ValueError as e:
+        return f"Error: {e}"
     except Exception as e:
         return f"Error: Reading all context files failed:\n{e}\n{traceback.format_exc()}"
 
@@ -163,14 +200,13 @@ def remove_context_file(filename: str) -> str:
     Removes a specific Markdown file from the context folder.
 
     Args:
-        filename (str): The name of the file to remove.
+        filename (str): The name of the file to remove (e.g., 'example.md').
 
     Returns:
         str: A success message or an error message.
     """
     try:
-        folder = _get_context_folder()
-        file_path = folder / filename
+        folder, file_path = _get_context_file(filename)
 
         if not file_path.exists():
             return f"Error: File '{filename}' not found in {folder.as_posix()}"
@@ -179,6 +215,8 @@ def remove_context_file(filename: str) -> str:
 
         file_path.unlink()
         return f"Successfully removed context file: {filename} (from {folder.as_posix()})"
+    except ValueError as e:
+        return f"Error: {e}"
     except Exception as e:
         return f"Error: Removing context file failed:\n{e}\n{traceback.format_exc()}"
 

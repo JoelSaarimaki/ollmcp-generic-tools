@@ -11,9 +11,9 @@ For the design principles behind the servers and the planned improvements, see [
 ### Prerequisites
 
 1.  **Install Ollama**:
-    Download and install Ollama from [ollama.com](https://ollama.com/). Once installed, you can run a model (for example gemma4:26b), using:
+    Download and install Ollama from [ollama.com](https://ollama.com/). Once installed, you can run a model (for example qwen3-coder:30b), using:
     ```bash
-    ollama run gemma4:26b
+    ollama run qwen3-coder:30b
     ```
 
 2.  **Install ollmcp and the packages the servers use**:

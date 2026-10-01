@@ -2,7 +2,7 @@
 
 Context for continuing development of the MCP servers in this repository: what the tools are for, the principles they follow and why, what has been verified, and what is still open. The [README](README.md) describes how to use the tools; this file describes how and why they are built the way they are.
 
-Last updated: 2026-09-29, after formatting the text responses for the ollmcp console. Earlier the same day: outlines and section reads replaced the codebase maps, tree-sitter replaced the regex JS/TS parser, and the tools were merged from 27 to 23 with shorter definitions.
+Last updated: 2026-10-01, after adding `search_relevant_files`. On 2026-09-29: formatting the text responses for the ollmcp console, and before that outlines and section reads replaced the codebase maps, tree-sitter replaced the regex JS/TS parser, and the tools were merged from 27 to 23 with shorter definitions.
 
 ## Purpose and target
 
@@ -15,13 +15,13 @@ Most design decisions follow from the target model being small and local:
 
 ## Current state
 
-Seven servers, 23 tools. All servers share `mcp-servers/mcp_common.py` and read one config file; the map, filesystem and context servers also use the outline parsers in `mcp-servers/mcp_outline.py`.
+Seven servers, 24 tools. All servers share `mcp-servers/mcp_common.py` and read one config file; the map, filesystem, context and search servers also use the outline parsers in `mcp-servers/mcp_outline.py`.
 
 | Server | Tools |
 |---|---|
 | `safe-filesystem-mcp` | `read_file_with_metadata`, `edit_file`, `write_file`, `create_file`, `read_image`, `list_directory`, `move_file`, `delete_file`, `get_config` |
 | `generate-map-mcp` | `get_outline` |
-| `search-tool-mcp` | `search_text_in_files`, `search_files_by_pattern` |
+| `search-tool-mcp` | `search_text_in_files`, `search_files_by_pattern`, `search_relevant_files` |
 | `git-diff-mcp` | `get_diff`, `get_file_history`, `get_git_status` |
 | `commands-mcp` | `list_available_commands`, `run_predefined_command` |
 | `context-record-mcp` | `list_context_files`, `read_context_file`, `write_context_file`, `remove_context_file` |
@@ -98,6 +98,13 @@ Configuration:
 - Folders are skipped without being entered (`walk` in `mcp_common.py`), so a large `node_modules` costs nothing. Only the part of a path inside `allowed_dir` is compared with `ignored_dirs`, so a project inside a folder named e.g. `out` is not hidden.
 - The outline and search tools respect `.gitignore` with a simplified matcher (no `!` negations; folders without a trailing `/` match at any depth). The repository's own `.gitignore` is written for that.
 - `search_text_in_files` searches for a query that is not a valid regex (e.g. `functionName(`, which small models often search for) as literal text, and says so in a `Note:` line, instead of returning an error.
+- `search_relevant_files` is for when the exact text is unknown: the model gives a sentence, code or an error message and gets the best files ranked, each with its best outline section and the call to read it. How it ranks:
+  - Keywords are the words and identifiers of the query, each identifier also split into its parts (`getUserName` → `getusername`, `get`, `user`, `name`; `get_user_name` gives the same whole form, so both styles match each other). Keywords have at least 2 characters, numbers at least 3 digits. Files are matched by whole tokens, not substrings, so `id` does not match `width`.
+  - Files are scored with BM25: a keyword found in few files weighs much more than one found in almost every file (inverse document frequency), repeats of a keyword add less and less, and long files are scored down. The score is scaled by the share of the query's keyword weight the file has, so a file with several rare keywords beats one with a single keyword repeated. A keyword in the file path adds its weight once.
+  - The best section of a file is scored the same way by its own lines, without its subsections, so a document under a single `#` heading or a whole class does not win just by containing every match. Files without an outline are compared 30 lines at a time.
+  - The top `3 × max_results` files are reranked with a bonus when their best section is named after a keyword, so the definition of a name ranks above files that only use it.
+  - The response lists the keywords with their file counts and weights (0–1), the keywords not found anywhere (often a misspelled or invented name), and a note when all keywords are common.
+  - There is no index: every search reads the files again. Text that cannot contain a keyword is skipped with one regex check per line and identifier, which keeps a 2 800-file project (Python's standard library) at about 2 seconds.
 - Outlines and text search can be limited to a folder with `path`. The outline of one Python file scans the whole project for Python symbols, so that "Calls:" works across folders; folder outlines do not show calls.
 
 ### Tool count
@@ -108,7 +115,7 @@ Every tool definition is sent with every request, so tools that duplicate others
 
 - Files start with `# --- file.py ---`, then stdlib imports, third-party imports (e.g. `ollama`, `tree_sitter`), then `from mcp.server.mcpserver import ...`, `from mcp_common import (...)` and, if needed, `from mcp_outline import (...)`. Sections: `Constants & Config` (`mcp = MCPServer("<Name>-Server")` first), `Internal Helpers`, `Public MCP Tools`.
 - Helpers are `_`-prefixed with short summary docstrings. Public names in `mcp_common.py` have no prefix.
-- **Tool docstrings are sent to the model with every request**, so they are short: what the tool does and what the model must get right, then `Args:` with one short line per parameter (no types, which are in the schema) and `Returns:` only if the response is not obvious. Guidance that errors give when it is needed (e.g. read again after `hash_mismatch`) is not repeated in descriptions. Optional strings default to `""` instead of `None`, and every server calls `prepare_tools(mcp)` from `mcp_common.py` before `mcp.run()`. It removes the generated titles and `anyOf: [type, null]` from the schemas, and makes an argument sent as `null` use the parameter's default, as small models often send `null` for optional parameters (`test_null_arguments_use_the_defaults`). `test_tool_definitions_stay_small` fails if the definitions grow past 10 500 characters.
+- **Tool docstrings are sent to the model with every request**, so they are short: what the tool does and what the model must get right, then `Args:` with one short line per parameter (no types, which are in the schema) and `Returns:` only if the response is not obvious. Guidance that errors give when it is needed (e.g. read again after `hash_mismatch`) is not repeated in descriptions. Optional strings default to `""` instead of `None`, and every server calls `prepare_tools(mcp)` from `mcp_common.py` before `mcp.run()`. It removes the generated titles and `anyOf: [type, null]` from the schemas, and makes an argument sent as `null` use the parameter's default, as small models often send `null` for optional parameters (`test_null_arguments_use_the_defaults`). `test_tool_definitions_stay_small` fails if the definitions grow past 10 800 characters (raised from 10 500 on 2026-10-01 for `search_relevant_files` and the pointers between the two text searches).
 - Shared code lives in `mcp_common.py`, and the parsers and outline functions in `mcp_outline.py`; servers never re-implement the path checks, config loading, walking or parsing.
 - Built-in generics and `X | None`, double quotes, no bare `except:`.
 - Text tools return `Error: <Action> failed:\n{e}\n{traceback}`, except the tools whose responses contain file content (`read_file_with_metadata`, `edit_file`, `web_fetch`), which return `Error (<code>): <message>`; JSON tools always include `"success"` and use `indent=2, ensure_ascii=False`. Error codes are snake_case: a specific condition (`file_not_found`, `hash_mismatch`) or `<action>_error` for an unexpected exception (`read_error`, `search_error`).
@@ -118,7 +125,7 @@ Every tool definition is sent with every request, so tools that duplicate others
 
 ## How changes have been verified
 
-The automated test suite in `tests/` (pytest, 300 tests, about a minute) covers every server. Run it from the repository root:
+The automated test suite in `tests/` (pytest, 314 tests, about a minute) covers every server. Run it from the repository root:
 
 ```bash
 python -m pip install -r requirements-dev.txt
@@ -141,6 +148,7 @@ Add tests for every new tool or fixed bug.
 - `ignored_dirs` names are matched case-sensitively.
 - `prepare_tools()` changes the schemas and argument handling through MCPServer's internal `_tool_manager`, as `mcp` has no option for it. An `mcp` upgrade can break it; `test_tool_definitions_stay_small` and `test_null_arguments_use_the_defaults` then fail.
 - The console formatting relies on ollmcp's heuristic for when to render a response as Markdown (see Responses in the console). Another client, or a change in ollmcp, can show the responses differently, but they stay readable as plain text.
+- `search_relevant_files` does not match word forms: `search` does not find `searching`. Splitting identifiers covers many such cases in code, and stemming would make exact name matches less reliable. Common English words in a query (`the`, `is`) get almost no weight, but words such as `how` can still weigh something in a small project.
 - `search_text_in_files` only treats a query as literal text if it is not a valid regex: `func()` is a valid regex that matches `func` without the parentheses, and `a.b` also matches `axb`. The results then include the intended text, with some extra matches.
 - Command output is decoded as UTF-8. Python programs are made to write UTF-8 (`PYTHONIOENCODING=utf-8`, found by the test suite), but other programs writing in the Windows code page may still show `�` for characters such as `ä`.
 
@@ -151,7 +159,7 @@ In recommended order.
 1. **Test with a local model on real tasks** (fix a bug, add a feature, rename something), compared with other tools such as the MCP reference servers. The test suite shows that the tools behave as designed, not that a small model finishes tasks better with them.
 2. **Add a repo-wide commit log**, e.g. `get_recent_commits(limit, path=None)` and a way to show one commit. Git history is currently only available per file.
 3. **Allow a working folder per command**: an optional `cwd` key in the command registry, relative to `allowed_dir`, for monorepos.
-4. **Find where a name is defined: a `name` parameter for `get_outline`**, e.g. `get_outline(path="", name="validate_order")` → `src/orders/service.py  42-67 validate_order(): Checks the order`. Small models often know a name (from a traceback, a call site or the task) but not its file, and `read_file_with_metadata(path, section=...)` needs the file. `search_text_in_files` finds every use of the name, not only the definition, and a regex covering all JS/TS definition forms (`function x`, `const x = () =>`, class methods and fields, default exports) is too hard for a small model; a folder outline of a large project leaves out nested sections such as methods to fit the output limit. The parameter would outline the files within `path` as now and return only the sections matching `name`, with the matching of section reads (`find_sections` in `mcp_outline.py`, also `Class.method`), each with its file and line span, and the usual limits if many match. A parameter instead of a new `find_definition` tool keeps the tool definitions smaller (about 100 characters instead of 300) and fits the outline → section read workflow. Do this after item 1 shows whether models actually get stuck finding definitions.
+4. **Find where a name is defined: a `name` parameter for `get_outline`**, e.g. `get_outline(path="", name="validate_order")` → `src/orders/service.py  42-67 validate_order(): Checks the order`. Small models often know a name (from a traceback, a call site or the task) but not its file, and `read_file_with_metadata(path, section=...)` needs the file. `search_text_in_files` finds every use of the name, not only the definition, and a regex covering all JS/TS definition forms (`function x`, `const x = () =>`, class methods and fields, default exports) is too hard for a small model; a folder outline of a large project leaves out nested sections such as methods to fit the output limit. The parameter would outline the files within `path` as now and return only the sections matching `name`, with the matching of section reads (`find_sections` in `mcp_outline.py`, also `Class.method`), each with its file and line span, and the usual limits if many match. A parameter instead of a new `find_definition` tool keeps the tool definitions smaller (about 100 characters instead of 300) and fits the outline → section read workflow. `search_relevant_files` with the name as the query already ranks a section named after it high, which may be enough. Do this after item 1 shows whether models actually get stuck finding definitions.
 
 Also worth considering: allowing more than one argument in command templates.
 

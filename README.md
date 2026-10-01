@@ -204,6 +204,7 @@ Performs text or regex searches across files in a specified directory.
 
 - **search_text_in_files** Search for text or regex patterns from code files in the codebase. A query that is not a valid regex, such as `foo(`, is searched for as literal text, and the response says so. Can be limited to a folder or file (`path`) and to matching file names (`file_pattern`, e.g. `*.py`), and can show lines around each match (`context_lines`). Very long lines are shortened around the match.
 - **search_files_by_pattern** Searches for files and directories that match a glob-style pattern, such as `src/**/*.test.ts`.
+- **search_relevant_files** Finds the files most relevant to a sentence, code snippet or error message when the exact text is unknown. The words and names in the query are used as keywords, names also by their parts (`getUserName`: `get`, `user`, `name`). Keywords found in few files weigh much more than common ones, so a name used in only one other file ranks that file first. Each result shows the file's best matching section (function, class or heading) with its best lines and how to read it, and the response lists the weight of each keyword and the keywords that were not found anywhere. Can be limited with `path` and `file_pattern`; `max_results` sets the number of files (default 10, up to 30).
 
 ### web-search-mcp
 
@@ -296,6 +297,7 @@ Local models have small context windows, so every tool response is limited to `m
 | `get_outline` | `max_output_chars`: the detail is reduced step by step instead of cutting the outline; files over 1 MB are not outlined; folders with over 1000 files are listed by subfolder only | Suggested subfolders to outline with `path`, with their file counts, or one file with `path` |
 | `search_text_in_files` | 100 matches or `max_output_chars`; lines over 300 characters are shortened | A suggested `path` with the most matches, `file_pattern`, fewer `context_lines` |
 | `search_files_by_pattern` | 100 matches | A more specific pattern |
+| `search_relevant_files` | `max_results` files (up to 30) or `max_output_chars`; 3 lines per file | A lower `max_results`, `path` or `file_pattern` |
 | `get_diff` of a file, `get_file_history`, `get_git_status` | `max_output_chars` | Read the file instead, a smaller `limit`, or a `path` |
 | `get_diff` of all changes | `max_output_chars`; up to 200 changed and 200 untracked files are listed | `get_diff` with the `path` of a file listed in `changed_files`, or of a folder |
 | `run_predefined_command` | `max_output_chars`, split between stdout and stderr; the middle of long output is cut, as errors are usually at the end | A narrower command, such as tests for a single file |

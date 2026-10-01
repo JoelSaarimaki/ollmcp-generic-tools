@@ -47,6 +47,20 @@ def test_folders_containing_protected_or_forbidden_files_cannot_be_moved_or_dele
     assert denied(fs.move_file("sub", "sub2"))
     assert denied(fs.delete_file("."))
 
+def test_a_backup_folder_inside_the_project_is_hidden_and_protected(project):
+    project.write("src/a.py", "x = 1\n")
+    project.configure(backup_folder="backups")
+    fs = project.load("filesystem")
+    fs.delete_file("src/a.py")
+    assert (project.root / "backups" / "journal.json").is_file()
+    assert "backups" not in [e["name"] for e in json.loads(fs.list_directory("."))["entries"]]
+    assert "backup folder of restore_file" in json.loads(fs.list_directory("backups"))["message"]
+    assert denied(fs.read_file_with_metadata("backups/journal.json"))
+    assert denied(fs.delete_file(".")) and denied(fs.move_file("backups", "elsewhere"))
+    assert "backups" not in project.load("map").get_outline()
+    assert project.load("search").search_relevant_files("journal restored").startswith("- No files contain")
+    assert json.loads(fs.restore_file("src/a.py"))["success"] and (project.root / "src/a.py").exists()
+
 def test_protected_and_forbidden_paths_are_hidden_from_listings(protected_project):
     names = [e["name"] for e in json.loads(protected_project.load("filesystem").list_directory("."))["entries"]]
     assert ".mcp.json" not in names and "tools-config.json" not in names and "secret" not in names

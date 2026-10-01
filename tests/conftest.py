@@ -91,15 +91,23 @@ class Project:
         self.git("add", "-A")
         self.git("commit", "-qm", "init")
 
+def _use_temporary_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Points the home folder to the temporary folder, so that the default backup folder of restore_file is there."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
+
 @pytest.fixture
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Project:
     monkeypatch.chdir(tmp_path)
+    _use_temporary_home(tmp_path, monkeypatch)
     return Project(tmp_path / "project", monkeypatch)
 
 @pytest.fixture
 def make_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Creates projects at a given path below the temporary folder, e.g. inside a folder named 'out'."""
     monkeypatch.chdir(tmp_path)
+    _use_temporary_home(tmp_path, monkeypatch)
     return lambda rel: Project(tmp_path / rel, monkeypatch)
 
 def start_server(server: str, config_path: Path | None) -> subprocess.CompletedProcess:

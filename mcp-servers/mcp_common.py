@@ -8,6 +8,7 @@ forbidden paths and output limit. The servers import this module, which works be
 Python adds a script's own folder to its import path.
 """
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -17,10 +18,12 @@ from pathlib import Path
 # --- Constants & Config ---
 
 CONFIG_ENV_VAR = "MCP_TOOLS_CONFIG"
-CONFIG_KEYS = {"allowed_dir", "forbidden_paths", "max_output_chars", "gitignore_path", "commands_config", "context_folder", "read_only_files", "ignored_dirs", "ollama_api_key"}
+CONFIG_KEYS = {"allowed_dir", "forbidden_paths", "max_output_chars", "gitignore_path", "commands_config", "context_folder", "read_only_files", "ignored_dirs", "ollama_api_key", "backup_folder"}
 DEFAULT_MAX_OUTPUT_CHARS = 40000
 MIN_MAX_OUTPUT_CHARS = 2000
 PROTECTED_FILE_NAMES = {".mcp.json"}  # MCP server configuration, never accessible regardless of forbidden_paths
+# Backups of the files changed by the filesystem tools, for restore_file. Outside the project, so that they are not in git.
+DEFAULT_BACKUP_ROOT = Path.home() / ".ollmcp-tools-backups"
 # Folder names the map and search tools skip at any depth, unless the tools config sets its own ignored_dirs
 DEFAULT_IGNORED_DIRS = {
     "node_modules", ".git", "__pycache__", "dist", "build", ".next",
@@ -136,6 +139,11 @@ READ_ONLY_FILES = _setting_paths("read_only_files", CONFIG_DIR)
 IGNORED_DIRS = _setting_ignored_dirs()
 # API key for Ollama's hosted web search and fetch (web-search-mcp). Never shown to the AI: the config file is protected.
 OLLAMA_API_KEY = _setting_secret("ollama_api_key")
+# One default backup folder per project, named after it and its path, so that projects with the same name do not share one
+_PROJECT_KEY = hashlib.sha256(str(ALLOWED_DIR).lower().encode("utf-8")).hexdigest()[:12]
+BACKUP_DIR = _setting_path("backup_folder", CONFIG_DIR) or DEFAULT_BACKUP_ROOT / f"{ALLOWED_DIR.name}-{_PROJECT_KEY}"
+if ALLOWED_DIR.is_relative_to(BACKUP_DIR):
+    raise ValueError(f"{CONFIG_PATH}: 'backup_folder' must not contain 'allowed_dir', as the backup folder is hidden from the tools: {BACKUP_DIR}")
 
 # --- Shared Helpers ---
 
@@ -164,11 +172,20 @@ def is_protected(path: Path) -> bool:
                 return True
     return False
 
+def is_backup(path: Path) -> bool:
+    """
+    Checks if the given path is in the backup folder, which only restore_file may change.
+    """
+    try:
+        return path.resolve().is_relative_to(BACKUP_DIR)
+    except OSError:
+        return True
+
 def is_forbidden(path: Path) -> bool:
     """
-    Checks if the given path is a protected file, a forbidden file or is located within a forbidden folder.
+    Checks if the given path is a protected file, in the backup folder, a forbidden file or is located within a forbidden folder.
     """
-    if is_protected(path):
+    if is_protected(path) or is_backup(path):
         return True
     if not FORBIDDEN_PATHS:
         return False
@@ -189,7 +206,7 @@ def contains_forbidden(path: Path) -> bool:
         return True
     if any(forbidden.is_relative_to(resolved) for forbidden in FORBIDDEN_PATHS):
         return True
-    if CONFIG_PATH.is_relative_to(resolved):
+    if CONFIG_PATH.is_relative_to(resolved) or BACKUP_DIR.is_relative_to(resolved):
         return True
     if resolved.is_dir():
         for dirpath, _, filenames in os.walk(resolved):
@@ -219,6 +236,8 @@ def access_denied_message(path: Path, label: str = "Path") -> str:
     """
     if is_protected(path):
         return f"{label} is protected: '{path.name}' contains the MCP server or tools configuration and cannot be accessed."
+    if is_backup(path):
+        return f"{label} is protected: it is in the backup folder of restore_file, which cannot be accessed directly."
     if is_forbidden(path):
         return f"{label} is forbidden: {display_path(path, ALLOWED_DIR)}"
     return f"{label} is not within the allowed directory: {ALLOWED_DIR.as_posix()}"

@@ -27,10 +27,26 @@
         "template": "poetry run python -c \"import sys; print(sys.version)\"",
         "description": "Shows the Python version used by the project's virtual environment."
     },
+    "python_doc": {
+        "template": "poetry run python -m pydoc {arg}",
+        "description": "Shows the documentation and signatures of an installed module, class or function. Use it to check a library's API instead of guessing it. Argument: the full name (e.g., 'requests.Session.get' or 'pathlib.Path')."
+    },
     "run_tests": {
-        "template": "pytest tests",
+        "template": "poetry run pytest tests",
         "description": "Runs the whole test suite. Use this to verify changes before considering a task done.",
         "timeout": 600
+    },
+    "run_test_file": {
+        "template": "poetry run pytest {arg}",
+        "description": "Runs the tests of one file, or one test, which is faster than the whole suite while working on a change. Argument: the test file or test (e.g., 'tests/test_orders.py' or 'tests/test_orders.py::test_total')."
+    },
+    "run_tests_matching": {
+        "template": "poetry run pytest -k {arg}",
+        "description": "Runs the tests whose names match an expression. Argument: part of the test names, optionally with and/or/not (e.g., 'total' or 'total and not slow')."
+    },
+    "run_failed_tests": {
+        "template": "poetry run pytest --last-failed",
+        "description": "Runs again only the tests that failed in the previous test run. Use it to check a fix."
     },
     "lint": {
         "template": "poetry run ruff check .",
@@ -58,5 +74,19 @@
         "template": "npm run {arg}",
         "description": "Runs a script defined in the 'scripts' section of package.json. Argument: the script name (e.g., 'build', 'test' or 'lint'). Do not use for long-running scripts such as 'dev' or 'start', as they are stopped at the timeout.",
         "timeout": 600
+    },
+    "npm_test_file": {
+        "template": "npm test -- {arg}",
+        "description": "Runs the JS/TS tests of one file with the project's test script (Jest or Vitest). Argument: the test file (e.g., 'src/cart.test.ts').",
+        "timeout": 300
+    },
+    "npm_test_name": {
+        "template": "npm test -- -t {arg}",
+        "description": "Runs the JS/TS tests whose names contain the given text (Jest or Vitest). Argument: part of the test name (e.g., 'adds an item').",
+        "timeout": 300
+    },
+    "npm_package_info": {
+        "template": "npm view {arg}",
+        "description": "Shows an npm package's description, latest version and dependencies from the registry. Argument: the package name, optionally with a version (e.g., 'zod' or 'zod@3')."
     }
 }

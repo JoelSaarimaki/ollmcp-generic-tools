@@ -12,6 +12,7 @@ from pathlib import Path
 from mcp.server.mcpserver import Image, MCPServer
 from mcp_common import (
     ALLOWED_DIR,
+    BACKUP_DIR,
     COMMANDS_CONFIG,
     CONFIG,
     CONFIG_PATH,
@@ -51,6 +52,8 @@ MAX_LINE_CHARS = 2000  # Longer lines (e.g. minified code) are shown shortened, 
 SHORTENED_LINE_MARK = " [...]"
 MAX_TEXT_FILE_BYTES = 50 * 1024 * 1024  # Larger text files are not read
 MAX_LIST_ENTRIES = 250
+MAX_BACKUPS = 200  # Changes kept for restore_file; the backups of older ones are removed
+BACKUP_JOURNAL = "journal.json"
 EDIT_SNIPPET_CONTEXT_LINES = 3  # Lines shown around a change after an edit
 MAX_EDIT_SNIPPET_LINES = 40
 SHRINK_WARNING_RATIO = 0.5  # write_file warns if a file of 20+ lines shrinks below this ratio
@@ -147,10 +150,10 @@ def _get_file_info(path: Path) -> FileMetadata:
         modified_at=modified_at
     )
 
-def _write_logic(path: Path, content: str, expected_sha256: str) -> str:
+def _write_logic(path: Path, content: str, expected_sha256: str, tool: str) -> str:
     """
-    Validates the file hash, then writes the content atomically while keeping the
-    original line endings and BOM. Returns a JSON response with the new metadata.
+    Validates the file hash, keeps a backup of the file for restore_file, then writes the content atomically
+    while keeping the original line endings and BOM. Returns a JSON response with the new metadata.
     """
     if not path.exists():
         return json.dumps({"success": False, "error": "file_not_found", "message": f"File not found: {_rel(path)}. To create a new file, use create_file."}, indent=2, ensure_ascii=False)
@@ -175,7 +178,11 @@ def _write_logic(path: Path, content: str, expected_sha256: str) -> str:
     if info.line_ending == "CRLF":
         normalized_content = normalized_content.replace("\n", "\r\n")
 
-    # 4. Atomic write
+    # 4. Backup, then atomic write
+    try:
+        _record_change(tool, path, "copy")
+    except Exception as e:
+        return _backup_error(e)
     temp_path = path.with_suffix(path.suffix + ".tmp")
     try:
         # Using 'utf-8-sig' if BOM is present handles writing the BOM automatically
@@ -440,7 +447,7 @@ def _edit_logic(path: Path, old_text: str, new_text: str, expected_sha256: str, 
     except _EditError as e:
         return _text_error(e.error, e.message)
 
-    result = json.loads(_write_logic(path, new_content, expected_sha256))
+    result = json.loads(_write_logic(path, new_content, expected_sha256, "edit_file"))
     if not result.get("success"):
         return _text_error(result.get("error", "write_error"), result.get("message", ""))
 
@@ -498,6 +505,94 @@ def _detect_neighbor_line_ending(directory: Path) -> tuple[str, str]:
         return "\n", " (Note: Line ending tie detected among neighboring files. Defaulted to LF.)"
     return "\n", " (Note: No neighboring files or no clear majority, defaulting to LF)"
 
+# --- Backups for restore_file ---
+# Every change the file tools make is recorded in a journal in BACKUP_DIR before it is made, with a copy of
+# a changed file. A deleted file or folder is moved into the backup folder instead of being removed.
+# restore_file undoes the latest change to a path and moves what it replaces into the backup folder too,
+# so that nothing the tools touch is lost. Only the last MAX_BACKUPS changes are kept.
+
+def _load_journal() -> list[dict]:
+    """
+    Returns the recorded changes, oldest first.
+    """
+    path = BACKUP_DIR / BACKUP_JOURNAL
+    if not path.is_file():
+        return []
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def _save_journal(entries: list[dict]) -> None:
+    """
+    Writes the journal atomically, removing the backups of the changes beyond the last MAX_BACKUPS.
+    """
+    for old in entries[:-MAX_BACKUPS]:
+        shutil.rmtree(BACKUP_DIR / old["id"], ignore_errors=True)
+    path = BACKUP_DIR / BACKUP_JOURNAL
+    temp_path = path.with_suffix(".tmp")
+    with open(temp_path, "w", encoding="utf-8") as f:
+        json.dump(entries[-MAX_BACKUPS:], f, indent=2, ensure_ascii=False)
+    os.replace(temp_path, path)
+
+def _record_change(tool: str, path: Path, keep: str = "", source: Path | None = None) -> None:
+    """
+    Records a change to path before the tool makes it. keep is 'copy' to keep a copy of the file, or 'move'
+    to move the file or folder into the backup folder, which deletes it. For a move, path is the destination
+    and source the current path. Raises an error if the backup fails, so that the change is not made.
+    """
+    entries = _load_journal()
+    now = datetime.datetime.now()
+    entry_id = base_id = now.strftime("%Y%m%d-%H%M%S-%f")
+    count = 1
+    while (BACKUP_DIR / entry_id).exists():
+        count += 1
+        entry_id = f"{base_id}-{count}"
+    entry_dir = BACKUP_DIR / entry_id
+    entry_dir.mkdir(parents=True)
+    if keep == "copy":
+        shutil.copy2(path, entry_dir / "before")
+    elif keep == "move":
+        shutil.move(str(path), str(entry_dir / "before"))
+    entries.append({"id": entry_id, "time": now.isoformat(timespec="seconds"), "tool": tool,
+                    "path": _rel(path), "source": _rel(source) if source else None, "restored": False})
+    try:
+        _save_journal(entries)
+    except Exception:
+        if keep == "move":
+            shutil.move(str(entry_dir / "before"), str(path))
+        raise
+
+def _backup_error(e: Exception) -> str:
+    """
+    Returns the JSON error for a change that was not made because its backup failed.
+    """
+    return json.dumps({"success": False, "error": "backup_error", "message": f"Nothing was changed, as the backup for restore_file failed: {e}"}, indent=2, ensure_ascii=False)
+
+def _latest_change(entries: list[dict], path: Path) -> dict | None:
+    """
+    Returns the latest change that is not restored yet to path or to a folder containing it, also as the source of a move.
+    """
+    for entry in reversed(entries):
+        paths = [ALLOWED_DIR / entry["path"]] + ([ALLOWED_DIR / entry["source"]] if entry["source"] else [])
+        if not entry["restored"] and any(path.is_relative_to(p) for p in paths):
+            return entry
+    return None
+
+def _set_aside(path: Path, entry_dir: Path) -> None:
+    """
+    Moves a file or folder that restore_file replaces into the backup folder of the change.
+    """
+    if path.exists() or path.is_symlink():
+        shutil.move(str(path), str(entry_dir / "replaced"))
+
+def _text_or_none(path: Path) -> str | None:
+    """
+    Returns the content of a UTF-8 text file, or None for folders, missing and other files.
+    """
+    try:
+        return _read_text(path, _get_file_info(path).has_bom) if path.is_file() else None
+    except Exception:
+        return None
+
 # --- Public MCP Tools ---
 
 @mcp.tool()
@@ -534,13 +629,13 @@ def write_file(path: str, content: str, expected_sha256: str) -> str:
                     "message": f"content contains the placeholder comment '{placeholder}'. The content is written literally, so the placeholder would replace real code. Write out the complete file, or use edit_file to change only part of it."
                 }, indent=2, ensure_ascii=False)
 
-            result = json.loads(_write_logic(p, content, expected_sha256))
+            result = json.loads(_write_logic(p, content, expected_sha256, "write_file"))
             old_count, new_count = len(_split_lines(original)), len(_split_lines(_normalize_newlines(content)))
             if result.get("success") and old_count >= 20 and new_count < old_count * SHRINK_WARNING_RATIO:
                 result["warning"] = f"The file shrank from {old_count} to {new_count} lines. If you meant to change only part of it, restore the missing lines: write_file replaces the whole file, while edit_file changes only part of it."
             return json.dumps(_add_report(result, _write_report(p, original, content)), indent=2, ensure_ascii=False)
 
-        return _write_logic(p, content, expected_sha256)
+        return _write_logic(p, content, expected_sha256, "write_file")
     except Exception as e:
         return json.dumps({"success": False, "error": "write_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
 
@@ -595,6 +690,10 @@ def create_file(path: str, content: str) -> str:
         if target_newline == "\r\n":
             normalized_content = normalized_content.replace("\n", "\r\n")
 
+        try:
+            _record_change("create_file", p)
+        except Exception as e:
+            return _backup_error(e)
         p.parent.mkdir(parents=True, exist_ok=True)
 
         with open(p, "w", encoding="utf-8", newline="") as f:
@@ -823,6 +922,10 @@ def move_file(source: str, destination: str) -> str:
             new_name = Path(destination).name
             if new_name == src.name:
                 return json.dumps({"success": False, "error": "same_path", "message": f"Source and destination are the same: {_rel(src)}"}, indent=2, ensure_ascii=False)
+            try:
+                _record_change("move_file", src.with_name(new_name), source=src)
+            except Exception as e:
+                return _backup_error(e)
             os.rename(src, src.with_name(new_name))
             return json.dumps({"success": True, "message": f"Renamed {_rel(src)} to {_rel(src.with_name(new_name))}"}, indent=2, ensure_ascii=False)
         if dst.exists():
@@ -830,6 +933,10 @@ def move_file(source: str, destination: str) -> str:
         if src.is_dir() and dst.is_relative_to(src):
             return json.dumps({"success": False, "error": "invalid_destination", "message": f"A folder cannot be moved into itself: {_rel(dst)} is inside {_rel(src)}."}, indent=2, ensure_ascii=False)
 
+        try:
+            _record_change("move_file", dst, source=src)
+        except Exception as e:
+            return _backup_error(e)
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(src), str(dst))
         return json.dumps({"success": True, "message": f"Moved {_rel(src)} to {_rel(dst)}"}, indent=2, ensure_ascii=False)
@@ -853,14 +960,77 @@ def delete_file(path: str) -> str:
         if not p.exists():
             return json.dumps({"success": False, "error": "not_found", "message": f"Path not found: {_rel(p)}"}, indent=2, ensure_ascii=False)
 
-        if p.is_dir():
-            shutil.rmtree(p)
-        else:
-            p.unlink()
-
-        return json.dumps({"success": True, "message": f"Deleted: {_rel(p)}"}, indent=2, ensure_ascii=False)
+        # Moved into the backup folder instead of being removed, so that restore_file can bring it back
+        try:
+            _record_change("delete_file", p, "move")
+        except Exception as e:
+            return _backup_error(e)
+        return json.dumps({"success": True, "message": f"Deleted: {_rel(p)}. Undo with restore_file(path='{_rel(p)}') if needed."}, indent=2, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"success": False, "error": "delete_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
+
+@mcp.tool()
+def restore_file(path: str) -> str:
+    """
+    Undoes the last change edit_file, write_file, create_file, move_file or delete_file made to a
+    path, e.g. a broken edit. Call it again to undo earlier changes.
+
+    Args:
+        path: The file or folder, before or after a move.
+    """
+    try:
+        p = resolve_path(path)
+        if not is_path_allowed(p):
+            return _access_denied(p)
+
+        entries = _load_journal()
+        entry = _latest_change(entries, p)
+        if not entry:
+            recent = list(dict.fromkeys(e["path"] for e in reversed(entries) if not e["restored"]))[:10]
+            hint = f" Paths with changes that can be undone: {', '.join(recent)}." if recent else " No changes are recorded."
+            return json.dumps({"success": False, "error": "no_backup", "message": f"No change to {_rel(p)} by the file tools is recorded.{hint}"}, indent=2, ensure_ascii=False)
+
+        target = ALLOWED_DIR / entry["path"]
+        source = ALLOWED_DIR / entry["source"] if entry["source"] else None
+        for checked in [target, source]:
+            if checked and not is_path_allowed(checked):
+                return _access_denied(checked)
+        entry_dir = BACKUP_DIR / entry["id"]
+        when = f"{entry['tool']} at {entry['time'].replace('T', ' ')}"
+
+        if source:
+            if not target.exists():
+                return json.dumps({"success": False, "error": "not_found", "message": f"{entry['path']}, which {when} moved from {entry['source']}, no longer exists, so it cannot be moved back."}, indent=2, ensure_ascii=False)
+            _set_aside(source, entry_dir)
+            source.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(target), str(source))
+            restored, message = source, f"Moved {entry['path']} back to {entry['source']}, undoing {when}."
+        else:
+            before_text = _text_or_none(target)
+            _set_aside(target, entry_dir)
+            restored = target
+            if (entry_dir / "before").exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(entry_dir / "before"), str(target))
+                message = f"Restored {entry['path']} as it was before {when}."
+            else:
+                message = f"Removed {entry['path']}, undoing {when}."
+        entry["restored"] = True
+        _save_journal(entries)
+
+        if (entry_dir / "replaced").exists():
+            message += f" The replaced version is kept in {(entry_dir / 'replaced').as_posix()}."
+        earlier = sum(1 for e in entries if not e["restored"] and _latest_change([e], restored))
+        if earlier:
+            message += f" {earlier} earlier {'change' if earlier == 1 else 'changes'} can be undone with restore_file(path='{_rel(restored)}')."
+        result = {"success": True, "message": message}
+        after_text = _text_or_none(restored)
+        if after_text is not None:
+            result.update(asdict(_get_file_info(restored)))
+            result = _add_report(result, _write_report(restored, None if source else before_text, after_text))
+        return json.dumps(result, indent=2, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"success": False, "error": "restore_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
 def get_config() -> str:
@@ -894,7 +1064,9 @@ def get_config() -> str:
             "filesystem": {
                 "max_read_lines": MAX_READ_LINES,
                 "max_line_chars": MAX_LINE_CHARS,
-                "max_list_entries": MAX_LIST_ENTRIES
+                "max_list_entries": MAX_LIST_ENTRIES,
+                "backup_folder": BACKUP_DIR.as_posix(),
+                "max_backups": MAX_BACKUPS
             },
             "outline_and_search": {
                 "ignored_dirs": sorted(IGNORED_DIRS),
@@ -922,6 +1094,7 @@ def get_config() -> str:
                 "All servers read the same config_file, so they all use the same allowed_dir, forbidden_paths and max_output_chars.",
                 "Only paths within allowed_dir can be accessed. Relative paths given to the tools are resolved against allowed_dir.",
                 "Forbidden paths and everything inside forbidden folders are denied and hidden, and so are protected files: files named in protected_file_names and the config_file itself.",
+                "restore_file undoes the last max_backups changes of the file tools. Their backups, including deleted files, are kept in backup_folder, which the tools cannot access directly.",
                 "The outline and search tools also skip folders named in ignored_dirs at any depth, files matching the .gitignore patterns and, for search, binary files.",
                 "get_outline lists every file that is not ignored, with the sections of the outline_file_types.",
                 "Git's own .gitignore rules decide which untracked files the git tools list. If repository_root is null, allowed_dir is not in a git repository.",

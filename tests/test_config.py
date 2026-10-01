@@ -21,6 +21,7 @@ from conftest import SERVER_FILES, start_server
     ('{"allowed_dir": ".", "ignored_dirs": "node_modules"}', "must be a list of folder names"),
     ('{"allowed_dir": ".", "ignored_dirs": ["node_modules", " "]}', "must be a list of folder names"),
     ('{"allowed_dir": ".", "ignored_dirs": ["docs/build"]}', "not paths"),
+    ('{"allowed_dir": ".", "backup_folder": "."}', "'backup_folder' must not contain 'allowed_dir'"),
 ])
 def test_invalid_config_stops_the_server(project, config_text, message):
     project.config_path.write_text(config_text, encoding="utf-8")

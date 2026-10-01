@@ -2,7 +2,7 @@
 
 Context for continuing development of the MCP servers in this repository: what the tools are for, the principles they follow and why, what has been verified, and what is still open. The [README](README.md) describes how to use the tools; this file describes how and why they are built the way they are.
 
-Last updated: 2026-10-01, after adding `search_relevant_files`. On 2026-09-29: formatting the text responses for the ollmcp console, and before that outlines and section reads replaced the codebase maps, tree-sitter replaced the regex JS/TS parser, and the tools were merged from 27 to 23 with shorter definitions.
+Last updated: 2026-10-01, after adding `search_relevant_files` and `restore_file`. On 2026-09-29: formatting the text responses for the ollmcp console, and before that outlines and section reads replaced the codebase maps, tree-sitter replaced the regex JS/TS parser, and the tools were merged from 27 to 23 with shorter definitions.
 
 ## Purpose and target
 
@@ -15,11 +15,11 @@ Most design decisions follow from the target model being small and local:
 
 ## Current state
 
-Seven servers, 24 tools. All servers share `mcp-servers/mcp_common.py` and read one config file; the map, filesystem, context and search servers also use the outline parsers in `mcp-servers/mcp_outline.py`.
+Seven servers, 25 tools. All servers share `mcp-servers/mcp_common.py` and read one config file; the map, filesystem, context and search servers also use the outline parsers in `mcp-servers/mcp_outline.py`.
 
 | Server | Tools |
 |---|---|
-| `safe-filesystem-mcp` | `read_file_with_metadata`, `edit_file`, `write_file`, `create_file`, `read_image`, `list_directory`, `move_file`, `delete_file`, `get_config` |
+| `safe-filesystem-mcp` | `read_file_with_metadata`, `edit_file`, `write_file`, `create_file`, `read_image`, `list_directory`, `move_file`, `delete_file`, `restore_file`, `get_config` |
 | `generate-map-mcp` | `get_outline` |
 | `search-tool-mcp` | `search_text_in_files`, `search_files_by_pattern`, `search_relevant_files` |
 | `git-diff-mcp` | `get_diff`, `get_file_history`, `get_git_status` |
@@ -29,11 +29,12 @@ Seven servers, 24 tools. All servers share `mcp-servers/mcp_common.py` and read 
 
 Configuration:
 - `.mcp.json` only starts the servers and gives each one `MCP_TOOLS_CONFIG`, the path of the tools config file. ollmcp names tools `<server key>.<tool>` (e.g. `codebase-mapper.get_outline`); for cloud providers the dot becomes `_`.
-- `tools-config.json` holds all settings: `allowed_dir` (required), `forbidden_paths`, `ignored_dirs`, `gitignore_path`, `max_output_chars`, `commands_config`, `context_folder`, `read_only_files`, `ollama_api_key`.
+- `tools-config.json` holds all settings: `allowed_dir` (required), `forbidden_paths`, `ignored_dirs`, `gitignore_path`, `max_output_chars`, `commands_config`, `context_folder`, `read_only_files`, `ollama_api_key`, `backup_folder`.
 - `mcp-servers/mcp_common.py` loads and validates the config and holds the shared helpers and constants.
 - Dependencies: `mcp`, `ollama` (for `web-search-mcp`) and `tree-sitter` with `tree-sitter-javascript` and `tree-sitter-typescript` (for JS/TS outlines), listed with the `ollmcp` client in `requirements.txt` for users; `requirements-dev.txt` includes it and adds the test runner. The tree-sitter packages are pinned to one minor version each, as the grammars must match the tree-sitter version.
 - `mcp-servers/mcp_outline.py` holds the Python, JS/TS and Markdown parsers and everything built on them: rendering outlines at a detail level, finding sections by name and comparing outlines before and after a write. It reads no config and no files.
 - `_commands/app-commands.json`, `_context/` and `_instructions/app-instructions.md` are **example** files showing how a project would use the tools. They are not development notes.
+- `_instructions/app-instructions.md` is a concrete workflow for a small model (outline → section reads, which search to use when, hash-chained `edit_file`, `restore_file` after a broken write, API lookup, single tests before the suite or, in a project without test commands, the other listed checks and an honest report of what could not be verified, `get_diff` review, no commits) plus rules for limits, errors and web content. Small models follow concrete steps better than general advice such as "understand the project first". It is read into the context every session (about 1 100 tokens), so keep it short. It does not tell the model to call `read_context_file` at the start of a session, as the model only sees the file after that call: that instruction goes into ollmcp's system prompt (see the README).
 
 ## Principles applied
 
@@ -46,12 +47,13 @@ Configuration:
 - **`commands-mcp`** runs registered templates without a shell. The AI's argument is always one argument; arguments starting with `-` or containing line breaks are rejected, and for `.bat`/`.cmd` programs (e.g. `npm` on Windows) also `& | < > ^ % ! " ( )`. Commands get no input (prompts end immediately), have a timeout and succeed only with exit code 0.
 - **Known limit, documented in the README:** commands execute project code that the AI can write, so they can read or change any file. Complete protection requires keeping `.mcp.json`, the tools config, the server scripts and the command registry outside the project folder (`ollmcp --servers-json <path>`).
 - **`web-search-mcp`** only calls Ollama's hosted API (ollama.com), with the key from `ollama_api_key`; it is passed to the `ollama` client explicitly, so the library's own `OLLAMA_API_KEY` environment variable is not used. `get_config` only reports whether the key is set. `web_fetch` accepts only `http(s)` URLs, and the page is fetched by Ollama's service, not locally. Web content can contain prompt injection; this is not filtered.
+- **The backup folder of `restore_file`** is denied and hidden like a protected file (`is_backup` in `mcp_common.py`), even if `backup_folder` points inside the project, and a folder containing it cannot be moved or deleted. Otherwise the AI could change or delete the backups that are meant to undo its mistakes. A `backup_folder` containing `allowed_dir` stops the servers at startup, as it would hide the whole project.
 - **Ignored folders are not a security measure**: they only keep noise out of the outline and search tools.
 
 ### One configuration, strictly validated
 
-- **Config file only.** Servers read no environment variables except `MCP_TOOLS_CONFIG`. There is deliberately no fallback to the old per-server variables (`ALLOWED_DIR`, `INPUT_DIR`, `FORBIDDEN_PATHS`, `MAX_OUTPUT_CHARS`, `GITIGNORE_PATH`, `COMMANDS_CONFIG`, `CONTEXT_FOLDER_PATH`, `READ_ONLY_FILES`, `PROJECT_INSTRUCTIONS_FILE`): one source guarantees that all servers see the same settings.
-- **Fail at startup instead of silently degrading.** A server refuses to start if the config is missing or invalid JSON, has an unknown key (typo protection), lacks `allowed_dir` or points it to a missing folder, or has a value of the wrong type. The same applies to the command registry (missing file, invalid JSON, command without `template`/`description`, invalid `timeout`) and to `read_only_files` (missing file, duplicate names).
+- **Config file only.** Servers read no environment variables except `MCP_TOOLS_CONFIG`, apart from the home folder (`Path.home()`) for the default backup folder of `restore_file`. There is deliberately no fallback to the old per-server variables (`ALLOWED_DIR`, `INPUT_DIR`, `FORBIDDEN_PATHS`, `MAX_OUTPUT_CHARS`, `GITIGNORE_PATH`, `COMMANDS_CONFIG`, `CONTEXT_FOLDER_PATH`, `READ_ONLY_FILES`, `PROJECT_INSTRUCTIONS_FILE`): one source guarantees that all servers see the same settings.
+- **Fail at startup instead of silently degrading.** A server refuses to start if the config is missing or invalid JSON, has an unknown key (typo protection), lacks `allowed_dir` or points it to a missing folder, has a `backup_folder` that contains `allowed_dir`, or has a value of the wrong type. The same applies to the command registry (missing file, invalid JSON, command without `template`/`description`, invalid `timeout`) and to `read_only_files` (missing file, duplicate names).
 - **Paths in the config are relative to the config file's folder**, except `forbidden_paths`, which are relative to `allowed_dir`. This keeps the config working when it is moved outside the project.
 - **`null` means "use the default"** for every optional setting, so a config can list a setting without using it. An empty list is different: `"ignored_dirs": []` skips nothing, while `null` uses the defaults.
 - **Project-specific values belong in the config; code only holds defaults** (e.g. `DEFAULT_IGNORED_DIRS`). A given `ignored_dirs` list replaces the defaults completely, so that a default such as `build` can be un-ignored. Entries are folder names, not paths.
@@ -59,7 +61,7 @@ Configuration:
 
 ### Output limits
 
-- `max_output_chars` (default 40 000 characters, about 10 000 tokens, minimum 2 000) limits every response. Tool-specific limits sit on top: 1000 lines per read, lines over 2000 characters shortened, 100 search matches, 250 directory entries, 200 listed changed files, files over 1 MB not outlined, folders with over 1000 files outlined by subfolder only, outlines after writes up to `min(2500, max_output_chars // 8)` characters, text files over 50 MB not read.
+- `max_output_chars` (default 40 000 characters, about 10 000 tokens, minimum 2 000) limits every response. Tool-specific limits sit on top: 1000 lines per read, lines over 2000 characters shortened, 100 search matches, 30 files with 3 lines each for `search_relevant_files`, 250 directory entries, 200 listed changed files, files over 1 MB not outlined, folders with over 1000 files outlined by subfolder only, outlines after writes up to `min(2500, max_output_chars // 8)` characters, text files over 50 MB not read.
 - **A limited response always contains `Output limited:`** (in JSON: an `output_limited` field) saying what was left out and the exact next call: which `start_line` to read next, which subfolders to outline with `path` (with file counts, descending into a folder that holds everything), which `path` has the most search matches, a smaller history `limit`, a narrower command.
 - Room for the notes scales with the budget (`min(X, max_output_chars // 4)`), and text inside JSON uses 90 % of its budget to leave room for escaping.
 - `_instructions/app-instructions.md` tells the AI to follow these messages instead of repeating the call and never to assume a limited response is complete.
@@ -71,7 +73,7 @@ Configuration:
 - **Reduce detail instead of cutting.** A folder outline that does not fit drops, in order: summaries, sections below the top level, all sections (files with section counts remain), and finally files in subfolders (subfolders with file counts remain). Every level still covers the whole folder, and the response names the level and suggests subfolders. Folders with more than 1000 files go straight to the last level without reading the files. A single file's outline drops calls, then summaries, then nested sections, and is only cut short as a last resort.
 - **Full relative paths instead of a tree with connectors**, so that a path can be copied into the other tools as-is.
 - **Reading by name** (`section`), because small models copy line numbers wrongly and line numbers go stale after an edit, while a name resolves against the current file. A name matches the full name (`App.run`, `Guide > Install`) or the name alone, first exactly and then ignoring letter case; an outline line copied as the name (`18-60 class App`, `## Install`, `run()`, even a whole line such as `class App extends Base (export): Summary`) also works, but only if the name as given matches nothing, so that a heading such as `type checking` is not also found as `checking`. Several matches return the candidates with their spans instead of guessing; if they have the same full name, the error points to `start_line` and `end_line`.
-- **Outline after every write** to a Python, JS/TS or Markdown file (`edit_file`, `write_file`, `create_file`, `write_context_file`), with the sections removed and added compared to the outline before the write. An explicit "no longer in the file" warning is more reliable than expecting a small model to notice a missing entry. A Python file that parsed before but not after the write is also warned about, which catches broken indentation early, and so is a new JS/TS syntax error (only a new one, so that syntax the grammar does not know is not reported after every write). Blocks of top-level statements are not compared, as their names change with every new constant.
+- **Outline after every write** to a Python, JS/TS or Markdown file (`edit_file`, `write_file`, `create_file`, `restore_file`, `write_context_file`), with the sections removed and added compared to the outline before the write. An explicit "no longer in the file" warning is more reliable than expecting a small model to notice a missing entry. A Python file that parsed before but not after the write is also warned about, which catches broken indentation early, and so is a new JS/TS syntax error (only a new one, so that syntax the grammar does not know is not reported after every write). Blocks of top-level statements are not compared, as their names change with every new constant.
 - **Spans**: Python from the first decorator to `end_lineno`, top-level statements between definitions grouped as blocks (`docstring, imports, assignments: A, B`); JS/TS from the JSDoc (and decorators) to the end of the declaration's syntax tree node, overloads and getter/setter pairs spanning all their declarations; Markdown from the heading to the line before the next heading of the same or a higher level, without trailing blank lines, skipping code blocks and front matter.
 - The parsers are in their own module, `mcp_outline.py`, which reads no config and no files.
 - **JS/TS outlines** list functions, components, hooks, classes with methods, interfaces, types, enums, exported constants, default/named/CommonJS exports, re-exports, local imports and JSDoc summaries. They include namespaces and modules (`namespace N {}`, `declare module "x" {}`, `declare global {}`) with their contents, and every form of default export (`export default` of any value, `export = f`, `export { a as default }`, `module.exports = function/class/name`). Overloads, and getter/setter pairs, form one section only when declared one after the other.
@@ -87,11 +89,21 @@ Configuration:
 
 - **`read_file_with_metadata` and `edit_file` return plain text**, not JSON: a short metadata header and the exact content in a fenced code block. JSON escaping made models copy `\n` and `\"` into `edit_file`. Errors of these two tools are `Error (<code>): <message>`. `web_fetch` uses the same format, as code is often copied from web pages.
 - **`edit_file` tolerates common copying mistakes**: copied `N| ` line number prefixes and code block fence lines are removed, trailing whitespace does not need to match, and when nothing matches, the error shows the lines that match with different indentation so they can be copied exactly. Multiple matches are reported with their line numbers.
-- **Hash-checked writes**: every edit needs the SHA-256 from the last read or edit, and the edit response shows the changed lines and the new hash, so edits can be chained without re-reading.
+- **Hash-checked writes**: every edit needs the SHA-256 from the last read or edit, and the edit response shows the changed lines and the new hash, so edits can be chained without re-reading. `restore_file` also returns the new hash of a restored file.
 - **Placeholder comments** (`// ... existing code ...`, `# rest of the code`, etc.) are rejected in `edit_file` and `write_file` unless the original already contains one. `write_file` warns if a file of 20+ lines shrinks below half.
 - Line endings (LF/CRLF) and BOMs are preserved; writes are atomic.
 - **JSON responses use `ensure_ascii=False`**, so `ä` stays readable instead of `\u00e4`.
 - `read_image` returns a real MCP image (ollmcp forwards it to vision models) with the format detected from the file's bytes.
+
+### Undo with restore_file
+
+Small models break files, and the outline warnings after a write only help if the model can get the file back: rebuilding it from memory is what just went wrong. `restore_file` undoes the changes of the file tools one at a time, newest first.
+
+- Every change is recorded in `journal.json` in the backup folder before it is made, with a copy of a changed file (`_record_change` in `safe-filesystem-mcp.py`). `delete_file` moves the file or folder into the backup folder instead of removing it. If the backup fails, the change is not made (`backup_error`), so every change can be undone.
+- A restore picks the latest change not restored yet to the path, to a folder containing it, or (for a move) to its old or new path, so changes are undone in reverse order also across moves and folder deletions. What a restore replaces is moved into the backup folder, never removed.
+- Git was considered instead (`git restore`), and rejected: it goes back to the last commit, losing every uncommitted change instead of only the last one, has nothing for new or untracked files, cannot bring back a deleted untracked file, and would be a git write tool.
+- The default backup folder is in the home folder, one per project (`<name>-<hash of the path>`), so backups are not in git or the project. `get_config` reports it. The tests point the home folder to their temporary folder (`_use_temporary_home` in `conftest.py`).
+- The example instructions (`_instructions/app-instructions.md`) tell the AI to undo a change that broke a file with `restore_file` instead of rewriting the lost parts from memory, and `delete_file` says in its response how to undo the deletion.
 
 ### Outline and search
 
@@ -104,6 +116,7 @@ Configuration:
   - The best section of a file is scored the same way by its own lines, without its subsections, so a document under a single `#` heading or a whole class does not win just by containing every match. Files without an outline are compared 30 lines at a time.
   - The top `3 × max_results` files are reranked with a bonus when their best section is named after a keyword, so the definition of a name ranks above files that only use it.
   - The response lists the keywords with their file counts and weights (0–1), the keywords not found anywhere (often a misspelled or invented name), and a note when all keywords are common.
+  - The docstrings of `search_text_in_files` and `search_relevant_files` point to each other: every use of a name (e.g. before renaming it) comes from `search_text_in_files`, as `search_relevant_files` shows only the best files.
   - There is no index: every search reads the files again. Text that cannot contain a keyword is skipped with one regex check per line and identifier, which keeps a 2 800-file project (Python's standard library) at about 2 seconds.
 - Outlines and text search can be limited to a folder with `path`. The outline of one Python file scans the whole project for Python symbols, so that "Calls:" works across folders; folder outlines do not show calls.
 
@@ -115,7 +128,7 @@ Every tool definition is sent with every request, so tools that duplicate others
 
 - Files start with `# --- file.py ---`, then stdlib imports, third-party imports (e.g. `ollama`, `tree_sitter`), then `from mcp.server.mcpserver import ...`, `from mcp_common import (...)` and, if needed, `from mcp_outline import (...)`. Sections: `Constants & Config` (`mcp = MCPServer("<Name>-Server")` first), `Internal Helpers`, `Public MCP Tools`.
 - Helpers are `_`-prefixed with short summary docstrings. Public names in `mcp_common.py` have no prefix.
-- **Tool docstrings are sent to the model with every request**, so they are short: what the tool does and what the model must get right, then `Args:` with one short line per parameter (no types, which are in the schema) and `Returns:` only if the response is not obvious. Guidance that errors give when it is needed (e.g. read again after `hash_mismatch`) is not repeated in descriptions. Optional strings default to `""` instead of `None`, and every server calls `prepare_tools(mcp)` from `mcp_common.py` before `mcp.run()`. It removes the generated titles and `anyOf: [type, null]` from the schemas, and makes an argument sent as `null` use the parameter's default, as small models often send `null` for optional parameters (`test_null_arguments_use_the_defaults`). `test_tool_definitions_stay_small` fails if the definitions grow past 10 800 characters (raised from 10 500 on 2026-10-01 for `search_relevant_files` and the pointers between the two text searches).
+- **Tool docstrings are sent to the model with every request**, so they are short: what the tool does and what the model must get right, then `Args:` with one short line per parameter (no types, which are in the schema) and `Returns:` only if the response is not obvious. Guidance that errors give when it is needed (e.g. read again after `hash_mismatch`) is not repeated in descriptions. Optional strings default to `""` instead of `None`, and every server calls `prepare_tools(mcp)` from `mcp_common.py` before `mcp.run()`. It removes the generated titles and `anyOf: [type, null]` from the schemas, and makes an argument sent as `null` use the parameter's default, as small models often send `null` for optional parameters (`test_null_arguments_use_the_defaults`). `test_tool_definitions_stay_small` fails if the definitions grow past 11 000 characters (raised from 10 500 on 2026-10-01 for `search_relevant_files`, the pointers between the two text searches and `restore_file`).
 - Shared code lives in `mcp_common.py`, and the parsers and outline functions in `mcp_outline.py`; servers never re-implement the path checks, config loading, walking or parsing.
 - Built-in generics and `X | None`, double quotes, no bare `except:`.
 - Text tools return `Error: <Action> failed:\n{e}\n{traceback}`, except the tools whose responses contain file content (`read_file_with_metadata`, `edit_file`, `web_fetch`), which return `Error (<code>): <message>`; JSON tools always include `"success"` and use `indent=2, ensure_ascii=False`. Error codes are snake_case: a specific condition (`file_not_found`, `hash_mismatch`) or `<action>_error` for an unexpected exception (`read_error`, `search_error`).
@@ -125,7 +138,7 @@ Every tool definition is sent with every request, so tools that duplicate others
 
 ## How changes have been verified
 
-The automated test suite in `tests/` (pytest, 314 tests, about a minute) covers every server. Run it from the repository root:
+The automated test suite in `tests/` (pytest, 328 tests, about a minute) covers every server. Run it from the repository root:
 
 ```bash
 python -m pip install -r requirements-dev.txt
@@ -148,6 +161,7 @@ Add tests for every new tool or fixed bug.
 - `ignored_dirs` names are matched case-sensitively.
 - `prepare_tools()` changes the schemas and argument handling through MCPServer's internal `_tool_manager`, as `mcp` has no option for it. An `mcp` upgrade can break it; `test_tool_definitions_stay_small` and `test_null_arguments_use_the_defaults` then fail.
 - The console formatting relies on ollmcp's heuristic for when to render a response as Markdown (see Responses in the console). Another client, or a change in ollmcp, can show the responses differently, but they stay readable as plain text.
+- `restore_file` only knows the changes made by the file tools. Changes by commands (e.g. a formatter), `write_context_file` or the user are not recorded; a restore over them keeps them in the backup folder, where only the user can get them. Only the last 200 changes are kept.
 - `search_relevant_files` does not match word forms: `search` does not find `searching`. Splitting identifiers covers many such cases in code, and stemming would make exact name matches less reliable. Common English words in a query (`the`, `is`) get almost no weight, but words such as `how` can still weigh something in a small project.
 - `search_text_in_files` only treats a query as literal text if it is not a valid regex: `func()` is a valid regex that matches `func` without the parentheses, and `a.b` also matches `axb`. The results then include the intended text, with some extra matches.
 - Command output is decoded as UTF-8. Python programs are made to write UTF-8 (`PYTHONIOENCODING=utf-8`, found by the test suite), but other programs writing in the Windows code page may still show `�` for characters such as `ä`.

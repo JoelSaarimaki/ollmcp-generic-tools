@@ -4,6 +4,7 @@ Tests for safe-filesystem-mcp: reading, editing, writing and managing files.
 """
 import base64
 import json
+from pathlib import Path
 
 import pytest
 
@@ -364,3 +365,99 @@ def test_edit_ignores_copied_code_block_fences(project):
     response = fs.edit_file("a.py", "```python" + NL + "x = 1" + NL + "```", "```python" + NL + "x = 3" + NL + "```", sha)
     assert "Code block fence lines were removed" in response
     assert (project.root / "a.py").read_text() == "x = 3" + NL + "y = 2" + NL
+
+# --- Restoring changes ---
+
+def restore(fs, path: str) -> dict:
+    return json.loads(fs.restore_file(path))
+
+def test_restore_undoes_edits_one_at_a_time(project):
+    project.write("a.py", "def one():\n    return 1\n")
+    fs = project.load("filesystem")
+    sha = sha_of(fs.edit_file("a.py", "return 1", "return 2", sha_of(fs.read_file_with_metadata("a.py"))))
+    fs.edit_file("a.py", "def one():\n    return 2\n", "", sha)
+    result = restore(fs, "a.py")
+    assert result["success"] and "before edit_file" in result["message"] and "1 earlier change can be undone" in result["message"]
+    assert (project.root / "a.py").read_text() == "def one():\n    return 2\n"
+    assert result["sha256"] == sha and result["outline"] == ["1-2 one()"]
+    restore(fs, "a.py")
+    assert (project.root / "a.py").read_text() == "def one():\n    return 1\n"
+    assert restore(fs, "a.py")["error"] == "no_backup"
+
+def test_restore_keeps_line_endings_and_bom_exactly(fs, project):
+    original = file_bytes(project)
+    assert json.loads(fs.write_file("app.py", "x = 1\n", sha_of(fs.read_file_with_metadata("app.py"))))["success"]
+    restore(fs, "app.py")
+    assert file_bytes(project) == original
+
+def test_restore_removes_a_created_file(project):
+    fs = project.load("filesystem")
+    fs.create_file("src/new.py", "x = 1\n")
+    assert "Removed src/new.py, undoing create_file" in restore(fs, "src/new.py")["message"]
+    assert not (project.root / "src/new.py").exists()
+
+def test_restore_brings_back_a_deleted_folder(project):
+    project.write("pkg/a.py", "a\n")
+    project.write("pkg/sub/b.py", "b\n")
+    fs = project.load("filesystem")
+    assert "restore_file(path='pkg')" in json.loads(fs.delete_file("pkg"))["message"]
+    assert not (project.root / "pkg").exists()
+    assert restore(fs, "pkg/sub/b.py")["success"]  # a path inside the deleted folder restores the folder
+    assert (project.root / "pkg/a.py").read_text() == "a\n" and (project.root / "pkg/sub/b.py").read_text() == "b\n"
+
+@pytest.mark.parametrize("path", ["old/a.py", "new/a.py"])
+def test_restore_moves_a_file_back_by_either_path(project, path):
+    project.write("old/a.py", "a\n")
+    fs = project.load("filesystem")
+    fs.move_file("old/a.py", "new/a.py")
+    assert "Moved new/a.py back to old/a.py" in restore(fs, path)["message"]
+    assert (project.root / "old/a.py").exists() and not (project.root / "new/a.py").exists()
+
+def test_restore_undoes_changes_in_reverse_order_across_moves(project):
+    project.write("a.py", "one\n")
+    fs = project.load("filesystem")
+    fs.write_file("a.py", "two\n", sha_of(fs.read_file_with_metadata("a.py")))
+    fs.move_file("a.py", "b.py")
+    restore(fs, "b.py")
+    restore(fs, "a.py")
+    assert (project.root / "a.py").read_text() == "one\n" and not (project.root / "b.py").exists()
+
+def test_restore_keeps_the_version_it_replaces(project):
+    project.write("a.txt", "one\n")
+    fs = project.load("filesystem")
+    fs.write_file("a.txt", "two\n", sha_of(fs.read_file_with_metadata("a.txt")))
+    (project.root / "a.txt").write_text("changed by the user\n")
+    message = restore(fs, "a.txt")["message"]
+    kept = message.split("is kept in ")[1][:-1]
+    assert Path(kept).read_text() == "changed by the user\n"
+
+def test_restore_without_backup_lists_the_paths_that_have_one(project):
+    fs = project.load("filesystem")
+    fs.create_file("x.txt", "x")
+    result = restore(fs, "y.txt")
+    assert result["error"] == "no_backup" and "can be undone: x.txt" in result["message"]
+
+def test_backups_are_kept_outside_the_project_by_default(project):
+    fs = project.load("filesystem")
+    fs.create_file("x.txt", "x")
+    folder = Path(json.loads(fs.get_config())["filesystem"]["backup_folder"])
+    assert folder.parent == project.root.parent / "home" / ".ollmcp-tools-backups" and folder.name.startswith("project-")
+    assert (folder / "journal.json").is_file()
+
+def test_old_backups_are_removed(project, monkeypatch):
+    fs = project.load("filesystem")
+    monkeypatch.setattr(fs, "MAX_BACKUPS", 3)
+    for i in range(5):
+        fs.create_file(f"f{i}.txt", "x")
+    assert len(fs._load_journal()) == 3 and len([p for p in fs.BACKUP_DIR.iterdir() if p.is_dir()]) == 3
+    assert restore(fs, "f0.txt")["error"] == "no_backup" and restore(fs, "f4.txt")["success"]
+
+def test_failed_backup_leaves_the_file_unchanged(project, monkeypatch):
+    project.write("a.txt", "one\n")
+    fs = project.load("filesystem")
+    def fail(*args, **kwargs):
+        raise OSError("disk full")
+    monkeypatch.setattr(fs, "_record_change", fail)
+    assert json.loads(fs.delete_file("a.txt"))["error"] == "backup_error"
+    assert fs.edit_file("a.txt", "one", "two", sha_of(fs.read_file_with_metadata("a.txt"))).startswith("Error (backup_error)")
+    assert (project.root / "a.txt").read_text() == "one\n"

@@ -2,7 +2,7 @@
 
 Generic custom MCP servers for [ollmcp](https://github.com/jonigl/mcp-client-for-ollama), for developing Python and JS/TS projects with a local AI model run by Ollama.
 
-The tools are designed for small local models with small context windows: every response is limited in size and says how to get the rest, the AI reads an outline first and then only the sections it needs, edits are checked against the file's hash and tolerate common copying mistakes, and the tools stay within one project folder that you choose.
+The tools are designed for small local models with small context windows: every response is limited in size and says how to get the rest, the AI reads an outline first and then only the sections it needs, edits are checked against the file's hash and tolerate common copying mistakes, every file change can be undone, and the tools stay within one project folder that you choose.
 
 For the design principles behind the servers and the planned improvements, see [DEVELOPMENT.md](DEVELOPMENT.md).
 
@@ -57,13 +57,14 @@ Add every server the same way (see this repository's [`.mcp.json`](.mcp.json)). 
     "commands_config": "_commands/app-commands.json",
     "context_folder": "_context",
     "read_only_files": ["_instructions/app-instructions.md"],
-    "ollama_api_key": null
+    "ollama_api_key": null,
+    "backup_folder": null
 }
 ```
 
 All settings except `allowed_dir` are optional. An optional setting that is left out or set to `null` uses its default, so `null` can be used to show that a setting exists without using it. Note that an empty list is not the same as `null`: `"ignored_dirs": []` skips no folders at all, while `"ignored_dirs": null` skips the default folders.
 
-Relative paths are resolved against the folder of the config file, except `forbidden_paths`, which are resolved against `allowed_dir`. A server refuses to start if the file is missing, is not valid JSON, lacks `allowed_dir`, points `allowed_dir` to a folder that does not exist or contains an unknown setting, so a typo cannot silently weaken the configuration. The config file itself is always [protected](#protected-files).
+Relative paths are resolved against the folder of the config file, except `forbidden_paths`, which are resolved against `allowed_dir`. A server refuses to start if the file is missing, is not valid JSON, lacks `allowed_dir`, points `allowed_dir` to a folder that does not exist, has a `backup_folder` that contains `allowed_dir` or contains an unknown setting, so a typo cannot silently weaken the configuration. The config file itself is always [protected](#protected-files).
 
 | Setting | Description |
 |---|---|
@@ -75,6 +76,7 @@ Relative paths are resolved against the folder of the config file, except `forbi
 | `context_folder` | The folder of the context Markdown files of `context-record-mcp`. (Optional) |
 | `read_only_files` | List of files maintained by you, such as project instructions, that the AI can read with `context-record-mcp` but not change or remove. They can be located anywhere, and are read by their file name. (Optional) |
 | `ollama_api_key` | The Ollama API key used by `web-search-mcp`. Create one at [ollama.com/settings/keys](https://ollama.com/settings/keys). The key is never shown to the AI, as the config file is [protected](#protected-files). If the config file is committed to git, do not commit the key. (Optional, without it the web search tools only return a `not_configured` error) |
+| `backup_folder` | The folder where `restore_file`'s backups are kept. It must not contain `allowed_dir`. See [Backups](#backups). (Optional, defaults to a folder for the project in `~/.ollmcp-tools-backups`) |
 | `ignored_dirs` | List of folder names the outline and search tools skip at any depth. Replaces the defaults completely. See [Ignored directories](#ignored-directories). (Optional, defaults to `node_modules`, `.git`, `build` and other common build and cache folders) |
 
 The AI can see the effective configuration with the `get_config` tool of `safe-filesystem-mcp`.
@@ -121,11 +123,13 @@ Commands are defined in the JSON file set as `commands_config` in the tools conf
 }
 ```
 
-See [`_commands/app-commands.json`](_commands/app-commands.json) for a fuller example covering dependencies, tests, linting, type checking and npm scripts.
-
 - `template`: A single program and its arguments. `{arg}` is replaced with the argument given by the AI, which is always passed as one argument.
 - `description`: Tells the AI when to use the command.
 - `timeout`: Seconds before the command is stopped. (Optional, defaults to 120)
+
+See [`_commands/app-commands.json`](_commands/app-commands.json) for a fuller example covering dependencies, tests, linting, type checking and npm scripts. It includes commands that make small models work better:
+- Running one test file, one test or the tests matching a name (`run_test_file`, `run_tests_matching`, `npm_test_file`, `npm_test_name`) and the tests that failed last time (`run_failed_tests`), which is faster and gives shorter output than the whole suite.
+- Looking up the real API of an installed library (`python_doc`, which runs `pydoc`) or an npm package's details (`npm_package_info`), as the tools cannot read installed packages and small models often guess function signatures.
 
 Commands run in `allowed_dir`, so commands such as `pytest` or `ruff check .` work on the project regardless of where `ollmcp` was started. The server refuses to start if the registry file is missing or not valid JSON, or if a command lacks its `template` or `description` or has an invalid `timeout`.
 
@@ -180,7 +184,7 @@ Provides tools to inspect git history and differences for files within a reposit
 
 ### safe-filesystem-mcp
 
-Provides safe and robust file system operations, including metadata retrieval and atomic writes.
+Provides safe and robust file system operations, including metadata retrieval, atomic writes and undoing the changes it makes.
 
 - **write_file** Safely replaces the whole content of an existing file with hash validation. Rejects placeholder comments such as `// ... existing code ...` and warns if the file shrinks to less than half.
 - **edit_file** Changes part of an existing file by replacing an exact piece of text, with hash validation. Keeps the file's line endings and BOM, and shows the changed lines, the new SHA-256 and the file's outline after the edit.
@@ -189,18 +193,19 @@ Provides safe and robust file system operations, including metadata retrieval an
 - **read_image** Reads a PNG, JPEG, GIF or WebP image (up to 10 MB) and returns it as an image the AI can see, along with its metadata. Requires a vision-capable model; with other models, ollmcp skips the image and shows a warning.
 - **list_directory** Lists all files and directories within the specified path.
 - **move_file** Moves or renames a file or directory, creating missing destination folders. There is no separate tool for creating folders: `create_file` and `move_file` create the folders they need.
-- **delete_file** Deletes a file or a directory.
-- **get_config** Returns the configuration shared by all servers (allowed directory, forbidden and protected paths, output limit) and what each server sees: the files the outline and searches skip, the git repository, the command registry and the context files. Helps the AI find out why a file is missing or a path is denied.
+- **delete_file** Deletes a file or a directory. It is moved into the backup folder, so `restore_file` can bring it back.
+- **restore_file** Undoes the last change that `edit_file`, `write_file`, `create_file`, `move_file` or `delete_file` made to a file or folder, e.g. when an edit broke a file; calling it again undoes earlier changes. A restored edit gets back its exact bytes (line endings and BOM), a created file is removed, a moved file is moved back (by its old or new path), and a deleted file or folder comes back. The response shows the new SHA-256 and outline of a restored file. See [Backups](#backups).
+- **get_config** Returns the configuration shared by all servers (allowed directory, forbidden and protected paths, output limit) and what each server sees: the files the outline and searches skip, the git repository, the command registry, the context files and the backup folder. Helps the AI find out why a file is missing or a path is denied.
 
 The file reading and editing tools are designed to let local AI models read and edit files accurately:
 - File content is returned as plain text in a fenced code block, not inside JSON, so quotes, backslashes and line breaks appear exactly as in the file and can be copied into `edit_file` as-is.
 - `edit_file` tolerates common copying mistakes: line number prefixes and code block fence lines copied from `read_file_with_metadata` are removed, and trailing whitespace does not need to match. If the text is not found, the error shows the closest matching lines to copy.
 - Placeholder comments such as `// ... existing code ...` are rejected, as they would otherwise replace real code.
-- After every write to a Python, JS/TS or Markdown file (`edit_file`, `write_file`, `create_file`), the response shows the file's outline with line spans, lists the sections that were added, and warns about sections that are no longer in the file, about a Python file that no longer parses, and about a new JS/TS syntax error. An accidental overwrite or deletion is noticed right away, instead of relying on the AI to spot a missing entry.
+- After every write to a Python, JS/TS or Markdown file (`edit_file`, `write_file`, `create_file`, `restore_file`), the response shows the file's outline with line spans, lists the sections that were added, and warns about sections that are no longer in the file, about a Python file that no longer parses, and about a new JS/TS syntax error. An accidental overwrite or deletion is noticed right away, instead of relying on the AI to spot a missing entry, and can be undone with `restore_file`.
 
 ### search-tool-mcp
 
-Performs text or regex searches across files in a specified directory.
+Searches the project's files: by exact text or regex, by file name pattern, and by relevance when the exact text is unknown. The descriptions of the two text searches point to each other, so that the AI uses `search_text_in_files` to find every use of a name and `search_relevant_files` to find where something is.
 
 - **search_text_in_files** Search for text or regex patterns from code files in the codebase. A query that is not a valid regex, such as `foo(`, is searched for as literal text, and the response says so. Can be limited to a folder or file (`path`) and to matching file names (`file_pattern`, e.g. `*.py`), and can show lines around each match (`context_lines`). Very long lines are shortened around the match.
 - **search_files_by_pattern** Searches for files and directories that match a glob-style pattern, such as `src/**/*.test.ts`.
@@ -232,6 +237,16 @@ The `forbidden_paths` setting of the [tools config file](#tools-config-file) lis
 Limitations:
 - `commands-mcp` does not use `forbidden_paths`. Do not register commands that can print arbitrary files (e.g., `git show` or `cat {arg}`) if some files must stay hidden. See also [Protected files](#protected-files).
 - In `git-diff-mcp`, a file that was moved into a forbidden folder can still be seen in the history of its old, allowed path. Commit messages are not filtered either.
+
+### Backups
+
+Before `edit_file`, `write_file`, `create_file`, `move_file` or `delete_file` changes anything, `safe-filesystem-mcp` records the change in a journal in the backup folder, with a copy of a changed file. A deleted file or folder is moved into the backup folder instead of being removed. If the backup fails, the change is not made. `restore_file` undoes the changes one at a time, newest first, and moves what it replaces into the backup folder too, so a restore never loses a version, even one you changed yourself in between. The response says where that version is kept.
+
+- The backup folder is `~/.ollmcp-tools-backups/<project folder name>-<hash of its path>` by default, outside the project, so backups do not show up in git or in the AI's outlines and searches. Set `backup_folder` in the [tools config file](#tools-config-file) to use another folder.
+- The tools cannot access the backup folder, even if it is inside the project: it is hidden and protected like the [protected files](#protected-files). The AI uses it only through `restore_file`.
+- The last 200 changes are kept; the backups of older ones are removed.
+- Only the changes made by the file tools are recorded: not changes by `run_predefined_command` (e.g. a formatter), `write_context_file`, or you. Git is not used, so it also works for new and untracked files and in folders without git.
+- Deleting a large folder on another drive than the backup folder copies it there, which can take a while.
 
 ### Protected files
 
@@ -292,7 +307,7 @@ Local models have small context windows, so every tool response is limited to `m
 |---|---|---|
 | `read_file_with_metadata` | 1000 lines or `max_output_chars` per read; lines over 2000 characters are shortened; files over 50 MB are not read | Next part with `start_line`; long lines can still be edited using a unique part of the shown text |
 | `edit_file` | Shows up to 40 changed lines after the edit, within `max_output_chars` | `read_file_with_metadata` from the given line |
-| `edit_file`, `write_file`, `create_file` | The outline after a write is limited to 2500 characters, or `max_output_chars / 8` if smaller: then only top-level sections are shown, or the list is cut short | `get_outline` for the file |
+| `edit_file`, `write_file`, `create_file`, `restore_file` | The outline after a write is limited to 2500 characters, or `max_output_chars / 8` if smaller: then only top-level sections are shown, or the list is cut short | `get_outline` for the file |
 | `list_directory` | Up to 250 entries, fewer for small budgets; folders are listed first | `search_files_by_pattern` with a suggested pattern |
 | `get_outline` | `max_output_chars`: the detail is reduced step by step instead of cutting the outline; files over 1 MB are not outlined; folders with over 1000 files are listed by subfolder only | Suggested subfolders to outline with `path`, with their file counts, or one file with `path` |
 | `search_text_in_files` | 100 matches or `max_output_chars`; lines over 300 characters are shortened | A suggested `path` with the most matches, `file_pattern`, fewer `context_lines` |

@@ -441,7 +441,7 @@ def test_backups_are_kept_outside_the_project_by_default(project):
     fs = project.load("filesystem")
     fs.create_file("x.txt", "x")
     folder = Path(json.loads(fs.get_tools_config())["filesystem"]["backup_folder"])
-    assert folder.parent == project.root.parent / "home" / ".ollmcp-tools-backups" and folder.name.startswith("project-")
+    assert folder.parent == project.root.parent / "home" / ".ollmcp-tools" / "backups" and folder.name.startswith("project-")
     assert (folder / "journal.json").is_file()
 
 def test_old_backups_are_removed(project, monkeypatch):

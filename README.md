@@ -63,7 +63,7 @@ my-project/
 }
 ```
 
-- `python` must be the Python the package was installed with. If you installed it into a virtual environment, use that environment's Python as the `command`.
+- `python` is the Python found on PATH when `ollmcp` starts, so the package must be installed into it. The project's commands, such as `python -m pytest`, run with the same Python. If you start `ollmcp` in a project's activated virtual environment, so that the commands use the project's packages, install the tools into that environment too: `python -m pip install -e <path to this repository>`.
 - A relative `MCP_TOOLS_CONFIG` path is resolved against the folder where `ollmcp` is started, so start it in the project's root folder.
 - ollmcp names the tools `<server key>.<tool>`, e.g. `dev.get_outline`. The instructions template uses these names, so change them there if you use another key. For cloud providers, ollmcp writes the names with `_` instead of `.`, e.g. `dev_get_outline`.
 
@@ -86,7 +86,7 @@ The API key is not in the project at all, but in each person's [user config file
 
 #### User config file
 
-`~/.ollmcp-tools/user-config.json` (e.g. `C:\Users\<name>\.ollmcp-tools\user-config.json`) holds your own settings for all your projects. `init` creates it if it does not exist yet:
+`~/.ollmcp-tools/user-config.json` (e.g. `C:\Users\<name>\.ollmcp-tools\user-config.json`) holds your own settings for all your projects. `init` creates it if it does not exist yet. The same folder holds the backups of `restore_file`, in `backups/` (see [Backups](#backups)):
 
 ```json
 {
@@ -135,7 +135,7 @@ Relative paths are resolved against the folder of the config file, except `forbi
 | `command_suggestions` | The file where `suggest_command` saves the commands the AI suggests, for you to review. It must not be the `command_registry`. See [Suggested commands](#suggested-commands). (Optional, without it suggestions are only shown in the chat) |
 | `context_folder` | The folder of the context Markdown files of the `context` toolset. (Optional) |
 | `read_only_files` | List of files maintained by you, such as project instructions, that the AI can read with the `context` toolset but not change or remove. They can be located anywhere, and are read by their file name. (Optional) |
-| `backup_folder` | The folder where `restore_file`'s backups are kept. It must not contain `allowed_dir`. See [Backups](#backups). (Optional, defaults to a folder for the project in `~/.ollmcp-tools-backups`) |
+| `backup_folder` | The folder where `restore_file`'s backups are kept. It must not contain `allowed_dir`. See [Backups](#backups). (Optional, defaults to a folder for the project in `~/.ollmcp-tools/backups`) |
 | `ignored_dirs` | List of folder names the outline and search tools skip at any depth. Replaces the defaults completely. See [Ignored directories](#ignored-directories). (Optional, defaults to `node_modules`, `.git`, `build` and other common build and cache folders) |
 | `disabled_toolsets` | List of toolsets that are not loaded, e.g. `["web", "git"]`. See [Choosing the toolsets](#choosing-the-toolsets). (Optional, defaults to none, so every toolset is loaded) |
 | `disabled_tools` | List of single tools that are not offered to the AI, e.g. `["write_file", "web_fetch"]`. See [Choosing the toolsets](#choosing-the-toolsets). (Optional, defaults to none) |
@@ -271,7 +271,7 @@ The [template](ollmcp_tools/templates/commands.json) that `init` copies is a ful
 - Running one test file, one test or the tests matching a name (`run_test_file`, `run_tests_matching`, `npm_test_file`, `npm_test_name`) and the tests that failed last time (`run_failed_tests`), which is faster and gives shorter output than the whole suite.
 - Looking up the real API of an installed library (`python_doc`, which runs `pydoc`) or an npm package's details (`npm_package_info`), as the tools cannot read installed packages and small models often guess function signatures.
 
-Commands run in `allowed_dir`, so commands such as `pytest` or `ruff check .` work on the project regardless of where `ollmcp` was started. A program such as `python` is the one found on PATH when `ollmcp` starts. To run the commands in a project's virtual environment, activate it before starting `ollmcp`, and install the tools into it too (`python -m pip install -e <path to this repository>`), as `.mcp.json` starts the tools with the same `python`. While the `commands` toolset is enabled, the server refuses to start if the registry file is missing or not valid JSON, or if a command lacks its `template` or `description`, has an invalid `timeout` or has an unknown placeholder in its template.
+Commands run in `allowed_dir`, so commands such as `pytest` or `ruff check .` work on the project regardless of where `ollmcp` was started. A program such as `python` is the one found on PATH when `ollmcp` starts: to run the commands in a project's virtual environment, start `ollmcp` in it (see [Setting up a project](#setting-up-a-project)). While the `commands` toolset is enabled, the server refuses to start if the registry file is missing or not valid JSON, or if a command lacks its `template` or `description`, has an invalid `timeout` or has an unknown placeholder in its template.
 
 To keep the AI from running anything other than the defined commands:
 - Commands run without a shell, so shell features such as pipes (`|`), chaining (`&&`), redirection (`>`) and shell built-ins (`echo`, `dir`, `cd`) are not available in templates. Put such logic in a script and call the script from the template.
@@ -345,7 +345,7 @@ Limitations:
 
 Before `edit_file`, `write_file`, `create_file`, `move_file` or `delete_file` changes anything, the `filesystem` toolset records the change in a journal in the backup folder, with a copy of a changed file. A deleted file or folder is moved into the backup folder instead of being removed. If the backup fails, the change is not made. `restore_file` undoes the changes one at a time, newest first, and moves what it replaces into the backup folder too, so a restore never loses a version, even one you changed yourself in between. The response says where that version is kept.
 
-- The backup folder is `~/.ollmcp-tools-backups/<project folder name>-<hash of its path>` by default, outside the project, so backups do not show up in git or in the AI's outlines and searches. Set `backup_folder` in the [tools config file](#tools-config-file) to use another folder.
+- The backup folder is `~/.ollmcp-tools/backups/<project folder name>-<hash of its path>` by default, next to the [user config file](#user-config-file), outside the project, so backups do not show up in git or in the AI's outlines and searches. Set `backup_folder` in the [tools config file](#tools-config-file) to use another folder.
 - The tools cannot access the backup folder, even if it is inside the project: it is hidden and protected like the [protected files](#protected-files). The AI uses it only through `restore_file`.
 - The last 200 changes are kept; the backups of older ones are removed.
 - Only the changes made by the file tools are recorded: not changes by `run_predefined_command` (e.g. a formatter), `write_context_file`, or you. Git is not used, so it also works for new and untracked files and in folders without git.
@@ -392,7 +392,7 @@ The `git` toolset has no ignored directories either. Git's own `.gitignore` rule
 
 ### How responses look in the console
 
-ollmcp shows a JSON response formatted as JSON, and any other response as Markdown if it contains enough Markdown-like patterns, otherwise as plain text. The text responses are written to read well both ways:
+ollmcp shows a JSON response formatted as JSON (with characters such as `ä` shown as `\u00e4`, although the AI gets them as they are), and any other response as Markdown if it contains enough Markdown-like patterns, otherwise as plain text. The text responses are written to read well both ways:
 
 - Header lines (file, SHA-256, notes, warnings) are a list, so that each stays on its own line.
 - File content, outlines, search matches and directory-like listings are fenced code blocks, so that they keep their lines, `#` comments do not become headings, and the code is highlighted by its file type (e.g. `python` for `.py` files). The fence is longer than any run of backticks in the content, so Markdown files with code blocks are shown whole.

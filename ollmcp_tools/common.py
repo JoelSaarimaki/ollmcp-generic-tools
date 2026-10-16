@@ -18,9 +18,10 @@ from pathlib import Path
 
 CONFIG_ENV_VAR = "MCP_TOOLS_CONFIG"
 CONFIG_KEYS = {"allowed_dir", "forbidden_paths", "max_output_chars", "gitignore_path", "command_registry", "command_suggestions", "context_folder", "read_only_files", "ignored_dirs", "backup_folder", "disabled_toolsets", "disabled_tools"}
-# The user config file holds each person's own settings for all their projects, such as API keys,
-# so that they are never committed with a project's tools config
-USER_CONFIG_PATH = Path.home() / ".ollmcp-tools" / "user-config.json"
+# Each person's own folder of the tools, for all their projects
+USER_FOLDER = Path.home() / ".ollmcp-tools"
+# The user config file holds each person's own settings, such as API keys, so that they are never committed with a project's tools config
+USER_CONFIG_PATH = USER_FOLDER / "user-config.json"
 USER_CONFIG_KEYS = {"ollama_api_key"}
 # Settings that were renamed or moved, with what to do instead, shown when an old config uses them
 MOVED_SETTINGS = {
@@ -43,7 +44,7 @@ DEFAULT_MAX_OUTPUT_CHARS = 40000
 MIN_MAX_OUTPUT_CHARS = 2000
 PROTECTED_FILE_NAMES = {".mcp.json"}  # MCP server configuration, never accessible regardless of forbidden_paths
 # Backups of the files changed by the filesystem tools, for restore_file. Outside the project, so that they are not in git.
-DEFAULT_BACKUP_ROOT = Path.home() / ".ollmcp-tools-backups"
+DEFAULT_BACKUP_ROOT = USER_FOLDER / "backups"
 # Folder names the map and search tools skip at any depth, unless the tools config sets its own ignored_dirs
 DEFAULT_IGNORED_DIRS = {
     "node_modules", ".git", "__pycache__", "dist", "build", ".next",

@@ -115,7 +115,7 @@ Configuration:
 - **Hash-checked writes**: every edit needs the SHA-256 from the last read or edit, and the edit response shows the changed lines and the new hash, so edits can be chained without re-reading. `restore_file` also returns the new hash of a restored file.
 - **Placeholder comments** (`// ... existing code ...`, `# rest of the code`, etc.) are rejected in `edit_file` and `write_file` unless the original already contains one. `write_file` warns if a file of 20+ lines shrinks below half.
 - Line endings (LF/CRLF) and BOMs are preserved; writes are atomic.
-- **JSON responses use `ensure_ascii=False`**, so `ä` stays readable instead of `\u00e4`.
+- **JSON responses use `ensure_ascii=False`**, so `ä` stays readable instead of `\u00e4`. ollmcp 0.35 still shows JSON responses with `\u00e4` in the console, as its `_format_json` (`utils/tool_display.py`) formats them again with `json.dumps(data, indent=2)`; the model gets the response as the tool returned it.
 - `read_image` returns a real MCP image (ollmcp forwards it to vision models) with the format detected from the file's bytes.
 
 ### Undo with restore_file
@@ -125,7 +125,7 @@ Small models break files, and the outline warnings after a write only help if th
 - Every change is recorded in `journal.json` in the backup folder before it is made, with a copy of a changed file (`_record_change` in `filesystem.py`). `delete_file` moves the file or folder into the backup folder instead of removing it. If the backup fails, the change is not made (`backup_error`), so every change can be undone.
 - A restore picks the latest change not restored yet to the path, to a folder containing it, or (for a move) to its old or new path, so changes are undone in reverse order also across moves and folder deletions. What a restore replaces is moved into the backup folder, never removed.
 - Git was considered instead (`git restore`), and rejected: it goes back to the last commit, losing every uncommitted change instead of only the last one, has nothing for new or untracked files, cannot bring back a deleted untracked file, and would be a git write tool.
-- The default backup folder is in the home folder, one per project (`<name>-<hash of the path>`), so backups are not in git or the project. `get_tools_config` reports it. The tests point the home folder to their temporary folder (`_use_temporary_home` in `conftest.py`).
+- The default backup folder is in the user's own folder of the tools, `~/.ollmcp-tools/backups`, one per project (`<name>-<hash of the path>`), so backups are not in git or the project. `get_tools_config` reports it. The tests point the home folder to their temporary folder (`_use_temporary_home` in `conftest.py`).
 - The instructions template tells the AI to undo a change that broke a file with `restore_file` instead of rewriting the lost parts from memory, and `delete_file` says in its response how to undo the deletion.
 
 ### Outline and search

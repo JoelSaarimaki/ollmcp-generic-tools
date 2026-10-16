@@ -96,7 +96,7 @@ def _pathspecs(repo_root: Path, target: Path) -> list[str]:
     for forbidden in FORBIDDEN_PATHS:
         if forbidden.is_relative_to(repo_root) and forbidden != repo_root:
             specs.append(f":(top,exclude){forbidden.relative_to(repo_root).as_posix()}")
-    # Protected files are excluded by name at any depth, in any letter case, and the tools config file and registry by their path
+    # Protected files are excluded by name at any depth, in any letter case, and the files in PROTECTED_PATHS by their path
     for name in sorted(PROTECTED_FILE_NAMES):
         specs.append(f":(top,exclude,glob,icase)**/{name}")
     for protected in PROTECTED_PATHS:

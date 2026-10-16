@@ -1,20 +1,19 @@
-# --- web-search-mcp.py ---
+# --- web.py ---
 import json
 import traceback
 from urllib.parse import urlparse
 
 from ollama import Client
 from mcp.server.mcpserver import MCPServer
-from mcp_common import (
+from .common import (
     MAX_OUTPUT_CHARS,
     OLLAMA_API_KEY,
     code_block,
-    prepare_tools,
     text_response
 )
 
 # --- Constants & Config ---
-mcp = MCPServer("Web-Search-Server")
+mcp = MCPServer("web")  # Holds the tools of this toolset; __main__.py serves the enabled toolsets in one server
 
 OLLAMA_HOST = "https://ollama.com"  # Web search and fetch always use Ollama's hosted API
 REQUEST_TIMEOUT_SECONDS = 30
@@ -24,7 +23,7 @@ JSON_ESCAPE_RATIO = 0.9  # Share of the budget used for text inside JSON, as esc
 
 # The key is given explicitly, so that the ollama library does not read OLLAMA_API_KEY from the environment
 CLIENT = Client(host=OLLAMA_HOST, headers={"authorization": f"Bearer {OLLAMA_API_KEY}"}, timeout=REQUEST_TIMEOUT_SECONDS) if OLLAMA_API_KEY else None
-NOT_CONFIGURED = "Web search is not configured: 'ollama_api_key' is not set in the tools config file. Ask the user to add an Ollama API key. Use get_config to see the configuration."
+NOT_CONFIGURED = "Web search is not configured: 'ollama_api_key' is not set in the tools config file. Ask the user to add an Ollama API key. Use get_tools_config to see the configuration."
 
 # --- Internal Helpers ---
 
@@ -136,8 +135,3 @@ def web_fetch(url: str, start_char: int = 0) -> str:
         return text_response(header, links_block, code_block(shown.rstrip("\n"), "markdown"))
     except Exception as e:
         return _text_error("fetch_error", f"Fetching the page failed: {e}\n{traceback.format_exc()}")
-
-prepare_tools(mcp)
-
-if __name__ == "__main__":
-    mcp.run()

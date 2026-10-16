@@ -9,5 +9,7 @@
     "context_folder": "_context",
     "read_only_files": ["_instructions/app-instructions.md"],
     "ollama_api_key": null,
-    "backup_folder": null
+    "backup_folder": null,
+    "disabled_toolsets": null,
+    "disabled_tools": null
 }

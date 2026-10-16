@@ -1,12 +1,12 @@
 # --- test_config.py ---
 """
-Tests for loading and validating the tools config file (mcp_common.py).
+Tests for loading and validating the tools config file (common.py), including the enabled toolsets and tools.
 """
 import json
 
 import pytest
 
-from conftest import SERVER_FILES, start_server
+from conftest import start_server
 
 @pytest.mark.parametrize("config_text, message", [
     ("{ allowed_dir: . }", "Expecting property name"),
@@ -28,29 +28,43 @@ from conftest import SERVER_FILES, start_server
 ])
 def test_invalid_config_stops_the_server(project, config_text, message):
     project.config_path.write_text(config_text, encoding="utf-8")
-    result = start_server("filesystem", project.config_path)
+    result = start_server(project.config_path)
     assert result.returncode != 0
     assert message in result.stderr
 
 def test_missing_environment_variable_stops_the_server(project):
-    result = start_server("filesystem", None)
+    result = start_server(None)
     assert result.returncode != 0
     assert "MCP_TOOLS_CONFIG" in result.stderr
 
 def test_missing_config_file_stops_the_server(project):
-    result = start_server("filesystem", project.root / "missing.json")
+    result = start_server(project.root / "missing.json")
     assert result.returncode != 0
     assert "config file not found" in result.stderr
 
-@pytest.mark.parametrize("server", SERVER_FILES)
-def test_every_server_refuses_an_invalid_config(project, server):
-    project.config_path.write_text('{"allowed_dir": ".", "unknown_setting": 1}', encoding="utf-8")
-    assert start_server(server, project.config_path).returncode != 0
-
-@pytest.mark.parametrize("server", SERVER_FILES)
-def test_every_server_starts_with_a_minimal_config(project, server):
-    result = start_server(server, project.configure())
+def test_every_toolset_starts_with_a_minimal_config(project):
+    result = start_server(project.configure())
     assert result.returncode == 0, result.stderr
+
+@pytest.mark.parametrize("settings, message", [
+    ({"disabled_toolsets": "web"}, "'disabled_toolsets' must be a list of names"),
+    ({"disabled_toolsets": ["webs"]}, "'disabled_toolsets' contains unknown names ['webs']"),
+    ({"disabled_tools": ["get_diff"]}, "'disabled_tools' contains unknown names ['get_diff']"),
+    ({"disabled_toolsets": ["filesystem", "outline", "search", "git", "commands", "context"], "disabled_tools": ["web_search", "web_fetch"]}, "disable every tool"),
+])
+def test_invalid_toolset_settings_stop_the_server(project, settings, message):
+    result = start_server(project.configure(**settings))
+    assert result.returncode != 0 and message in result.stderr
+
+def test_disabled_toolsets_are_not_loaded(project):
+    """A disabled toolset's own settings, such as a missing command registry, are not checked."""
+    config = project.configure(commands_config="missing.json")
+    assert "command registry not found" in start_server(config).stderr
+    assert start_server(project.configure(commands_config="missing.json", disabled_toolsets=["commands"])).returncode == 0
+    all_commands = ["list_available_commands", "run_predefined_command", "suggest_command"]
+    assert start_server(project.configure(commands_config="missing.json", disabled_tools=all_commands)).returncode == 0
+    common = project.common()
+    assert "commands" not in common.ENABLED_TOOLSETS and common.DISABLED_TOOLS == set(all_commands)
 
 def test_null_settings_use_the_defaults(project):
     optional = ["forbidden_paths", "ignored_dirs", "gitignore_path", "max_output_chars", "commands_config", "context_folder", "read_only_files"]
@@ -99,7 +113,7 @@ def test_forbidden_path_entries_are_trimmed(project):
 def test_get_config_reports_the_shared_settings(project):
     project.write("src/app.py", "x = 1\n")
     project.configure(forbidden_paths=["secret"], max_output_chars=5000)
-    config = json.loads(project.load("filesystem").get_config())
+    config = json.loads(project.load("filesystem").get_tools_config())
     assert config["success"]
     assert config["config_file"].endswith("tools-config.json")
     assert config["shared"]["forbidden_paths"] == ["secret"]
@@ -110,6 +124,6 @@ def test_get_config_reports_the_shared_settings(project):
 
 def test_get_config_reports_custom_ignored_dirs(project):
     project.configure(ignored_dirs=["coverage"])
-    config = json.loads(project.load("filesystem").get_config())
+    config = json.loads(project.load("filesystem").get_tools_config())
     assert config["outline_and_search"]["ignored_dirs"] == ["coverage"]
     assert config["outline_and_search"]["ignored_dirs_source"] == "tools config"

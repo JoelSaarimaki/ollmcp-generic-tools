@@ -1,4 +1,4 @@
-# --- safe-filesystem-mcp.py ---
+# --- filesystem.py ---
 import datetime
 import hashlib
 import json
@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from mcp.server.mcpserver import Image, MCPServer
-from mcp_common import (
+from .common import (
     ALLOWED_DIR,
     BACKUP_DIR,
     COMMAND_SUGGESTIONS,
@@ -18,6 +18,8 @@ from mcp_common import (
     CONFIG,
     CONFIG_PATH,
     CONTEXT_FOLDER,
+    DISABLED_TOOLS,
+    ENABLED_TOOLSETS,
     FORBIDDEN_PATHS,
     GITIGNORE_PATH,
     IGNORED_DIRS,
@@ -34,11 +36,10 @@ from mcp_common import (
     get_repo_root,
     is_path_allowed,
     load_gitignore_patterns,
-    prepare_tools,
     resolve_path,
     text_response
 )
-from mcp_outline import (
+from .parsing import (
     OUTLINE_SUFFIXES,
     locate_section,
     outline_after_write,
@@ -46,7 +47,7 @@ from mcp_outline import (
 )
 
 # --- Constants & Config ---
-mcp = MCPServer("Safe-Filesystem-Server")
+mcp = MCPServer("filesystem")  # Holds the tools of this toolset; __main__.py serves the enabled toolsets in one server
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10MB limit
 MAX_READ_LINES = 1000  # Longer files are read in parts
@@ -1035,9 +1036,9 @@ def restore_file(path: str) -> str:
         return json.dumps({"success": False, "error": "restore_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
-def get_config() -> str:
+def get_tools_config() -> str:
     """
-    Shows the settings all servers share and what each one sees: allowed and forbidden paths, ignored
+    Shows the tools config and what each toolset sees: allowed and forbidden paths, ignored
     folders, the git repository, commands and context files. Use it when a file is not found or a path is denied.
     """
     try:
@@ -1057,6 +1058,10 @@ def get_config() -> str:
         return json.dumps({
             "success": True,
             "config_file": CONFIG_PATH.as_posix(),
+            "toolsets": {
+                "enabled": ENABLED_TOOLSETS,
+                "disabled_tools": sorted(DISABLED_TOOLS)
+            },
             "shared": {
                 "allowed_dir": ALLOWED_DIR.as_posix(),
                 "allowed_dir_exists": ALLOWED_DIR.exists(),
@@ -1095,10 +1100,10 @@ def get_config() -> str:
                 "ollama_api_key_set": OLLAMA_API_KEY is not None
             },
             "notes": [
-                "All servers read the same config_file, so they all use the same allowed_dir, forbidden_paths and max_output_chars.",
+                "Only the tools of the enabled toolsets are available, except the disabled_tools. The user chooses them in the config_file.",
                 "Only paths within allowed_dir can be accessed. Relative paths given to the tools are resolved against allowed_dir.",
                 "Forbidden paths and everything inside forbidden folders are denied and hidden, and so are protected files: files named in protected_file_names and the protected_files (the config_file and the command registry).",
-                "Commands are added to the registry only by the user. Suggest a missing command with suggest_command of the commands server.",
+                "Commands are added to the registry only by the user. Suggest a missing command with suggest_command.",
                 "restore_file undoes the last max_backups changes of the file tools. Their backups, including deleted files, are kept in backup_folder, which the tools cannot access directly.",
                 "The outline and search tools also skip folders named in ignored_dirs at any depth, files matching the .gitignore patterns and, for search, binary files.",
                 "get_outline lists every file that is not ignored, with the sections of the outline_file_types.",
@@ -1109,8 +1114,3 @@ def get_config() -> str:
         }, indent=2, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"success": False, "error": "config_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
-
-prepare_tools(mcp)
-
-if __name__ == "__main__":
-    mcp.run()

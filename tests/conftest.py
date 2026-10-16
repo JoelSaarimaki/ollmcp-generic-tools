@@ -2,9 +2,9 @@
 """
 Shared fixtures for the MCP server tests.
 
-Every test gets its own temporary project and tools config file. Servers are loaded fresh for
-each test, with mcp_common removed from sys.modules first, so that every server reads the test's
-config, as a real server start would. The working directory is a different folder than the project,
+Every test gets its own temporary project and tools config file. Toolsets are loaded fresh for
+each test, with the package's modules removed from sys.modules first, so that every toolset reads
+the test's config, as a real server start would. The working directory is a different folder than the project,
 as the tools must resolve paths against allowed_dir, not the working directory.
 """
 import importlib
@@ -20,25 +20,17 @@ from pathlib import Path
 import pytest
 
 REPO_DIR = Path(__file__).resolve().parent.parent
-SERVERS_DIR = REPO_DIR / "mcp-servers"
-sys.path.insert(0, str(SERVERS_DIR))
-
-SERVER_FILES = {
-    "filesystem": "safe-filesystem-mcp.py",
-    "map": "generate-map-mcp.py",
-    "search": "search-tool-mcp.py",
-    "git": "git-diff-mcp.py",
-    "commands": "commands-mcp.py",
-    "context": "context-record-mcp.py",
-    "web": "web-search-mcp.py",
-}
+sys.path.insert(0, str(REPO_DIR))  # The package is imported from the repository, even if it is not installed
+PACKAGE = "ollmcp_tools"
+# The parsers read no config, so they are kept loaded between tests
+KEPT_MODULES = {PACKAGE, f"{PACKAGE}.parsing"}
 
 requires_git = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 windows_only = pytest.mark.skipif(os.name != "nt", reason="Windows-specific behaviour")
 
 class Project:
     """
-    A temporary project folder with a tools config file, and helpers for loading the servers for it.
+    A temporary project folder with a tools config file, and helpers for loading the toolsets for it.
     """
     def __init__(self, root: Path, monkeypatch: pytest.MonkeyPatch):
         self.root = root
@@ -66,20 +58,18 @@ class Project:
         if not self.config_path.exists():
             self.configure()
         self._monkeypatch.setenv("MCP_TOOLS_CONFIG", str(self.config_path))
-        sys.modules.pop("mcp_common", None)
+        for name in [name for name in sys.modules if name.startswith(f"{PACKAGE}.") and name not in KEPT_MODULES]:
+            del sys.modules[name]
 
-    def load(self, server: str):
-        """Loads a server module with the project's config."""
+    def load(self, toolset: str):
+        """Loads a toolset module, such as 'filesystem', with the project's config."""
         self._use_config()
-        spec = importlib.util.spec_from_file_location(f"test_server_{server}", SERVERS_DIR / SERVER_FILES[server])
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
+        return importlib.import_module(f"{PACKAGE}.{toolset}")
 
     def common(self):
-        """Loads mcp_common with the project's config."""
+        """Loads the common module with the project's config."""
         self._use_config()
-        return importlib.import_module("mcp_common")
+        return importlib.import_module(f"{PACKAGE}.common")
 
     def git(self, *args: str) -> subprocess.CompletedProcess:
         return subprocess.run(["git", "-c", "user.email=test@example.com", "-c", "user.name=Test", "-c", "core.autocrlf=false", *args],
@@ -110,19 +100,18 @@ def make_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     _use_temporary_home(tmp_path, monkeypatch)
     return lambda rel: Project(tmp_path / rel, monkeypatch)
 
-def start_server(server: str, config_path: Path | None) -> subprocess.CompletedProcess:
+def start_server(config_path: Path | None) -> subprocess.CompletedProcess:
     """
-    Imports a server in a separate process, as a real start would, and returns the finished process.
-    A config error makes the process fail with the error message in stderr.
+    Creates the server with its enabled toolsets in a separate process, as a real start would, without
+    running it, and returns the finished process. A config error makes the process fail with the error message in stderr.
     """
-    code = ("import sys, importlib.util; sys.path.insert(0, sys.argv[1]); "
-            "spec = importlib.util.spec_from_file_location('server', sys.argv[2]); "
-            "spec.loader.exec_module(importlib.util.module_from_spec(spec))")
+    code = ("import sys; sys.path.insert(0, sys.argv[1]); "
+            "from ollmcp_tools.__main__ import create_server; create_server()")
     env = dict(os.environ)
     env.pop("MCP_TOOLS_CONFIG", None)
     if config_path is not None:
         env["MCP_TOOLS_CONFIG"] = str(config_path)
-    return subprocess.run([sys.executable, "-c", code, str(SERVERS_DIR), str(SERVERS_DIR / SERVER_FILES[server])],
+    return subprocess.run([sys.executable, "-c", code, str(REPO_DIR)],
                           env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 def content_of(response: str) -> str:

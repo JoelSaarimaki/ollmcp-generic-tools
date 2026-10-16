@@ -1,4 +1,4 @@
-# --- search-tool-mcp.py ---
+# --- search.py ---
 import math
 import os
 import re
@@ -8,7 +8,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
-from mcp_common import (
+from .common import (
     ALLOWED_DIR,
     IGNORED_DIRS,
     MAX_OUTPUT_CHARS,
@@ -19,19 +19,18 @@ from mcp_common import (
     is_ignored,
     is_path_allowed,
     load_gitignore_patterns,
-    prepare_tools,
     resolve_path,
     text_response,
     walk
 )
-from mcp_outline import (
+from .parsing import (
     iter_sections,
     outline_text,
     qualified_name
 )
 
 # --- Constants & Config ---
-mcp = MCPServer("Search-Tool-Server")
+mcp = MCPServer("search")  # Holds the tools of this toolset; __main__.py serves the enabled toolsets in one server
 
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10MB limit
 MAX_RESULTS = 100  # Matches shown at most
@@ -69,7 +68,7 @@ def _resolve_scope(path: str, gitignore_patterns: list[str]) -> tuple[Path, str 
     if not p.exists():
         return p, f"Error: Path '{path}' does not exist in the allowed directory {ALLOWED_DIR.as_posix()}."
     if p != ALLOWED_DIR and is_ignored(p, ALLOWED_DIR, IGNORED_DIRS, gitignore_patterns):
-        return p, f"Error: Path '{path}' is ignored: it is in an ignored folder or matched by .gitignore. Use get_config to see why."
+        return p, f"Error: Path '{path}' is ignored: it is in an ignored folder or matched by .gitignore. Use get_tools_config to see why."
     return p, None
 
 def _glob_to_regex(pattern: str) -> re.Pattern:
@@ -624,8 +623,3 @@ def search_relevant_files(query: str, path: str = "", file_pattern: str = "", ma
         return text_response(header, *parts)
     except Exception as e:
         return f"Error: Searching relevant files failed:\n{e}\n{traceback.format_exc()}"
-
-prepare_tools(mcp)
-
-if __name__ == "__main__":
-    mcp.run()

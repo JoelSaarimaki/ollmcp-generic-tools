@@ -1,67 +1,11 @@
 {
     "mcpServers": {
-        "codebase-mapper": {
-          "command": "python",
-          "args": [
-            ".\\mcp-servers\\generate-map-mcp.py"
-          ],
-          "env": {
-            "MCP_TOOLS_CONFIG": ".\\tools-config.json"
-          }
-        },
-        "search-tool": {
-          "command": "python",
-          "args": [
-            ".\\mcp-servers\\search-tool-mcp.py"
-          ],
-          "env": {
-            "MCP_TOOLS_CONFIG": ".\\tools-config.json"
-          }
-        },
-        "commands": {
-          "command": "python",
-          "args": [
-            ".\\mcp-servers\\commands-mcp.py"
-          ],
-          "env": {
-            "MCP_TOOLS_CONFIG": ".\\tools-config.json"
-          }
-        },
-        "context": {
-          "command": "python",
-          "args": [
-            ".\\mcp-servers\\context-record-mcp.py"
-          ],
-          "env": {
-            "MCP_TOOLS_CONFIG": ".\\tools-config.json"
-          }
-        },
-        "filesystem": {
-          "command": "python",
-          "args": [
-            ".\\mcp-servers\\safe-filesystem-mcp.py"
-          ],
-          "env": {
-            "MCP_TOOLS_CONFIG": ".\\tools-config.json"
-          }
-        },
-        "git-diff": {
-          "command": "python",
-          "args": [
-            ".\\mcp-servers\\git-diff-mcp.py"
-          ],
-          "env": {
-            "MCP_TOOLS_CONFIG": ".\\tools-config.json"
-          }
-        },
-        "web-search": {
-          "command": "python",
-          "args": [
-            ".\\mcp-servers\\web-search-mcp.py"
-          ],
-          "env": {
-            "MCP_TOOLS_CONFIG": ".\\tools-config.json"
-          }
+        "dev": {
+            "command": "python",
+            "args": ["-m", "ollmcp_tools"],
+            "env": {
+                "MCP_TOOLS_CONFIG": "tools-config.json"
+            }
         }
     }
 }

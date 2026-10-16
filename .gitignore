@@ -1,4 +1,4 @@
-# NOTE: generate-map-mcp.py also reads this file with a simplified matcher.
+# NOTE: the outline and search tools also read this file with a simplified matcher.
 # Keep patterns simple: no "!" negations, and write folders without a trailing "/"
 # so they are excluded at any depth by both git and the codebase map.
 
@@ -29,7 +29,7 @@ htmlcov
 # Local secrets and environment variables
 .env
 
-# Leftovers from interrupted atomic writes in safe-filesystem-mcp.py
+# Leftovers from interrupted atomic writes in the filesystem toolset
 *.tmp
 
 # Logs

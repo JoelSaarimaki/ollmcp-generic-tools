@@ -1,11 +1,10 @@
-# --- mcp_common.py ---
+# --- common.py ---
 """
-Shared configuration and helpers for the MCP servers in this folder.
+Shared configuration and helpers for the toolsets of this package.
 
 All settings come from one JSON config file, whose path is given with the MCP_TOOLS_CONFIG
-environment variable, so that every server sees exactly the same allowed directory,
-forbidden paths and output limit. The servers import this module, which works because
-Python adds a script's own folder to its import path.
+environment variable. The config is loaded when this module is first imported, before any toolset,
+so that every toolset sees exactly the same allowed directory, forbidden paths and output limit.
 """
 import fnmatch
 import hashlib
@@ -18,7 +17,19 @@ from pathlib import Path
 # --- Constants & Config ---
 
 CONFIG_ENV_VAR = "MCP_TOOLS_CONFIG"
-CONFIG_KEYS = {"allowed_dir", "forbidden_paths", "max_output_chars", "gitignore_path", "commands_config", "command_suggestions", "context_folder", "read_only_files", "ignored_dirs", "ollama_api_key", "backup_folder"}
+CONFIG_KEYS = {"allowed_dir", "forbidden_paths", "max_output_chars", "gitignore_path", "commands_config", "command_suggestions", "context_folder", "read_only_files", "ignored_dirs", "ollama_api_key", "backup_folder", "disabled_toolsets", "disabled_tools"}
+# The toolsets, each a module of this package, and their tools, in the order they are served.
+# Used to check the disabled_toolsets and disabled_tools settings before any toolset is imported.
+TOOLSETS = {
+    "filesystem": ["write_file", "edit_file", "create_file", "read_file_with_metadata", "read_image",
+                   "list_directory", "move_file", "delete_file", "restore_file", "get_tools_config"],
+    "outline": ["get_outline"],
+    "search": ["search_text_in_files", "search_files_by_pattern", "search_relevant_files"],
+    "git": ["get_git_diff", "get_git_history", "get_git_status"],
+    "commands": ["list_available_commands", "run_predefined_command", "suggest_command"],
+    "context": ["list_context_files", "read_context_file", "write_context_file", "remove_context_file"],
+    "web": ["web_search", "web_fetch"],
+}
 DEFAULT_MAX_OUTPUT_CHARS = 40000
 MIN_MAX_OUTPUT_CHARS = 2000
 PROTECTED_FILE_NAMES = {".mcp.json"}  # MCP server configuration, never accessible regardless of forbidden_paths
@@ -101,6 +112,21 @@ def _setting_ignored_dirs() -> set[str]:
         raise ValueError(f"{CONFIG_PATH}: 'ignored_dirs' must contain folder names, not paths: {paths}. Folders with these names are skipped at any depth. To exclude one specific folder, add it to 'forbidden_paths' instead.")
     return {v.strip() for v in values}
 
+def _setting_names(key: str, valid: list[str]) -> set[str]:
+    """
+    Returns a list of names setting as a set, or an empty set if it is not set or null. Raises an error
+    for names not in valid, so that a typo cannot leave a toolset or tool enabled.
+    """
+    values = CONFIG.get(key)
+    if values is None:
+        return set()
+    if not isinstance(values, list) or not all(isinstance(v, str) for v in values):
+        raise ValueError(f"{CONFIG_PATH}: '{key}' must be a list of names.")
+    unknown = [v for v in values if v not in valid]
+    if unknown:
+        raise ValueError(f"{CONFIG_PATH}: '{key}' contains unknown names {unknown}. Valid names: {valid}.")
+    return set(values)
+
 def _setting_secret(key: str) -> str | None:
     """
     Returns a secret string setting, such as an API key, or None if it is not set, null or empty.
@@ -126,6 +152,13 @@ def _setting_max_output_chars() -> int:
 # Paths in the config file are relative to its folder, except forbidden_paths, which are relative to allowed_dir
 CONFIG_PATH, CONFIG = _load_config()
 CONFIG_DIR = CONFIG_PATH.parent
+DISABLED_TOOLSETS = _setting_names("disabled_toolsets", list(TOOLSETS))
+DISABLED_TOOLS = _setting_names("disabled_tools", [tool for tools in TOOLSETS.values() for tool in tools])
+# A toolset whose tools are all disabled is not loaded either, so its settings are not checked
+ENABLED_TOOLSETS = [name for name, tools in TOOLSETS.items()
+                    if name not in DISABLED_TOOLSETS and not DISABLED_TOOLS.issuperset(tools)]
+if not ENABLED_TOOLSETS:
+    raise ValueError(f"{CONFIG_PATH}: 'disabled_toolsets' and 'disabled_tools' disable every tool.")
 ALLOWED_DIR = _setting_path("allowed_dir", CONFIG_DIR)
 if not ALLOWED_DIR.is_dir():
     raise NotADirectoryError(f"{CONFIG_PATH}: 'allowed_dir' is not an existing folder: {ALLOWED_DIR}")

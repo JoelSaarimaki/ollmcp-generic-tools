@@ -1,6 +1,6 @@
 # --- test_context.py ---
 """
-Tests for context-record-mcp: context files and read-only files, their outlines and section reads.
+Tests for the context toolset: context files and read-only files, their outlines and section reads.
 """
 import pytest
 
@@ -114,7 +114,7 @@ def test_missing_context_folder_setting(project):
 def test_invalid_read_only_files_stop_the_server(project, files, message):
     project.write("a/plan.md", "x")
     project.write("b/plan.md", "y")
-    result = start_server("context", project.configure(read_only_files=files))
+    result = start_server(project.configure(read_only_files=files))
     assert result.returncode != 0 and message in result.stderr
 
 def test_writes_do_not_double_line_breaks(project):

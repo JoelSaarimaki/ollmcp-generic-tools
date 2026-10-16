@@ -1,4 +1,4 @@
-# --- mcp_outline.py ---
+# --- parsing.py ---
 """
 Outlines of source and Markdown files: their classes, functions and headings with the line spans
 of their content. Used by get_outline, by the section reads of read_file_with_metadata and

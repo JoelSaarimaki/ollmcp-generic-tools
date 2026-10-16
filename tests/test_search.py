@@ -1,6 +1,6 @@
 # --- test_search.py ---
 """
-Tests for search-tool-mcp: text search, file pattern search and relevance search.
+Tests for the search toolset: text search, file pattern search and relevance search.
 """
 import re
 

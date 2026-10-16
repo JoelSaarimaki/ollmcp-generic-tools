@@ -1,4 +1,4 @@
-# --- commands-mcp.py ---
+# --- commands.py ---
 import json
 import os
 import re
@@ -11,16 +11,15 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
-from mcp_common import (
+from .common import (
     ALLOWED_DIR,
     COMMAND_SUGGESTIONS,
     COMMANDS_CONFIG,
-    MAX_OUTPUT_CHARS,
-    prepare_tools
+    MAX_OUTPUT_CHARS
 )
 
 # --- Constants & Config ---
-mcp = MCPServer("Commands-Server")
+mcp = MCPServer("commands")  # Holds the tools of this toolset; __main__.py serves the enabled toolsets in one server
 
 ARG_PLACEHOLDER = "{arg}"
 # Anything in braces that looks like a named placeholder (e.g. {args}, {ARG}, { file }), but not {} or code such as {1: 2}
@@ -378,8 +377,3 @@ def suggest_command(name: str, template: str, description: str, timeout: int | N
             "message": str(e),
             "traceback": traceback.format_exc()
         }, indent=2, ensure_ascii=False)
-
-prepare_tools(mcp)
-
-if __name__ == "__main__":
-    mcp.run()

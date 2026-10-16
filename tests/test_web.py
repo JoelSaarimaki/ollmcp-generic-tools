@@ -1,6 +1,6 @@
 # --- test_web.py ---
 """
-Tests for web-search-mcp.py. The Ollama client is replaced with a fake one, so no requests are sent.
+Tests for the web toolset. The Ollama client is replaced with a fake one, so no requests are sent.
 """
 import json
 from types import SimpleNamespace
@@ -59,13 +59,13 @@ def test_empty_api_key_is_not_set(project, value):
 
 def test_api_key_must_be_a_string(project):
     project.configure(ollama_api_key=123)
-    result = start_server("web", project.config_path)
+    result = start_server(project.config_path)
     assert result.returncode != 0
     assert "'ollama_api_key' must be a string" in result.stderr
 
 def test_get_config_reports_the_key_without_showing_it(project):
     project.configure(ollama_api_key="secret-key")
-    response = project.load("filesystem").get_config()
+    response = project.load("filesystem").get_tools_config()
     assert json.loads(response)["web_search"]["ollama_api_key_set"] is True
     assert "secret-key" not in response
 

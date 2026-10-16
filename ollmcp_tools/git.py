@@ -1,4 +1,4 @@
-# --- git-diff-mcp.py ---
+# --- git.py ---
 import json
 import subprocess
 import traceback
@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
-from mcp_common import (
+from .common import (
     ALLOWED_DIR,
     FORBIDDEN_PATHS,
     MAX_OUTPUT_CHARS,
@@ -16,19 +16,18 @@ from mcp_common import (
     display_path,
     get_repo_root,
     is_path_allowed,
-    prepare_tools,
     resolve_path
 )
 
 # --- Constants & Config ---
-mcp = MCPServer("Git-Diff-Server")
+mcp = MCPServer("git")  # Holds the tools of this toolset; __main__.py serves the enabled toolsets in one server
 
 DIFF_MODES = {
     "unstaged": ["diff"],
     "staged": ["diff", "--cached"],
     "head": ["diff", "HEAD"]
 }
-MAX_LISTED_FILES = 200  # Changed and untracked files listed at most by get_diff
+MAX_LISTED_FILES = 200  # Changed and untracked files listed at most by get_git_diff
 JSON_ESCAPE_RATIO = 0.9  # Share of the budget used for text inside JSON, as escaping line breaks and quotes adds characters
 
 # --- Internal Helpers ---
@@ -221,7 +220,7 @@ def _all_changes_diff(p: Path, repo_root: Path, mode: str) -> str:
 
     listed_chars = sum(len(f) + 8 for f in listed_changed + listed_untracked)
     diff_text, diff_note = _limit_text(diff["stdout"], max(1000, int((MAX_OUTPUT_CHARS - min(3000, MAX_OUTPUT_CHARS // 4) - listed_chars) * JSON_ESCAPE_RATIO)),
-                                       "All changed files are listed in changed_files: view the rest one file at a time with get_diff(mode, path='<file>'), or limit the diff to one folder with path.")
+                                       "All changed files are listed in changed_files: view the rest one file at a time with get_git_diff(mode, path='<file>'), or limit the diff to one folder with path.")
     if diff_note:
         notes.append(diff_note)
 
@@ -240,7 +239,7 @@ def _all_changes_diff(p: Path, repo_root: Path, mode: str) -> str:
 # --- Public MCP Tools ---
 
 @mcp.tool()
-def get_diff(mode: str, path: str = "") -> str:
+def get_git_diff(mode: str, path: str = "") -> str:
     """
     Shows the git changes of one file, or of all changed files with lists of the changed and
     new untracked files (which have no diff). Use it to review changes.
@@ -269,7 +268,7 @@ def get_diff(mode: str, path: str = "") -> str:
         return json.dumps({"success": False, "error": "diff_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
-def get_file_history(path: str, limit: int = 10) -> str:
+def get_git_history(path: str, limit: int = 10) -> str:
     """
     Shows the recent commits of a file or folder with their changes.
 
@@ -322,12 +321,7 @@ def get_git_status(path: str = "") -> str:
             return error
 
         result = _run_git_command(["status", "--"] + _pathspecs(repo_root, p), cwd=cwd)
-        result = _limit_stdout(result, "Limit the status to one folder with path, or list the changed files with get_diff.")
+        result = _limit_stdout(result, "Limit the status to one folder with path, or list the changed files with get_git_diff.")
         return json.dumps(result, indent=2, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"success": False, "error": "status_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
-
-prepare_tools(mcp)
-
-if __name__ == "__main__":
-    mcp.run()

@@ -1,10 +1,10 @@
-# --- generate-map-mcp.py ---
+# --- outline.py ---
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
-from mcp_common import (
+from .common import (
     ALLOWED_DIR,
     IGNORED_DIRS,
     MAX_OUTPUT_CHARS,
@@ -13,12 +13,11 @@ from mcp_common import (
     is_ignored,
     is_path_allowed,
     load_gitignore_patterns,
-    prepare_tools,
     resolve_path,
     text_response,
     walk
 )
-from mcp_outline import (
+from .parsing import (
     FULL,
     MAX_PARSE_CHARS,
     NAMES,
@@ -36,7 +35,7 @@ from mcp_outline import (
 )
 
 # --- Constants & Config ---
-mcp = MCPServer("Generate-Map-Server")
+mcp = MCPServer("outline")  # Holds the tools of this toolset; __main__.py serves the enabled toolsets in one server
 
 FILES = TOP_LEVEL + 1  # Detail level listing files without their sections
 FOLDERS = TOP_LEVEL + 2  # Detail level listing the files directly in the folder and its subfolders with file counts
@@ -179,7 +178,7 @@ def _resolve_target(path: str, gitignore_patterns: list[str]) -> tuple[Path, str
     if not p.exists():
         return p, f"Error: Path '{path}' does not exist within the allowed directory {ALLOWED_DIR.as_posix()}. Use get_outline() to see the files."
     if p.is_dir() and p != ALLOWED_DIR and is_ignored(p, ALLOWED_DIR, IGNORED_DIRS, gitignore_patterns):
-        return p, f"Error: Folder '{path}' is ignored: it is an ignored folder or matched by .gitignore. Use get_config to see why."
+        return p, f"Error: Folder '{path}' is ignored: it is an ignored folder or matched by .gitignore. Use get_tools_config to see why."
     return p, None
 
 def _outline_folder(scope_dir: Path, gitignore_patterns: list[str]) -> str:
@@ -190,7 +189,7 @@ def _outline_folder(scope_dir: Path, gitignore_patterns: list[str]) -> str:
     rel = scope_dir.relative_to(ALLOWED_DIR).as_posix()
     title = f"Outline of {'the allowed directory' if rel == '.' else rel} ({len(files)} {'file' if len(files) == 1 else 'files'})"
     if not files:
-        return text_response([title, "No files found. Use get_config to see which files are ignored or forbidden."])
+        return text_response([title, "No files found. Use get_tools_config to see which files are ignored or forbidden."])
 
     if len(files) > MAX_OUTLINED_FILES:
         entries = [_read_entry(p) if p.parent == scope_dir else _FileEntry(p, p.relative_to(ALLOWED_DIR).as_posix(), 0) for p in files]
@@ -284,8 +283,3 @@ def get_outline(path: str = "") -> str:
         return _outline_file(target, gitignore_patterns)
     except Exception as e:
         return f"Error: Generating outline failed:\n{e}\n{traceback.format_exc()}"
-
-prepare_tools(mcp)
-
-if __name__ == "__main__":
-    mcp.run()

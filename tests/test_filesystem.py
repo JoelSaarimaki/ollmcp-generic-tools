@@ -1,6 +1,6 @@
 # --- test_filesystem.py ---
 """
-Tests for safe-filesystem-mcp: reading, editing, writing and managing files.
+Tests for the filesystem toolset: reading, editing, writing and managing files.
 """
 import base64
 import json
@@ -440,7 +440,7 @@ def test_restore_without_backup_lists_the_paths_that_have_one(project):
 def test_backups_are_kept_outside_the_project_by_default(project):
     fs = project.load("filesystem")
     fs.create_file("x.txt", "x")
-    folder = Path(json.loads(fs.get_config())["filesystem"]["backup_folder"])
+    folder = Path(json.loads(fs.get_tools_config())["filesystem"]["backup_folder"])
     assert folder.parent == project.root.parent / "home" / ".ollmcp-tools-backups" and folder.name.startswith("project-")
     assert (folder / "journal.json").is_file()
 

@@ -1,18 +1,17 @@
-# --- context-record-mcp.py ---
+# --- context.py ---
 import traceback
 from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
-from mcp_common import (
+from .common import (
     CONFIG_PATH,
     CONTEXT_FOLDER,
     MAX_OUTPUT_CHARS,
     READ_ONLY_FILES,
     code_block,
-    prepare_tools,
     text_response
 )
-from mcp_outline import (
+from .parsing import (
     NAMES,
     TOP_LEVEL,
     count_lines,
@@ -24,7 +23,7 @@ from mcp_outline import (
 )
 
 # --- Constants & Config ---
-mcp = MCPServer("Context-Record-Server")
+mcp = MCPServer("context")  # Holds the tools of this toolset; __main__.py serves the enabled toolsets in one server
 
 OUTLINE_AFTER_WRITE_CHARS = min(2500, MAX_OUTPUT_CHARS // 8)  # Room for the outline shown after a write
 KEEP_SHORT_ADVICE = " Keep context files short: summarize long notes and split them into several files with write_context_file."
@@ -386,8 +385,3 @@ def remove_context_file(filename: str) -> str:
         return f"Error: {e}"
     except Exception as e:
         return f"Error: Removing context file failed:\n{e}\n{traceback.format_exc()}"
-
-prepare_tools(mcp)
-
-if __name__ == "__main__":
-    mcp.run()

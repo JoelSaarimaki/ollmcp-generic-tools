@@ -14,7 +14,7 @@ from .common import (
     ALLOWED_DIR,
     BACKUP_DIR,
     COMMAND_SUGGESTIONS,
-    COMMANDS_CONFIG,
+    REGISTRY_PATH,
     CONFIG,
     CONFIG_PATH,
     CONTEXT_FOLDER,
@@ -25,6 +25,7 @@ from .common import (
     IGNORED_DIRS,
     MAX_OUTPUT_CHARS,
     OLLAMA_API_KEY,
+    USER_CONFIG_PATH,
     PROTECTED_FILE_NAMES,
     PROTECTED_PATHS,
     READ_ONLY_FILES,
@@ -1045,12 +1046,12 @@ def get_tools_config() -> str:
         gitignore_patterns = load_gitignore_patterns()
         repo_root = get_repo_root(ALLOWED_DIR) if ALLOWED_DIR.exists() else None
 
-        commands = {"registry": COMMANDS_CONFIG.as_posix() if COMMANDS_CONFIG else None,
-                    "registry_found": bool(COMMANDS_CONFIG and COMMANDS_CONFIG.is_file()),
+        commands = {"registry": REGISTRY_PATH.as_posix() if REGISTRY_PATH else None,
+                    "registry_found": bool(REGISTRY_PATH and REGISTRY_PATH.is_file()),
                     "suggestions_file": COMMAND_SUGGESTIONS.as_posix() if COMMAND_SUGGESTIONS else None}
         if commands["registry_found"]:
             try:
-                with open(COMMANDS_CONFIG, "r", encoding="utf-8") as f:
+                with open(REGISTRY_PATH, "r", encoding="utf-8") as f:
                     commands["command_count"] = len(json.load(f))
             except Exception as e:
                 commands["error"] = f"The registry could not be read: {e}"
@@ -1097,18 +1098,19 @@ def get_tools_config() -> str:
                 "read_only_files": [{"path": p.as_posix(), "found": p.is_file()} for p in READ_ONLY_FILES]
             },
             "web_search": {
-                "ollama_api_key_set": OLLAMA_API_KEY is not None
+                "ollama_api_key_set": OLLAMA_API_KEY is not None,
+                "user_config_file": USER_CONFIG_PATH.as_posix()
             },
             "notes": [
                 "Only the tools of the enabled toolsets are available, except the disabled_tools. The user chooses them in the config_file.",
                 "Only paths within allowed_dir can be accessed. Relative paths given to the tools are resolved against allowed_dir.",
-                "Forbidden paths and everything inside forbidden folders are denied and hidden, and so are protected files: files named in protected_file_names and the protected_files (the config_file and the command registry).",
+                "Forbidden paths and everything inside forbidden folders are denied and hidden, and so are protected files: files named in protected_file_names and the protected_files (the config_file, the user_config_file and the command registry).",
                 "Commands are added to the registry only by the user.",
                 "restore_file undoes the last max_backups changes of the file tools. Their backups, including deleted files, are kept in backup_folder, which the tools cannot access directly.",
                 "The outline and search tools also skip folders named in ignored_dirs at any depth, files matching the .gitignore patterns and, for search, binary files.",
                 "get_outline lists every file that is not ignored, with the sections of the outline_file_types.",
                 "Git's own .gitignore rules decide which untracked files the git tools list. If repository_root is null, allowed_dir is not in a git repository.",
-                "The web search tools only work if ollama_api_key_set is true. The key itself is never shown.",
+                "The web search tools only work if ollama_api_key_set is true: the user sets the key in the user_config_file. The key itself is never shown.",
                 "Responses longer than max_output_chars are cut short with an 'Output limited:' message that explains how to see the rest."
             ]
         }, indent=2, ensure_ascii=False)

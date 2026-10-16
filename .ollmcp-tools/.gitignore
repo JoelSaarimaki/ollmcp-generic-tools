@@ -1,0 +1,4 @@
+# Written by 'python -m ollmcp_tools init'. Each person's own files are not committed:
+# the AI's plans for their current task, and the commands it suggested to them.
+context
+suggested-commands.json

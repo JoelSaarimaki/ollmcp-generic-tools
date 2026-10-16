@@ -54,6 +54,13 @@ class Project:
         self.config_path.write_text(json.dumps({"allowed_dir": ".", **settings}), encoding="utf-8")
         return self.config_path
 
+    def user_config(self, **settings) -> Path:
+        """Writes the user config file, in the temporary home folder, with the given settings."""
+        path = Path.home() / ".ollmcp-tools" / "user-config.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(settings), encoding="utf-8")
+        return path
+
     def _use_config(self):
         if not self.config_path.exists():
             self.configure()
@@ -82,7 +89,7 @@ class Project:
         self.git("commit", "-qm", "init")
 
 def _use_temporary_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """Points the home folder to the temporary folder, so that the default backup folder of restore_file is there."""
+    """Points the home folder to the temporary folder, so that the user config file and the default backup folder of restore_file are there."""
     home = tmp_path / "home"
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setenv("HOME", str(home))

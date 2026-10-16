@@ -1,0 +1,36 @@
+{
+    "install_deps": {
+        "template": "python -m pip install -r requirements-dev.txt",
+        "description": "Installs the tools in editable mode with their dependencies and the test runner. Run this when imports fail with ModuleNotFoundError.",
+        "timeout": 600
+    },
+    "list_packages": {
+        "template": "python -m pip list",
+        "description": "Lists the installed Python packages and their versions."
+    },
+    "python_version": {
+        "template": "python --version",
+        "description": "Shows the Python version used to run the tools and the tests."
+    },
+    "python_doc": {
+        "template": "python -m pydoc {arg}",
+        "description": "Shows the documentation and signatures of an installed module, class or function. Use it to check a library's API instead of guessing it. Argument: the full name (e.g., 'mcp.server.mcpserver.MCPServer' or 'pathlib.Path')."
+    },
+    "run_tests": {
+        "template": "python -m pytest tests",
+        "description": "Runs the whole test suite. Use this to verify changes before considering a task done.",
+        "timeout": 600
+    },
+    "run_test_file": {
+        "template": "python -m pytest {arg}",
+        "description": "Runs the tests of one file, or one test, which is faster than the whole suite while working on a change. Argument: the test file or test (e.g., 'tests/test_commands.py' or 'tests/test_commands.py::test_list_available_commands')."
+    },
+    "run_tests_matching": {
+        "template": "python -m pytest tests -k {arg}",
+        "description": "Runs the tests whose names match an expression. Argument: part of the test names, optionally with and/or/not (e.g., 'registry' or 'registry and not broken')."
+    },
+    "run_failed_tests": {
+        "template": "python -m pytest tests --last-failed",
+        "description": "Runs again only the tests that failed in the previous test run. Use it to check a fix."
+    }
+}

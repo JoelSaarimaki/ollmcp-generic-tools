@@ -35,11 +35,13 @@ def page(content="Hello ä", title="Page", links=()):
 
 @pytest.fixture
 def web(project):
-    project.configure(ollama_api_key="test-key")
+    project.user_config(ollama_api_key="test-key")
+    project.configure()
     return project.load("web")
 
-def test_api_key_is_read_from_the_tools_config(project):
-    project.configure(ollama_api_key="  test-key  ")
+def test_api_key_is_read_from_the_user_config(project):
+    project.user_config(ollama_api_key="  test-key  ")
+    project.configure()
     server = project.load("web")
     assert server.OLLAMA_API_KEY == "test-key"
     assert server.CLIENT._client.headers["authorization"] == "Bearer test-key"
@@ -54,19 +56,28 @@ def test_api_key_is_not_read_from_the_environment(project, monkeypatch):
 
 @pytest.mark.parametrize("value", [None, "", "   "])
 def test_empty_api_key_is_not_set(project, value):
-    project.configure(ollama_api_key=value)
+    project.user_config(ollama_api_key=value)
+    project.configure()
     assert project.common().OLLAMA_API_KEY is None
 
 def test_api_key_must_be_a_string(project):
-    project.configure(ollama_api_key=123)
+    project.user_config(ollama_api_key=123)
+    project.configure()
     result = start_server(project.config_path)
     assert result.returncode != 0
-    assert "'ollama_api_key' must be a string" in result.stderr
+    assert "user-config.json: 'ollama_api_key' must be a string" in result.stderr
+
+def test_api_key_in_the_tools_config_stops_the_server(project):
+    """A key in the tools config would be committed with the project."""
+    result = start_server(project.configure(ollama_api_key="secret-key"))
+    assert result.returncode != 0 and "belongs in the user config file" in result.stderr
 
 def test_get_config_reports_the_key_without_showing_it(project):
-    project.configure(ollama_api_key="secret-key")
+    project.user_config(ollama_api_key="secret-key")
+    project.configure()
     response = project.load("filesystem").get_tools_config()
     assert json.loads(response)["web_search"]["ollama_api_key_set"] is True
+    assert json.loads(response)["web_search"]["user_config_file"].endswith(".ollmcp-tools/user-config.json")
     assert "secret-key" not in response
 
 def test_web_search_returns_the_results(web):
@@ -95,7 +106,8 @@ def test_web_search_reports_no_results(web):
     assert data["success"] and data["results"] == [] and "No results" in data["message"]
 
 def test_web_search_limits_long_results(project):
-    project.configure(ollama_api_key="key", max_output_chars=4000)
+    project.user_config(ollama_api_key="key")
+    project.configure(max_output_chars=4000)
     web = project.load("web")
     web.CLIENT = FakeClient([result(content="line of text\n" * 1000) for _ in range(3)])
     response = web.web_search("python")
@@ -128,7 +140,8 @@ def test_web_fetch_limits_the_links(web):
     assert "Links (50 of 80):" in response and "https://example.com/49\n" in response and "https://example.com/50\n" not in response
 
 def test_web_fetch_reads_long_pages_in_parts(project):
-    project.configure(ollama_api_key="key", max_output_chars=3000)
+    project.user_config(ollama_api_key="key")
+    project.configure(max_output_chars=3000)
     web = project.load("web")
     text = "".join(f"line {i}\n" for i in range(1000))
     web.CLIENT = FakeClient(page=page(text, links=["https://example.com/a"]))

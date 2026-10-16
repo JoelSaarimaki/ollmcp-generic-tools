@@ -17,7 +17,16 @@ from pathlib import Path
 # --- Constants & Config ---
 
 CONFIG_ENV_VAR = "MCP_TOOLS_CONFIG"
-CONFIG_KEYS = {"allowed_dir", "forbidden_paths", "max_output_chars", "gitignore_path", "commands_config", "command_suggestions", "context_folder", "read_only_files", "ignored_dirs", "ollama_api_key", "backup_folder", "disabled_toolsets", "disabled_tools"}
+CONFIG_KEYS = {"allowed_dir", "forbidden_paths", "max_output_chars", "gitignore_path", "command_registry", "command_suggestions", "context_folder", "read_only_files", "ignored_dirs", "backup_folder", "disabled_toolsets", "disabled_tools"}
+# The user config file holds each person's own settings for all their projects, such as API keys,
+# so that they are never committed with a project's tools config
+USER_CONFIG_PATH = Path.home() / ".ollmcp-tools" / "user-config.json"
+USER_CONFIG_KEYS = {"ollama_api_key"}
+# Settings that were renamed or moved, with what to do instead, shown when an old config uses them
+MOVED_SETTINGS = {
+    "commands_config": "it is now called 'command_registry'",
+    "ollama_api_key": f"it belongs in the user config file {USER_CONFIG_PATH}, so that it is not committed with the project",
+}
 # The toolsets, each a module of this package, and their tools, in the order they are served.
 # Used to check the disabled_toolsets and disabled_tools settings before any toolset is imported.
 TOOLSETS = {
@@ -68,12 +77,34 @@ def _load_config() -> tuple[Path, dict]:
         config = json.load(f)
     if not isinstance(config, dict):
         raise ValueError(f"{path}: the config file must contain a JSON object.")
+    moved = sorted(set(config) & set(MOVED_SETTINGS))
+    if moved:
+        raise ValueError(f"{path}: '{moved[0]}' is no longer a setting of the tools config file: {MOVED_SETTINGS[moved[0]]}.")
     unknown = set(config) - CONFIG_KEYS
     if unknown:
         raise ValueError(f"{path}: unknown settings {sorted(unknown)}. Valid settings: {sorted(CONFIG_KEYS)}.")
     if config.get("allowed_dir") in (None, ""):
         raise ValueError(f"{path}: 'allowed_dir' is required.")
     return path, config
+
+def _load_user_config() -> dict:
+    """
+    Loads the user config file, or returns an empty dict if it does not exist. Raises an error if it is
+    not a JSON object or contains unknown settings, as the tools config file does.
+    """
+    if not USER_CONFIG_PATH.is_file():
+        return {}
+    try:
+        with open(USER_CONFIG_PATH, "r", encoding="utf-8") as f:
+            config = json.load(f)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"{USER_CONFIG_PATH}: the user config file is not valid JSON: {e}") from e
+    if not isinstance(config, dict):
+        raise ValueError(f"{USER_CONFIG_PATH}: the user config file must contain a JSON object.")
+    unknown = set(config) - USER_CONFIG_KEYS
+    if unknown:
+        raise ValueError(f"{USER_CONFIG_PATH}: unknown settings {sorted(unknown)}. Valid settings: {sorted(USER_CONFIG_KEYS)}.")
+    return config
 
 def _setting_path(key: str, base_dir: Path) -> Path | None:
     """
@@ -127,15 +158,15 @@ def _setting_names(key: str, valid: list[str]) -> set[str]:
         raise ValueError(f"{CONFIG_PATH}: '{key}' contains unknown names {unknown}. Valid names: {valid}.")
     return set(values)
 
-def _setting_secret(key: str) -> str | None:
+def _user_secret(key: str) -> str | None:
     """
-    Returns a secret string setting, such as an API key, or None if it is not set, null or empty.
+    Returns a secret string setting of the user config file, such as an API key, or None if it is not set, null or empty.
     """
-    value = CONFIG.get(key)
+    value = USER_CONFIG.get(key)
     if value is None:
         return None
     if not isinstance(value, str):
-        raise ValueError(f"{CONFIG_PATH}: '{key}' must be a string.")
+        raise ValueError(f"{USER_CONFIG_PATH}: '{key}' must be a string.")
     return value.strip() or None
 
 def _setting_max_output_chars() -> int:
@@ -152,6 +183,7 @@ def _setting_max_output_chars() -> int:
 # Paths in the config file are relative to its folder, except forbidden_paths, which are relative to allowed_dir
 CONFIG_PATH, CONFIG = _load_config()
 CONFIG_DIR = CONFIG_PATH.parent
+USER_CONFIG = _load_user_config()
 DISABLED_TOOLSETS = _setting_names("disabled_toolsets", list(TOOLSETS))
 DISABLED_TOOLS = _setting_names("disabled_tools", [tool for tools in TOOLSETS.values() for tool in tools])
 # A toolset whose tools are all disabled is not loaded either, so its settings are not checked
@@ -161,22 +193,23 @@ if not ENABLED_TOOLSETS:
     raise ValueError(f"{CONFIG_PATH}: 'disabled_toolsets' and 'disabled_tools' disable every tool.")
 ALLOWED_DIR = _setting_path("allowed_dir", CONFIG_DIR)
 if not ALLOWED_DIR.is_dir():
-    raise NotADirectoryError(f"{CONFIG_PATH}: 'allowed_dir' is not an existing folder: {ALLOWED_DIR}")
+    raise NotADirectoryError(f"{CONFIG_PATH}: 'allowed_dir' is not an existing folder: {ALLOWED_DIR}."
+                             f" '{CONFIG['allowed_dir']}' is relative to the folder of the config file, {CONFIG_DIR}.")
 FORBIDDEN_PATHS = _setting_paths("forbidden_paths", ALLOWED_DIR)
 # Largest response size in characters (about 4 characters per token). Lower it for models with small context windows.
 MAX_OUTPUT_CHARS = _setting_max_output_chars()
 GITIGNORE_PATH = _setting_path("gitignore_path", CONFIG_DIR) or ALLOWED_DIR / ".gitignore"
-COMMANDS_CONFIG = _setting_path("commands_config", CONFIG_DIR)
+REGISTRY_PATH = _setting_path("command_registry", CONFIG_DIR)
 # The file where suggest_command writes suggested commands for the user to review. It is never read as a registry.
 COMMAND_SUGGESTIONS = _setting_path("command_suggestions", CONFIG_DIR)
-# Files protected by their path: the tools config file and the command registry. If the AI could change them,
-# it could remove its own restrictions or register any command, which would take effect at the next server start.
-PROTECTED_PATHS = [CONFIG_PATH] + ([COMMANDS_CONFIG] if COMMANDS_CONFIG else [])
+# Files protected by their path: the tools config file, the user config file and the command registry. If the AI could
+# change them, it could remove its own restrictions or register any command, which would take effect at the next server start.
+PROTECTED_PATHS = [CONFIG_PATH, USER_CONFIG_PATH] + ([REGISTRY_PATH] if REGISTRY_PATH else [])
 CONTEXT_FOLDER = _setting_path("context_folder", CONFIG_DIR)
 READ_ONLY_FILES = _setting_paths("read_only_files", CONFIG_DIR)
 IGNORED_DIRS = _setting_ignored_dirs()
-# API key for Ollama's hosted web search and fetch (the web toolset). Never shown to the AI: the config file is protected.
-OLLAMA_API_KEY = _setting_secret("ollama_api_key")
+# API key for Ollama's hosted web search and fetch (the web toolset). Never shown to the AI: the user config file is protected.
+OLLAMA_API_KEY = _user_secret("ollama_api_key")
 # One default backup folder per project, named after it and its path, so that projects with the same name do not share one
 _PROJECT_KEY = hashlib.sha256(str(ALLOWED_DIR).lower().encode("utf-8")).hexdigest()[:12]
 BACKUP_DIR = _setting_path("backup_folder", CONFIG_DIR) or DEFAULT_BACKUP_ROOT / f"{ALLOWED_DIR.name}-{_PROJECT_KEY}"
@@ -184,7 +217,7 @@ if ALLOWED_DIR.is_relative_to(BACKUP_DIR):
     raise ValueError(f"{CONFIG_PATH}: 'backup_folder' must not contain 'allowed_dir', as the backup folder is hidden from the tools: {BACKUP_DIR}")
 if COMMAND_SUGGESTIONS and (COMMAND_SUGGESTIONS in PROTECTED_PATHS or COMMAND_SUGGESTIONS.name.lower() in PROTECTED_FILE_NAMES
                             or COMMAND_SUGGESTIONS.is_relative_to(BACKUP_DIR)):
-    raise ValueError(f"{CONFIG_PATH}: 'command_suggestions' must be a file of its own, not the tools config file, the 'commands_config' registry, a '.mcp.json' file or in the backup folder: {COMMAND_SUGGESTIONS}")
+    raise ValueError(f"{CONFIG_PATH}: 'command_suggestions' must be a file of its own, not the tools config file, the user config file, the 'command_registry', a '.mcp.json' file or in the backup folder: {COMMAND_SUGGESTIONS}")
 
 # --- Shared Helpers ---
 
@@ -277,7 +310,7 @@ def access_denied_message(path: Path, label: str = "Path") -> str:
     Returns the reason why access to the given path was denied.
     """
     if is_protected(path):
-        return f"{label} is protected: '{path.name}' contains the MCP server or tools configuration or the command registry, and cannot be accessed."
+        return f"{label} is protected: '{path.name}' contains the MCP server, tools or user configuration or the command registry, and cannot be accessed."
     if is_backup(path):
         return f"{label} is protected: it is in the backup folder of restore_file, which cannot be accessed directly."
     if is_forbidden(path):

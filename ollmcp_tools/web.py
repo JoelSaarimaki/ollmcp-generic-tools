@@ -23,7 +23,7 @@ JSON_ESCAPE_RATIO = 0.9  # Share of the budget used for text inside JSON, as esc
 
 # The key is given explicitly, so that the ollama library does not read OLLAMA_API_KEY from the environment
 CLIENT = Client(host=OLLAMA_HOST, headers={"authorization": f"Bearer {OLLAMA_API_KEY}"}, timeout=REQUEST_TIMEOUT_SECONDS) if OLLAMA_API_KEY else None
-NOT_CONFIGURED = "Web search is not configured: 'ollama_api_key' is not set in the tools config file. Ask the user to add an Ollama API key. Use get_tools_config to see the configuration."
+NOT_CONFIGURED = "Web search is not configured: 'ollama_api_key' is not set in the user config file. Ask the user to add an Ollama API key there. Use get_tools_config to see where the file is."
 
 # --- Internal Helpers ---
 

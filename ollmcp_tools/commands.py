@@ -14,7 +14,7 @@ from mcp.server.mcpserver import MCPServer
 from .common import (
     ALLOWED_DIR,
     COMMAND_SUGGESTIONS,
-    COMMANDS_CONFIG,
+    REGISTRY_PATH,
     MAX_OUTPUT_CHARS
 )
 
@@ -39,22 +39,22 @@ BATCH_UNSAFE_CHARS = set('&|<>^%!"()')
 
 def _load_registry() -> dict[str, dict[str, Any]]:
     """
-    Loads the command registry named by commands_config, or returns an empty registry if it is not set.
+    Loads the command registry named by command_registry, or returns an empty registry if it is not set.
     Raises an error if the file is missing, is not valid JSON or has an incomplete command, so that
     a broken registry does not silently look like a registry without commands.
     """
-    if not COMMANDS_CONFIG:
+    if not REGISTRY_PATH:
         return {}
-    if not COMMANDS_CONFIG.is_file():
-        raise FileNotFoundError(f"commands_config: command registry not found: {COMMANDS_CONFIG}")
-    with open(COMMANDS_CONFIG, "r", encoding="utf-8") as f:
+    if not REGISTRY_PATH.is_file():
+        raise FileNotFoundError(f"command_registry: command registry not found: {REGISTRY_PATH}")
+    with open(REGISTRY_PATH, "r", encoding="utf-8") as f:
         registry = json.load(f)
     if not isinstance(registry, dict):
-        raise ValueError(f"{COMMANDS_CONFIG}: the command registry must be a JSON object of commands.")
+        raise ValueError(f"{REGISTRY_PATH}: the command registry must be a JSON object of commands.")
     for name, info in registry.items():
         problem = _command_problem(name, info)
         if problem:
-            raise ValueError(f"{COMMANDS_CONFIG}: {problem}")
+            raise ValueError(f"{REGISTRY_PATH}: {problem}")
     return registry
 
 def _command_problem(name: str, info: Any) -> str | None:
@@ -221,7 +221,7 @@ def _suggest_command_logic(name: str, template: str, description: str, timeout: 
     replaced = _save_suggestion(name, entry) if COMMAND_SUGGESTIONS else False
     formatted = json.dumps({name: entry}, indent=4, ensure_ascii=False).splitlines()[1:-1]
     where = f"is saved in {COMMAND_SUGGESTIONS.as_posix()}" if COMMAND_SUGGESTIONS else "is shown below"
-    registry = f"the command registry {COMMANDS_CONFIG.as_posix()}" if COMMANDS_CONFIG else "a command registry, set as commands_config in the tools config file"
+    registry = f"the command registry {REGISTRY_PATH.as_posix()}" if REGISTRY_PATH else "a command registry, set as command_registry in the tools config file"
     return {
         "success": True,
         "name": name,

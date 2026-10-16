@@ -1,0 +1,14 @@
+{
+    "allowed_dir": "..",
+    "forbidden_paths": [".ollmcp-tools"],
+    "ignored_dirs": null,
+    "gitignore_path": null,
+    "max_output_chars": 40000,
+    "command_registry": "commands.json",
+    "command_suggestions": "suggested-commands.json",
+    "context_folder": "context",
+    "read_only_files": ["instructions.md"],
+    "backup_folder": null,
+    "disabled_toolsets": null,
+    "disabled_tools": null
+}

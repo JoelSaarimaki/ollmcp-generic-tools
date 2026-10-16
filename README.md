@@ -25,47 +25,96 @@ For the design principles behind the tools and the planned improvements, see [DE
 
     The package is installed in editable mode, so it is used straight from the repository: after a `git pull`, every project uses the new version without reinstalling. Install it once, and it works in all your projects. To install only the tools into another Python environment, run `python -m pip install -e <path to this repository>` with that environment's Python.
 
-### Configuration
+### Setting up a project
 
-The tools are configured with two files in your project root:
-- `.mcp.json` tells `ollmcp` to start the tools. It is the same in every project, and contains no paths:
+In the root folder of a project, run:
 
-  ```json
-  {
-      "mcpServers": {
-          "dev": {
-              "command": "python",
-              "args": ["-m", "ollmcp_tools"],
-              "env": {
-                  "MCP_TOOLS_CONFIG": "tools-config.json"
-              }
-          }
-      }
-  }
-  ```
+```bash
+python -m ollmcp_tools init
+```
 
-- The tools config file, `tools-config.json` here, holds all settings: the project folder, which toolsets and tools are used, and the limits. A relative `MCP_TOOLS_CONFIG` path is resolved against the folder where `ollmcp` is started.
+It creates `.mcp.json` and the `.ollmcp-tools` folder from the templates in [`ollmcp_tools/templates`](ollmcp_tools/templates), and prints what to do next. Files that already exist are never overwritten, so running it again is safe.
 
-`python` must be the Python the package was installed with. If you installed it into a virtual environment, use that environment's Python as the `command`.
+```
+my-project/
+    .mcp.json                    # tells ollmcp to start the tools, the same in every project
+    .ollmcp-tools/
+        tools-config.json        # all settings of the tools for this project
+        commands.json            # the commands the AI can run
+        instructions.md          # your instructions for the AI, which it cannot change
+        .gitignore               # leaves out context/ and suggested-commands.json
+        context/                 # the AI's plans and notes for the current task
+        suggested-commands.json  # created when the AI suggests a command
+```
 
-ollmcp names the tools `<server key>.<tool>`, e.g. `dev.get_outline`. The example instructions in [`_instructions/app-instructions.md`](_instructions/app-instructions.md) use these names, so change them there if you use another key. For cloud providers, ollmcp writes the names with `_` instead of `.`, e.g. `dev_get_outline`.
-
-The tools config file and the special directories (`_context`, `_instructions` and `_commands`) do **not** need to be located within your project folder. See [Protected files](#protected-files) for why a real project should keep them outside.
-
-### Tools config file
+`.mcp.json` contains no paths of the tools, only the tools config file of the project:
 
 ```json
 {
-    "allowed_dir": ".",
-    "forbidden_paths": ["secrets", "config/keys.json"],
+    "mcpServers": {
+        "dev": {
+            "command": "python",
+            "args": ["-m", "ollmcp_tools"],
+            "env": {
+                "MCP_TOOLS_CONFIG": ".ollmcp-tools/tools-config.json"
+            }
+        }
+    }
+}
+```
+
+- `python` must be the Python the package was installed with. If you installed it into a virtual environment, use that environment's Python as the `command`.
+- A relative `MCP_TOOLS_CONFIG` path is resolved against the folder where `ollmcp` is started, so start it in the project's root folder.
+- ollmcp names the tools `<server key>.<tool>`, e.g. `dev.get_outline`. The instructions template uses these names, so change them there if you use another key. For cloud providers, ollmcp writes the names with `_` instead of `.`, e.g. `dev_get_outline`.
+
+**Why `allowed_dir` is `".."`:** the paths in the tools config are relative to the config file's own folder, `.ollmcp-tools`, so `".."` is the project folder above it. `init` prints the folder it resolves to, and if `allowed_dir` points to a folder that does not exist, the error says what it was resolved against.
+
+After `init`, follow its checklist:
+1. Check `allowed_dir`, and add the folders and files the AI must never access to `forbidden_paths`.
+2. Keep the commands in `commands.json` that fit the project, and change or delete the rest. The template has commands for poetry and npm projects.
+3. Adapt `instructions.md` to the project, and remove the tools you disable (see [Choosing the toolsets](#choosing-the-toolsets)).
+4. Add your Ollama API key to the [user config file](#user-config-file), or disable the `web` toolset.
+5. Add the session start instruction to ollmcp's system prompt (see [Running](#running)).
+
+#### What to commit
+
+Commit `.mcp.json` and the `.ollmcp-tools` folder: the settings, commands and instructions are the same for everyone who works on the project, and `forbidden_paths` protects the same files for all of them. The `.gitignore` in the folder leaves out each person's own files:
+- `context/`, as the plans are for one person's current task: someone else's AI would otherwise take them as its own plans.
+- `suggested-commands.json`, as the suggestions are for the person who reviews them.
+
+The API key is not in the project at all, but in each person's [user config file](#user-config-file). Someone who clones the project runs `python -m ollmcp_tools init` once: it leaves the committed files as they are and creates the context folder and the user config file.
+
+#### User config file
+
+`~/.ollmcp-tools/user-config.json` (e.g. `C:\Users\<name>\.ollmcp-tools\user-config.json`) holds your own settings for all your projects. `init` creates it if it does not exist yet:
+
+```json
+{
+    "ollama_api_key": null
+}
+```
+
+| Setting | Description |
+|---|---|
+| `ollama_api_key` | The Ollama API key used by the `web` toolset. Create one at [ollama.com/settings/keys](https://ollama.com/settings/keys). The key is never shown to the AI, as the file is [protected](#protected-files). (Optional, without it the web search tools only return a `not_configured` error) |
+
+The server refuses to start if the file is not valid JSON or contains an unknown setting. An `ollama_api_key` in a project's tools config stops the server with an error saying to move it here, so that it is not committed with the project.
+
+### Tools config file
+
+The `.ollmcp-tools/tools-config.json` that `init` creates, here with a forbidden `secrets` folder and the `web` toolset and `write_file` tool disabled:
+
+```json
+{
+    "allowed_dir": "..",
+    "forbidden_paths": [".ollmcp-tools", "secrets"],
     "ignored_dirs": null,
     "gitignore_path": null,
     "max_output_chars": 40000,
-    "commands_config": "_commands/app-commands.json",
-    "command_suggestions": "_commands/suggested-commands.json",
-    "context_folder": "_context",
-    "read_only_files": ["_instructions/app-instructions.md"],
-    "ollama_api_key": null,
+    "command_registry": "commands.json",
+    "command_suggestions": "suggested-commands.json",
+    "context_folder": "context",
+    "read_only_files": ["instructions.md"],
     "backup_folder": null,
     "disabled_toolsets": ["web"],
     "disabled_tools": ["write_file"]
@@ -74,19 +123,18 @@ The tools config file and the special directories (`_context`, `_instructions` a
 
 All settings except `allowed_dir` are optional. An optional setting that is left out or set to `null` uses its default, so `null` can be used to show that a setting exists without using it. Note that an empty list is not the same as `null`: `"ignored_dirs": []` skips no folders at all, while `"ignored_dirs": null` skips the default folders.
 
-Relative paths are resolved against the folder of the config file, except `forbidden_paths`, which are resolved against `allowed_dir`. The server refuses to start if the file is missing, is not valid JSON, lacks `allowed_dir`, points `allowed_dir` to a folder that does not exist, has a `backup_folder` that contains `allowed_dir`, has a `command_suggestions` file that is the config file or the command registry, names an unknown toolset or tool, disables every tool, or contains an unknown setting, so a typo cannot silently weaken the configuration. The config file itself is always [protected](#protected-files).
+Relative paths are resolved against the folder of the config file, except `forbidden_paths`, which are resolved against `allowed_dir`: `".."` is the project folder, and `".ollmcp-tools"` in `forbidden_paths` is the tools' own folder in it. The server refuses to start if the file is missing, is not valid JSON, lacks `allowed_dir`, points `allowed_dir` to a folder that does not exist, has a `backup_folder` that contains `allowed_dir`, has a `command_suggestions` file that is the config file or the command registry, names an unknown toolset or tool, disables every tool, or contains an unknown setting, so a typo cannot silently weaken the configuration. A setting that was renamed or moved, such as the earlier `commands_config` and `ollama_api_key`, is named in the error with what to do instead. The config file itself is always [protected](#protected-files).
 
 | Setting | Description |
 |---|---|
 | `allowed_dir` | The project directory the tools can access. Relative paths given to the tools are resolved against it, so a path returned by one tool (e.g. `src/app.py` from a search) works as-is in the others. To focus the AI on part of the project, such as `src`, it can limit outlines and searches with their `path` argument. (Required) |
-| `forbidden_paths` | List of folders and/or files the tools must never access, even within `allowed_dir`. See [Forbidden paths](#forbidden-paths). (Optional) |
+| `forbidden_paths` | List of folders and/or files the tools must never access, even within `allowed_dir`. `init` adds `.ollmcp-tools`, so that the file tools cannot change the instructions or read the plans other than through the `context` toolset. See [Forbidden paths](#forbidden-paths). (Optional) |
 | `max_output_chars` | The largest size of a tool response in characters, about 4 characters per token. Lower it for models with small context windows, e.g. `12000` for an 8k-token context. See [Output limits](#output-limits). (Optional, defaults to `40000`, at least `2000`) |
 | `gitignore_path` | The `.gitignore` file used by the outline and search tools. (Optional, defaults to `.gitignore` in `allowed_dir`) |
-| `commands_config` | The command registry of the `commands` toolset. It is always [protected](#protected-files). See [commands](#commands). (Optional) |
-| `command_suggestions` | The file where `suggest_command` saves the commands the AI suggests, for you to review. It must not be the `commands_config` registry. See [Suggested commands](#suggested-commands). (Optional, without it suggestions are only shown in the chat) |
+| `command_registry` | The command registry of the `commands` toolset. It is always [protected](#protected-files). See [commands](#commands). (Optional) |
+| `command_suggestions` | The file where `suggest_command` saves the commands the AI suggests, for you to review. It must not be the `command_registry`. See [Suggested commands](#suggested-commands). (Optional, without it suggestions are only shown in the chat) |
 | `context_folder` | The folder of the context Markdown files of the `context` toolset. (Optional) |
 | `read_only_files` | List of files maintained by you, such as project instructions, that the AI can read with the `context` toolset but not change or remove. They can be located anywhere, and are read by their file name. (Optional) |
-| `ollama_api_key` | The Ollama API key used by the `web` toolset. Create one at [ollama.com/settings/keys](https://ollama.com/settings/keys). The key is never shown to the AI, as the config file is [protected](#protected-files). If the config file is committed to git, do not commit the key. (Optional, without it the web search tools only return a `not_configured` error) |
 | `backup_folder` | The folder where `restore_file`'s backups are kept. It must not contain `allowed_dir`. See [Backups](#backups). (Optional, defaults to a folder for the project in `~/.ollmcp-tools-backups`) |
 | `ignored_dirs` | List of folder names the outline and search tools skip at any depth. Replaces the defaults completely. See [Ignored directories](#ignored-directories). (Optional, defaults to `node_modules`, `.git`, `build` and other common build and cache folders) |
 | `disabled_toolsets` | List of toolsets that are not loaded, e.g. `["web", "git"]`. See [Choosing the toolsets](#choosing-the-toolsets). (Optional, defaults to none, so every toolset is loaded) |
@@ -111,12 +159,12 @@ Every toolset is loaded unless it is listed in `disabled_toolsets`, and every to
 - Every tool definition is sent to the model with each request, so leaving out the tools a project does not need saves context, e.g. `web` without an Ollama API key, or `git` in a folder without git.
 - A disabled toolset is not loaded at all, so its settings are not checked either: a project without a command registry can disable `commands` instead of creating an empty one. A toolset whose tools are all in `disabled_tools` is not loaded either.
 - The toolsets work best together: their responses point to tools of other toolsets, e.g. `get_outline` to `read_file_with_metadata`, and the other tools to `get_tools_config` when a path is denied. Disable a toolset when the project does not need it, not to make the AI use another one.
-- The example [`_instructions/app-instructions.md`](_instructions/app-instructions.md) names tools of every toolset. Remove the disabled ones from your own instructions, so that the AI does not try to call tools it does not have.
+- The [instructions template](ollmcp_tools/templates/instructions.md) names tools of every toolset. Remove the disabled ones from your own instructions, so that the AI does not try to call tools it does not have.
 - A toolset added in a later version of the tools is loaded unless you disable it.
 
 ### Running
 
-Once configured, start `ollmcp` in your project root directory:
+Once set up, start `ollmcp` in the project's root folder:
 
 ```bash
 ollmcp
@@ -203,7 +251,7 @@ Gives the AI access to very specific console commands, and tells it when it coul
 - **run_predefined_command** Executes a specific console command from the allowed registry.
 - **suggest_command** Suggests a missing command for you to review and add to the registry. It never changes the registry itself.
 
-Commands are defined in the JSON file set as `commands_config` in the tools config:
+Commands are defined in the JSON file set as `command_registry` in the tools config, `.ollmcp-tools/commands.json` after `init`:
 
 ```json
 {
@@ -219,7 +267,7 @@ Commands are defined in the JSON file set as `commands_config` in the tools conf
 - `description`: Tells the AI when to use the command.
 - `timeout`: Seconds before the command is stopped. (Optional, defaults to 120)
 
-See [`_commands/app-commands.json`](_commands/app-commands.json) for a fuller example covering dependencies, tests, linting, type checking and npm scripts. It includes commands that make small models work better:
+The [template](ollmcp_tools/templates/commands.json) that `init` copies is a fuller example covering dependencies, tests, linting, type checking and npm scripts. It includes commands that make small models work better:
 - Running one test file, one test or the tests matching a name (`run_test_file`, `run_tests_matching`, `npm_test_file`, `npm_test_name`) and the tests that failed last time (`run_failed_tests`), which is faster and gives shorter output than the whole suite.
 - Looking up the real API of an installed library (`python_doc`, which runs `pydoc`) or an npm package's details (`npm_package_info`), as the tools cannot read installed packages and small models often guess function signatures.
 
@@ -249,7 +297,7 @@ The tool checks the suggestion like the registry is checked at startup (e.g. the
 }
 ```
 
-To accept a suggestion, copy its entry into the `commands_config` registry and restart `ollmcp`. The entries are written by the server, not by the AI, so their quotes and backslashes are always valid JSON. A suggestion with the same name as an earlier one replaces it. Delete entries from the suggestions file when you no longer need them.
+To accept a suggestion, copy its entry into the `command_registry` and restart `ollmcp`. The entries are written by the server, not by the AI, so their quotes and backslashes are always valid JSON. A suggestion with the same name as an earlier one replaces it. Delete entries from the suggestions file when you no longer need them.
 
 The response also lists warnings for you to check: a program that is not on PATH, a shell as the program (e.g. `powershell` or `bash`), and code options such as `-c` together with `{arg}`, which would let the AI run any code through the command.
 
@@ -264,11 +312,11 @@ It also gives the AI your project instructions: list them in `read_only_files`, 
 - **write_context_file** Creates a new Markdown file or overwrites an existing one in the context folder, or adds to its end with `append=True`. The response shows the new headings with their line spans, and warns if headings of the old content are gone.
 - **remove_context_file** Removes a specific Markdown file from the context folder.
 
-Read-only only applies to the `context` toolset. If the instructions file is inside the project, the `filesystem` toolset can still change it: add its folder (e.g. `_instructions`) to `forbidden_paths` to prevent that. The `context` toolset does not use `forbidden_paths`, so it can still read the file.
+Read-only only applies to the `context` toolset. The `filesystem` toolset could still change a read-only file inside the project, which is why `init` adds `.ollmcp-tools` to `forbidden_paths`: add the folder of any other read-only file there too. The `context` toolset does not use `forbidden_paths`, so it can still read the files.
 
 ### web
 
-Searches the web and reads web pages using Ollama's hosted [web search API](https://docs.ollama.com/capabilities/web-search). Requires `ollama_api_key` in the [tools config file](#tools-config-file); the `ollama` Python package is installed with the tools. Disable the toolset if you do not use it. The queries and URLs are sent to ollama.com.
+Searches the web and reads web pages using Ollama's hosted [web search API](https://docs.ollama.com/capabilities/web-search). Requires `ollama_api_key` in the [user config file](#user-config-file); the `ollama` Python package is installed with the tools. Disable the toolset if you do not use it. The queries and URLs are sent to ollama.com.
 
 - **web_search** Searches the web and returns the title, URL and content of the best matching pages (`max_results`, 1–10, default 3).
 - **web_fetch** Fetches a web page and returns its title, links and text content. The content is shown as-is in a code block, so code copied from a page is not JSON-escaped. Long pages are read in parts with `start_char`.
@@ -305,7 +353,7 @@ Before `edit_file`, `write_file`, `create_file`, `move_file` or `delete_file` ch
 
 ### Protected files
 
-Files named `.mcp.json` contain the MCP server configuration, which servers ollmcp runs and which tools config file they read, the [tools config file](#tools-config-file) contains the allowed directory and forbidden paths, and the `commands_config` registry lists the commands the AI can run. If the AI could change them, it could remove its own restrictions or register any command, which would take effect the next time the tools start. Therefore `.mcp.json` files, at any depth, the tools config file in use and the command registry are always protected, regardless of `forbidden_paths` (defined as `PROTECTED_FILE_NAMES` and `PROTECTED_PATHS` in `ollmcp_tools/common.py`). The registry is protected even if it does not exist yet, so the AI cannot create it either. The `command_suggestions` file is not protected:
+Files named `.mcp.json` contain the MCP server configuration, which servers ollmcp runs and which tools config file they read, the [tools config file](#tools-config-file) contains the allowed directory and forbidden paths, the `command_registry` lists the commands the AI can run, and the [user config file](#user-config-file) holds your API key. If the AI could change them, it could remove its own restrictions or register any command, which would take effect the next time the tools start. Therefore `.mcp.json` files, at any depth, the tools config file in use, the user config file and the command registry are always protected, regardless of `forbidden_paths` (defined as `PROTECTED_FILE_NAMES` and `PROTECTED_PATHS` in `ollmcp_tools/common.py`). The registry is protected even if it does not exist yet, so the AI cannot create it either. The `command_suggestions` file is not protected:
 
 - The `filesystem` toolset denies reading, writing, editing, moving and deleting them, and creating a file or renaming a file to that name. Folders containing one cannot be moved or deleted either.
 - The `outline` and `search` toolsets leave them out of outlines and search results.
@@ -314,15 +362,13 @@ Files named `.mcp.json` contain the MCP server configuration, which servers ollm
 
 The protection also covers other spellings of the name that Windows treats as the same file, such as a different letter case, a trailing dot or space, a `::$DATA` suffix or an 8.3 short name.
 
-**The tools cannot fully protect files from the `commands` toolset.** Commands such as tests, scripts or `npm run` execute project code, which the AI can write and which can read or change any file. For a real project, keep the MCP configuration and the tools config file outside the project folder, where no tool can reach them, and start `ollmcp` with its path:
+**The tools cannot fully protect files from the `commands` toolset.** Commands such as tests, scripts or `npm run` execute project code, which the AI can write and which can read or change any file, including the files in `.ollmcp-tools`. A change to the tools config or the registry only takes effect at the next start, and shows up in `git status`. For complete protection, keep the MCP configuration and the `.ollmcp-tools` folder outside the project folder, where no tool can reach them, and start `ollmcp` with its path:
 
 ```bash
 ollmcp --servers-json C:\path\outside\project\.mcp.json
 ```
 
-When the tools config file is outside the project, set `allowed_dir` in it to the project folder, as an absolute path or relative to the config file, and give `MCP_TOOLS_CONFIG` in `.mcp.json` as an absolute path, or relative to the folder where `ollmcp` is started.
-
-For the same reason, keep the `commands_config` registry and this repository outside the project folder.
+When the tools config file is outside the project, set `allowed_dir` in it to the project folder, as an absolute path or relative to the config file, and give `MCP_TOOLS_CONFIG` in `.mcp.json` as an absolute path, or relative to the folder where `ollmcp` is started. `init` does not set this up: move the folder after running it. Keep this repository outside the project folder too.
 
 ### Ignored directories
 
@@ -377,4 +423,4 @@ Local models have small context windows, so every tool response is limited to `m
 | `web_search` | `max_output_chars`, shared equally by the results | `web_fetch` for a whole page |
 | `web_fetch` | `max_output_chars` per part; up to 50 links, listed in the first part only | Next part with `start_char` |
 
-The example [`_instructions/app-instructions.md`](_instructions/app-instructions.md) tells the AI to follow these messages instead of repeating the same call, and never to assume that a limited response is the whole result. Include a similar instruction in your own project instructions.
+The [instructions template](ollmcp_tools/templates/instructions.md) tells the AI to follow these messages instead of repeating the same call, and never to assume that a limited response is the whole result. Include a similar instruction in your own project instructions.

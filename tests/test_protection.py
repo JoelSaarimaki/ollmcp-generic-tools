@@ -1,7 +1,7 @@
 # --- test_protection.py ---
 """
 Tests for the access rules shared by all toolsets: allowed_dir, forbidden paths and protected files
-(.mcp.json, the tools config file and the command registry).
+(.mcp.json, the tools config file, the user config file and the command registry).
 """
 import json
 
@@ -91,7 +91,7 @@ def test_relative_paths_resolve_against_allowed_dir_not_the_working_directory(pr
 def registry_project(project):
     project.write("_commands/registry.json", json.dumps({"x": {"template": "python", "description": SECRET}}))
     project.write("src/app.py", 'print("hello")\n')
-    project.configure(commands_config="_commands/registry.json")
+    project.configure(command_registry="_commands/registry.json")
     return project
 
 def test_the_command_registry_is_protected(registry_project):
@@ -103,12 +103,22 @@ def test_the_command_registry_is_protected(registry_project):
     assert denied(fs.delete_file("_commands"))
     assert "registry.json" not in [e["name"] for e in json.loads(fs.list_directory("_commands"))["entries"]]
     assert SECRET in (registry_project.root / "_commands/registry.json").read_text()
-    assert json.loads(fs.get_tools_config())["shared"]["protected_files"][1].endswith("_commands/registry.json")
+    assert any(p.endswith("_commands/registry.json") for p in json.loads(fs.get_tools_config())["shared"]["protected_files"])
     assert "registry.json" not in registry_project.load("outline").get_outline()
     assert registry_project.load("search").search_text_in_files(SECRET).startswith("- No matches")
 
+def test_the_user_config_is_protected_also_inside_allowed_dir(make_project):
+    """The user config file is normally outside the project, but a project can be the home folder itself."""
+    project = make_project("home")
+    project.user_config(ollama_api_key=SECRET)
+    project.configure()
+    fs = project.load("filesystem")
+    assert denied(fs.read_file_with_metadata(".ollmcp-tools/user-config.json"))
+    assert denied(fs.write_file(".ollmcp-tools/user-config.json", "{}", "x"))
+    assert project.load("search").search_text_in_files(SECRET).startswith("- No matches")
+
 def test_a_missing_command_registry_cannot_be_created(project):
-    project.configure(commands_config="_commands/registry.json")
+    project.configure(command_registry="_commands/registry.json")
     fs = project.load("filesystem")
     assert denied(fs.create_file("_commands/registry.json", "{}"))
     assert not (project.root / "_commands/registry.json").exists()

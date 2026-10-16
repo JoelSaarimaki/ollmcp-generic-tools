@@ -23,3 +23,7 @@ dependencies = [
 
 [tool.setuptools]
 packages = ["ollmcp_tools"]
+
+[tool.setuptools.package-data]
+# The files 'python -m ollmcp_tools init' copies into a project
+ollmcp_tools = ["templates/*"]

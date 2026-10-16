@@ -27,7 +27,7 @@ def commands(project):
         missing={"template": "no-such-program-xyz"},
         braces={"template": f'{PYTHON} -c "print({{1: 2}}, {{}})"'},  # braces that are not placeholders are kept
     ))
-    project.configure(commands_config="commands.json", max_output_chars=4000)
+    project.configure(command_registry="commands.json", max_output_chars=4000)
     return project.load("commands")
 
 def run(commands, *args) -> dict:
@@ -89,7 +89,7 @@ def test_list_available_commands(commands):
 def test_broken_registry_stops_the_server(project, registry_text, message):
     if registry_text is not None:
         project.write("commands.json", registry_text)
-    result = start_server(project.configure(commands_config="commands.json"))
+    result = start_server(project.configure(command_registry="commands.json"))
     assert result.returncode != 0 and message in result.stderr
 
 # --- Suggested commands ---
@@ -97,7 +97,7 @@ def test_broken_registry_stops_the_server(project, registry_text, message):
 @pytest.fixture
 def suggesting(project):
     project.write("_commands/registry.json", registry(argv={"template": f"{PYTHON} -c \"print(1)\""}))
-    project.configure(commands_config="_commands/registry.json", command_suggestions="_commands/suggested.json")
+    project.configure(command_registry="_commands/registry.json", command_suggestions="_commands/suggested.json")
     return project
 
 def suggest(commands, *args) -> dict:
@@ -159,13 +159,13 @@ def test_suggestion_without_a_suggestions_file_is_only_returned(project):
     project.configure()
     result = suggest(project.load("commands"), "x", "npm test", "d")
     assert result["success"] and result["suggestions_file"] is None
-    assert "is shown below" in result["message"] and "commands_config" in result["message"]
+    assert "is shown below" in result["message"] and "command_registry" in result["message"]
 
 @windows_only
 def test_batch_file_arguments_cannot_contain_cmd_characters(project):
     project.write("echo.cmd", "@echo off\r\necho got: %1\r\n", newline="")
     project.write("commands.json", registry(batch={"template": str(project.root / "echo.cmd") + " {arg}"}))
-    project.configure(commands_config="commands.json")
+    project.configure(command_registry="commands.json")
     commands = project.load("commands")
     assert run(commands, "batch", "hello")["stdout"].strip() == "got: hello"
     result = run(commands, "batch", "x & echo INJECTED")

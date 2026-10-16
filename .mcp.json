@@ -4,7 +4,7 @@
             "command": "python",
             "args": ["-m", "ollmcp_tools"],
             "env": {
-                "MCP_TOOLS_CONFIG": "tools-config.json"
+                "MCP_TOOLS_CONFIG": ".ollmcp-tools/tools-config.json"
             }
         }
     }

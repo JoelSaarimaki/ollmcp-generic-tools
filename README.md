@@ -71,7 +71,7 @@ my-project/
 
 After `init`, follow its checklist:
 1. Check `allowed_dir`, and add the folders and files the AI must never access to `forbidden_paths`.
-2. Keep the commands in `commands.json` that fit the project, and change or delete the rest. The template has commands for poetry and npm projects.
+2. Keep the commands in `commands.json` that fit the project, and change or delete the rest. The template has commands for Python projects that use pip and a `requirements.txt`, and for npm projects.
 3. Adapt `instructions.md` to the project, and remove the tools you disable (see [Choosing the toolsets](#choosing-the-toolsets)).
 4. Add your Ollama API key to the [user config file](#user-config-file), or disable the `web` toolset.
 5. Add the session start instruction to ollmcp's system prompt (see [Running](#running)).
@@ -255,9 +255,9 @@ Commands are defined in the JSON file set as `command_registry` in the tools con
 
 ```json
 {
-    "add_package": {
-        "template": "poetry add {arg}",
-        "description": "Adds a runtime dependency to the project. Argument: the package name (e.g., 'requests').",
+    "run_test_file": {
+        "template": "python -m pytest {arg}",
+        "description": "Runs the tests of one file, or one test. Argument: the test file or test (e.g., 'tests/test_orders.py').",
         "timeout": 300
     }
 }
@@ -267,11 +267,11 @@ Commands are defined in the JSON file set as `command_registry` in the tools con
 - `description`: Tells the AI when to use the command.
 - `timeout`: Seconds before the command is stopped. (Optional, defaults to 120)
 
-The [template](ollmcp_tools/templates/commands.json) that `init` copies is a fuller example covering dependencies, tests, linting, type checking and npm scripts. It includes commands that make small models work better:
+The [template](ollmcp_tools/templates/commands.json) that `init` copies is a fuller example covering dependencies (pip with a `requirements.txt`), tests (pytest), linting and formatting (ruff), type checking (mypy) and npm scripts. The Python tools are run as `python -m <tool>`, so they are found in the same Python environment as the packages. Change the commands for a project that uses another tool, such as poetry (`poetry run pytest`) or uv (`uv run pytest`). The template also includes commands that make small models work better:
 - Running one test file, one test or the tests matching a name (`run_test_file`, `run_tests_matching`, `npm_test_file`, `npm_test_name`) and the tests that failed last time (`run_failed_tests`), which is faster and gives shorter output than the whole suite.
 - Looking up the real API of an installed library (`python_doc`, which runs `pydoc`) or an npm package's details (`npm_package_info`), as the tools cannot read installed packages and small models often guess function signatures.
 
-Commands run in `allowed_dir`, so commands such as `pytest` or `ruff check .` work on the project regardless of where `ollmcp` was started. While the `commands` toolset is enabled, the server refuses to start if the registry file is missing or not valid JSON, or if a command lacks its `template` or `description`, has an invalid `timeout` or has an unknown placeholder in its template.
+Commands run in `allowed_dir`, so commands such as `pytest` or `ruff check .` work on the project regardless of where `ollmcp` was started. A program such as `python` is the one found on PATH when `ollmcp` starts. To run the commands in a project's virtual environment, activate it before starting `ollmcp`, and install the tools into it too (`python -m pip install -e <path to this repository>`), as `.mcp.json` starts the tools with the same `python`. While the `commands` toolset is enabled, the server refuses to start if the registry file is missing or not valid JSON, or if a command lacks its `template` or `description`, has an invalid `timeout` or has an unknown placeholder in its template.
 
 To keep the AI from running anything other than the defined commands:
 - Commands run without a shell, so shell features such as pipes (`|`), chaining (`&&`), redirection (`>`) and shell built-ins (`echo`, `dir`, `cd`) are not available in templates. Put such logic in a script and call the script from the template.

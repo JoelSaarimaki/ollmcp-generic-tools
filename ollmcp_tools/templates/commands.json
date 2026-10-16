@@ -1,67 +1,62 @@
 {
     "install_deps": {
-        "template": "poetry install",
-        "description": "Installs all project dependencies defined in pyproject.toml. Run this after pulling changes or when imports fail with ModuleNotFoundError.",
+        "template": "python -m pip install -r requirements.txt",
+        "description": "Installs the project's dependencies listed in requirements.txt. Run this after pulling changes or when imports fail with ModuleNotFoundError.",
         "timeout": 600
     },
     "add_package": {
-        "template": "poetry add {arg}",
-        "description": "Adds a runtime dependency to the project. Argument: the package name, optionally with a version constraint (e.g., 'requests' or 'requests@^2.31').",
-        "timeout": 300
-    },
-    "add_dev_package": {
-        "template": "poetry add --group dev {arg}",
-        "description": "Adds a development-only dependency, such as a test or lint tool. Argument: the package name (e.g., 'pytest-mock').",
+        "template": "python -m pip install {arg}",
+        "description": "Installs a package. It is not recorded anywhere: also add it to requirements.txt, so that others get it too. Argument: the package name, optionally with a version (e.g., 'requests' or 'requests==2.32.3').",
         "timeout": 300
     },
     "remove_package": {
-        "template": "poetry remove {arg}",
-        "description": "Removes a dependency from the project. Argument: the package name (e.g., 'requests').",
+        "template": "python -m pip uninstall --yes {arg}",
+        "description": "Uninstalls a package. Also remove it from requirements.txt. Argument: the package name (e.g., 'requests').",
         "timeout": 300
     },
     "list_packages": {
-        "template": "poetry show --top-level",
-        "description": "Lists the project's direct dependencies and their installed versions."
+        "template": "python -m pip list --not-required",
+        "description": "Lists the installed packages that no other installed package depends on, which are usually the project's direct dependencies, with their versions."
     },
     "python_version": {
-        "template": "poetry run python -c \"import sys; print(sys.version)\"",
-        "description": "Shows the Python version used by the project's virtual environment."
+        "template": "python --version",
+        "description": "Shows the version of the Python that runs the commands."
     },
     "python_doc": {
-        "template": "poetry run python -m pydoc {arg}",
+        "template": "python -m pydoc {arg}",
         "description": "Shows the documentation and signatures of an installed module, class or function. Use it to check a library's API instead of guessing it. Argument: the full name (e.g., 'requests.Session.get' or 'pathlib.Path')."
     },
     "run_tests": {
-        "template": "poetry run pytest tests",
+        "template": "python -m pytest",
         "description": "Runs the whole test suite. Use this to verify changes before considering a task done.",
         "timeout": 600
     },
     "run_test_file": {
-        "template": "poetry run pytest {arg}",
+        "template": "python -m pytest {arg}",
         "description": "Runs the tests of one file, or one test, which is faster than the whole suite while working on a change. Argument: the test file or test (e.g., 'tests/test_orders.py' or 'tests/test_orders.py::test_total')."
     },
     "run_tests_matching": {
-        "template": "poetry run pytest -k {arg}",
+        "template": "python -m pytest -k {arg}",
         "description": "Runs the tests whose names match an expression. Argument: part of the test names, optionally with and/or/not (e.g., 'total' or 'total and not slow')."
     },
     "run_failed_tests": {
-        "template": "poetry run pytest --last-failed",
+        "template": "python -m pytest --last-failed",
         "description": "Runs again only the tests that failed in the previous test run. Use it to check a fix."
     },
     "lint": {
-        "template": "poetry run ruff check .",
+        "template": "python -m ruff check .",
         "description": "Checks the code for lint errors with ruff."
     },
     "lint_rule": {
-        "template": "poetry run ruff check --select={arg} .",
+        "template": "python -m ruff check --select={arg} .",
         "description": "Checks the code for a single ruff rule or rule group only. Argument: the rule code (e.g., 'F401' for unused imports or 'E' for all pycodestyle errors)."
     },
     "format_check": {
-        "template": "poetry run ruff format --check .",
+        "template": "python -m ruff format --check .",
         "description": "Checks whether the code follows the project's formatting, without changing any files."
     },
     "type_check": {
-        "template": "poetry run mypy .",
+        "template": "python -m mypy .",
         "description": "Checks the code for type errors with mypy.",
         "timeout": 300
     },

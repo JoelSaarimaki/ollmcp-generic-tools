@@ -83,7 +83,7 @@ def test_list_available_commands(commands):
     ("{ broken", "Expecting property name"),
     ('{"x": {"template": "python"}}', "must have a 'template' and a 'description'"),
     ('{"x": {"template": "python", "description": "d", "timeout": 0}}', "positive number of seconds"),
-    ('{"x": {"template": "poetry add {args}", "description": "d"}}', "unknown placeholder '{args}'"),
+    ('{"x": {"template": "python -m pip install {args}", "description": "d"}}', "unknown placeholder '{args}'"),
     ('{"x": {"template": "ruff --select={ARG} .", "description": "d"}}', "unknown placeholder '{ARG}'"),
 ])
 def test_broken_registry_stops_the_server(project, registry_text, message):
@@ -132,7 +132,7 @@ def test_suggestion_keeps_quotes_and_backslashes_exact(suggesting):
 @pytest.mark.parametrize("args, error, message", [
     (("bad name", "npm test", "d"), "invalid_name", "must start with a letter"),
     (("argv", "npm test", "d"), "already_registered", "already a registered command"),
-    (("x", "poetry add {args}", "d"), "invalid_command", "unknown placeholder '{args}'"),
+    (("x", "python -m pip install {args}", "d"), "invalid_command", "unknown placeholder '{args}'"),
     (("x", "npm test", "d", 0), "invalid_command", "positive number of seconds"),
     (("x", "npm test", "  "), "invalid_command", "description must say"),
     (("x", "   ", "d"), "invalid_template", "template is empty"),

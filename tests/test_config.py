@@ -22,6 +22,9 @@ from conftest import SERVER_FILES, start_server
     ('{"allowed_dir": ".", "ignored_dirs": ["node_modules", " "]}', "must be a list of folder names"),
     ('{"allowed_dir": ".", "ignored_dirs": ["docs/build"]}', "not paths"),
     ('{"allowed_dir": ".", "backup_folder": "."}', "'backup_folder' must not contain 'allowed_dir'"),
+    ('{"allowed_dir": ".", "commands_config": "c.json", "command_suggestions": "c.json"}', "'command_suggestions' must be a file of its own"),
+    ('{"allowed_dir": ".", "command_suggestions": "tools-config.json"}', "'command_suggestions' must be a file of its own"),
+    ('{"allowed_dir": ".", "command_suggestions": "sub/.mcp.json"}', "'command_suggestions' must be a file of its own"),
 ])
 def test_invalid_config_stops_the_server(project, config_text, message):
     project.config_path.write_text(config_text, encoding="utf-8")
@@ -102,6 +105,7 @@ def test_get_config_reports_the_shared_settings(project):
     assert config["shared"]["forbidden_paths"] == ["secret"]
     assert config["shared"]["max_output_chars"] == 5000
     assert config["shared"]["protected_file_names"] == [".mcp.json"]
+    assert config["shared"]["protected_files"] == [config["config_file"]]
     assert config["outline_and_search"]["ignored_dirs_source"] == "default"
 
 def test_get_config_reports_custom_ignored_dirs(project):

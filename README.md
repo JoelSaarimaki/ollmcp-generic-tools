@@ -55,6 +55,7 @@ Add every server the same way (see this repository's [`.mcp.json`](.mcp.json)). 
     "gitignore_path": null,
     "max_output_chars": 40000,
     "commands_config": "_commands/app-commands.json",
+    "command_suggestions": "_commands/suggested-commands.json",
     "context_folder": "_context",
     "read_only_files": ["_instructions/app-instructions.md"],
     "ollama_api_key": null,
@@ -64,7 +65,7 @@ Add every server the same way (see this repository's [`.mcp.json`](.mcp.json)). 
 
 All settings except `allowed_dir` are optional. An optional setting that is left out or set to `null` uses its default, so `null` can be used to show that a setting exists without using it. Note that an empty list is not the same as `null`: `"ignored_dirs": []` skips no folders at all, while `"ignored_dirs": null` skips the default folders.
 
-Relative paths are resolved against the folder of the config file, except `forbidden_paths`, which are resolved against `allowed_dir`. A server refuses to start if the file is missing, is not valid JSON, lacks `allowed_dir`, points `allowed_dir` to a folder that does not exist, has a `backup_folder` that contains `allowed_dir` or contains an unknown setting, so a typo cannot silently weaken the configuration. The config file itself is always [protected](#protected-files).
+Relative paths are resolved against the folder of the config file, except `forbidden_paths`, which are resolved against `allowed_dir`. A server refuses to start if the file is missing, is not valid JSON, lacks `allowed_dir`, points `allowed_dir` to a folder that does not exist, has a `backup_folder` that contains `allowed_dir`, has a `command_suggestions` file that is the config file or the command registry, or contains an unknown setting, so a typo cannot silently weaken the configuration. The config file itself is always [protected](#protected-files).
 
 | Setting | Description |
 |---|---|
@@ -72,7 +73,8 @@ Relative paths are resolved against the folder of the config file, except `forbi
 | `forbidden_paths` | List of folders and/or files the tools must never access, even within `allowed_dir`. See [Forbidden paths](#forbidden-paths). (Optional) |
 | `max_output_chars` | The largest size of a tool response in characters, about 4 characters per token. Lower it for models with small context windows, e.g. `12000` for an 8k-token context. See [Output limits](#output-limits). (Optional, defaults to `40000`, at least `2000`) |
 | `gitignore_path` | The `.gitignore` file used by the outline and search tools. (Optional, defaults to `.gitignore` in `allowed_dir`) |
-| `commands_config` | The command registry of `commands-mcp`. See [commands-mcp](#commands-mcp). (Optional) |
+| `commands_config` | The command registry of `commands-mcp`. It is always [protected](#protected-files). See [commands-mcp](#commands-mcp). (Optional) |
+| `command_suggestions` | The file where `suggest_command` saves the commands the AI suggests, for you to review. It must not be the `commands_config` registry. See [Suggested commands](#suggested-commands). (Optional, without it suggestions are only shown in the chat) |
 | `context_folder` | The folder of the context Markdown files of `context-record-mcp`. (Optional) |
 | `read_only_files` | List of files maintained by you, such as project instructions, that the AI can read with `context-record-mcp` but not change or remove. They can be located anywhere, and are read by their file name. (Optional) |
 | `ollama_api_key` | The Ollama API key used by `web-search-mcp`. Create one at [ollama.com/settings/keys](https://ollama.com/settings/keys). The key is never shown to the AI, as the config file is [protected](#protected-files). If the config file is committed to git, do not commit the key. (Optional, without it the web search tools only return a `not_configured` error) |
@@ -110,6 +112,7 @@ This is a tool for allowing AI Agent access to very specific console commands an
 
 - **list_available_commands** Returns a list of all allowed console commands and their descriptions.
 - **run_predefined_command** Executes a specific console command from the allowed registry.
+- **suggest_command** Suggests a missing command for you to review and add to the registry. It never changes the registry itself.
 
 Commands are defined in the JSON file set as `commands_config` in the tools config:
 
@@ -123,7 +126,7 @@ Commands are defined in the JSON file set as `commands_config` in the tools conf
 }
 ```
 
-- `template`: A single program and its arguments. `{arg}` is replaced with the argument given by the AI, which is always passed as one argument.
+- `template`: A single program and its arguments. `{arg}` is replaced with the argument given by the AI, which is always passed as one argument. It can be anywhere in the template, also inside an argument (e.g., `--select={arg}`). `{arg}` is the only placeholder: other names such as `{args}` or `{ARG}` stop the server with an error.
 - `description`: Tells the AI when to use the command.
 - `timeout`: Seconds before the command is stopped. (Optional, defaults to 120)
 
@@ -131,7 +134,7 @@ See [`_commands/app-commands.json`](_commands/app-commands.json) for a fuller ex
 - Running one test file, one test or the tests matching a name (`run_test_file`, `run_tests_matching`, `npm_test_file`, `npm_test_name`) and the tests that failed last time (`run_failed_tests`), which is faster and gives shorter output than the whole suite.
 - Looking up the real API of an installed library (`python_doc`, which runs `pydoc`) or an npm package's details (`npm_package_info`), as the tools cannot read installed packages and small models often guess function signatures.
 
-Commands run in `allowed_dir`, so commands such as `pytest` or `ruff check .` work on the project regardless of where `ollmcp` was started. The server refuses to start if the registry file is missing or not valid JSON, or if a command lacks its `template` or `description` or has an invalid `timeout`.
+Commands run in `allowed_dir`, so commands such as `pytest` or `ruff check .` work on the project regardless of where `ollmcp` was started. The server refuses to start if the registry file is missing or not valid JSON, or if a command lacks its `template` or `description`, has an invalid `timeout` or has an unknown placeholder in its template.
 
 To keep the AI from running anything other than the defined commands:
 - Commands run without a shell, so shell features such as pipes (`|`), chaining (`&&`), redirection (`>`) and shell built-ins (`echo`, `dir`, `cd`) are not available in templates. Put such logic in a script and call the script from the template.
@@ -139,6 +142,27 @@ To keep the AI from running anything other than the defined commands:
 - On Windows, if the program is a batch file (`.bat` / `.cmd`, e.g. `npm`), arguments containing `& | < > ^ % ! " ( )` are rejected.
 - Commands cannot read input, so interactive prompts end immediately instead of hanging.
 - A command succeeds only if it exits with code 0, and long output is cut from the middle (see [Output limits](#output-limits)).
+- The registry is [protected](#protected-files), so the AI cannot add commands itself.
+
+#### Suggested commands
+
+When the AI needs a command that is not in the registry, it can suggest one with `suggest_command`. Only you can add it: whatever is in the registry, the AI can run, so you should read the exact template before adding it.
+
+The tool checks the suggestion like the registry is checked at startup (e.g. the `{arg}` placeholder and the `timeout`), and also that the name is not taken and that the template names a program. It then adds the entry to the `command_suggestions` file, in the same format as the registry, and the AI shows it to you in the chat:
+
+```json
+{
+    "run_e2e_tests": {
+        "template": "npm run e2e -- {arg}",
+        "description": "Runs the end-to-end tests of one file. Argument: the test file (e.g., 'e2e/cart.spec.ts').",
+        "timeout": 600
+    }
+}
+```
+
+To accept a suggestion, copy its entry into the `commands_config` registry and restart `ollmcp`. The entries are written by the server, not by the AI, so their quotes and backslashes are always valid JSON. A suggestion with the same name as an earlier one replaces it. Delete entries from the suggestions file when you no longer need them.
+
+The response also lists warnings for you to check: a program that is not on PATH, a shell as the program (e.g. `powershell` or `bash`), and code options such as `-c` together with `{arg}`, which would let the AI run any code through the command.
 
 ### context-record-mcp
 
@@ -250,7 +274,7 @@ Before `edit_file`, `write_file`, `create_file`, `move_file` or `delete_file` ch
 
 ### Protected files
 
-Files named `.mcp.json` contain the MCP server configuration, which servers run and which tools config file they read, and the [tools config file](#tools-config-file) contains the allowed directory, forbidden paths and command registry. If the AI could change them, it could remove its own restrictions, which would take effect the next time the servers start. Therefore `.mcp.json` files, at any depth, and the tools config file in use are always protected, regardless of `forbidden_paths` (defined as `PROTECTED_FILE_NAMES` and `CONFIG_PATH` in `mcp_common.py`):
+Files named `.mcp.json` contain the MCP server configuration, which servers run and which tools config file they read, the [tools config file](#tools-config-file) contains the allowed directory and forbidden paths, and the `commands_config` registry lists the commands the AI can run. If the AI could change them, it could remove its own restrictions or register any command, which would take effect the next time the servers start. Therefore `.mcp.json` files, at any depth, the tools config file in use and the command registry are always protected, regardless of `forbidden_paths` (defined as `PROTECTED_FILE_NAMES` and `PROTECTED_PATHS` in `mcp_common.py`). The registry is protected even if it does not exist yet, so the AI cannot create it either. The `command_suggestions` file is not protected:
 
 - `safe-filesystem-mcp` denies reading, writing, editing, moving and deleting them, and creating a file or renaming a file to that name. Folders containing one cannot be moved or deleted either.
 - `generate-map-mcp` and `search-tool-mcp` leave them out of outlines and search results.
@@ -267,7 +291,7 @@ ollmcp --servers-json C:\path\outside\project\.mcp.json
 
 When the tools config file is outside the project, set `allowed_dir` in it to the project folder, as an absolute path or relative to the config file.
 
-For the same reason, keep the `mcp-servers` scripts and the `commands_config` registry outside the project folder, or add them to `forbidden_paths`.
+For the same reason, keep the `mcp-servers` scripts and the `commands_config` registry outside the project folder. The scripts can also be added to `forbidden_paths`, which hides them from the file tools.
 
 ### Ignored directories
 

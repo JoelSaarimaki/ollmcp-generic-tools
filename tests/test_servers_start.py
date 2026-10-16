@@ -19,7 +19,7 @@ EXPECTED_TOOLS = {
     "map": ["get_outline"],
     "search": ["search_text_in_files", "search_files_by_pattern", "search_relevant_files"],
     "git": ["get_diff", "get_file_history", "get_git_status"],
-    "commands": ["list_available_commands", "run_predefined_command"],
+    "commands": ["list_available_commands", "run_predefined_command", "suggest_command"],
     "context": ["list_context_files", "read_context_file", "write_context_file", "remove_context_file"],
     "web": ["web_search", "web_fetch"],
 }
@@ -53,7 +53,7 @@ def test_repository_configuration_starts_every_server():
     assert sum(len(tools) for tools in started.values()) == sum(len(tools) for tools in EXPECTED_TOOLS.values())
 
 # Tool definitions are sent to the model with every request, so they must stay small
-MAX_TOOL_DEFINITION_CHARS = 11000
+MAX_TOOL_DEFINITION_CHARS = 11500
 
 def test_tool_definitions_stay_small():
     servers = json.loads((REPO_DIR / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]

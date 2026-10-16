@@ -13,6 +13,7 @@ from mcp.server.mcpserver import Image, MCPServer
 from mcp_common import (
     ALLOWED_DIR,
     BACKUP_DIR,
+    COMMAND_SUGGESTIONS,
     COMMANDS_CONFIG,
     CONFIG,
     CONFIG_PATH,
@@ -23,6 +24,7 @@ from mcp_common import (
     MAX_OUTPUT_CHARS,
     OLLAMA_API_KEY,
     PROTECTED_FILE_NAMES,
+    PROTECTED_PATHS,
     READ_ONLY_FILES,
     access_denied_message,
     code_block,
@@ -1043,7 +1045,8 @@ def get_config() -> str:
         repo_root = get_repo_root(ALLOWED_DIR) if ALLOWED_DIR.exists() else None
 
         commands = {"registry": COMMANDS_CONFIG.as_posix() if COMMANDS_CONFIG else None,
-                    "registry_found": bool(COMMANDS_CONFIG and COMMANDS_CONFIG.is_file())}
+                    "registry_found": bool(COMMANDS_CONFIG and COMMANDS_CONFIG.is_file()),
+                    "suggestions_file": COMMAND_SUGGESTIONS.as_posix() if COMMAND_SUGGESTIONS else None}
         if commands["registry_found"]:
             try:
                 with open(COMMANDS_CONFIG, "r", encoding="utf-8") as f:
@@ -1059,6 +1062,7 @@ def get_config() -> str:
                 "allowed_dir_exists": ALLOWED_DIR.exists(),
                 "forbidden_paths": [display_path(p, ALLOWED_DIR) for p in FORBIDDEN_PATHS],
                 "protected_file_names": sorted(PROTECTED_FILE_NAMES),
+                "protected_files": [p.as_posix() for p in PROTECTED_PATHS],
                 "max_output_chars": MAX_OUTPUT_CHARS
             },
             "filesystem": {
@@ -1093,7 +1097,8 @@ def get_config() -> str:
             "notes": [
                 "All servers read the same config_file, so they all use the same allowed_dir, forbidden_paths and max_output_chars.",
                 "Only paths within allowed_dir can be accessed. Relative paths given to the tools are resolved against allowed_dir.",
-                "Forbidden paths and everything inside forbidden folders are denied and hidden, and so are protected files: files named in protected_file_names and the config_file itself.",
+                "Forbidden paths and everything inside forbidden folders are denied and hidden, and so are protected files: files named in protected_file_names and the protected_files (the config_file and the command registry).",
+                "Commands are added to the registry only by the user. Suggest a missing command with suggest_command of the commands server.",
                 "restore_file undoes the last max_backups changes of the file tools. Their backups, including deleted files, are kept in backup_folder, which the tools cannot access directly.",
                 "The outline and search tools also skip folders named in ignored_dirs at any depth, files matching the .gitignore patterns and, for search, binary files.",
                 "get_outline lists every file that is not ignored, with the sections of the outline_file_types.",

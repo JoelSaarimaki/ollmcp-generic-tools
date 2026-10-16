@@ -15,7 +15,7 @@ Most design decisions follow from the target model being small and local:
 
 ## Current state
 
-Seven servers, 25 tools. All servers share `mcp-servers/mcp_common.py` and read one config file; the map, filesystem, context and search servers also use the outline parsers in `mcp-servers/mcp_outline.py`.
+Seven servers, 26 tools. All servers share `mcp-servers/mcp_common.py` and read one config file; the map, filesystem, context and search servers also use the outline parsers in `mcp-servers/mcp_outline.py`.
 
 | Server | Tools |
 |---|---|
@@ -23,13 +23,13 @@ Seven servers, 25 tools. All servers share `mcp-servers/mcp_common.py` and read 
 | `generate-map-mcp` | `get_outline` |
 | `search-tool-mcp` | `search_text_in_files`, `search_files_by_pattern`, `search_relevant_files` |
 | `git-diff-mcp` | `get_diff`, `get_file_history`, `get_git_status` |
-| `commands-mcp` | `list_available_commands`, `run_predefined_command` |
+| `commands-mcp` | `list_available_commands`, `run_predefined_command`, `suggest_command` |
 | `context-record-mcp` | `list_context_files`, `read_context_file`, `write_context_file`, `remove_context_file` |
 | `web-search-mcp` | `web_search`, `web_fetch` |
 
 Configuration:
 - `.mcp.json` only starts the servers and gives each one `MCP_TOOLS_CONFIG`, the path of the tools config file. ollmcp names tools `<server key>.<tool>` (e.g. `codebase-mapper.get_outline`); for cloud providers the dot becomes `_`.
-- `tools-config.json` holds all settings: `allowed_dir` (required), `forbidden_paths`, `ignored_dirs`, `gitignore_path`, `max_output_chars`, `commands_config`, `context_folder`, `read_only_files`, `ollama_api_key`, `backup_folder`.
+- `tools-config.json` holds all settings: `allowed_dir` (required), `forbidden_paths`, `ignored_dirs`, `gitignore_path`, `max_output_chars`, `commands_config`, `command_suggestions`, `context_folder`, `read_only_files`, `ollama_api_key`, `backup_folder`.
 - `mcp-servers/mcp_common.py` loads and validates the config and holds the shared helpers and constants.
 - Dependencies: `mcp`, `ollama` (for `web-search-mcp`) and `tree-sitter` with `tree-sitter-javascript` and `tree-sitter-typescript` (for JS/TS outlines), listed with the `ollmcp` client in `requirements.txt` for users; `requirements-dev.txt` includes it and adds the test runner. The tree-sitter packages are pinned to one minor version each, as the grammars must match the tree-sitter version.
 - `mcp-servers/mcp_outline.py` holds the Python, JS/TS and Markdown parsers and everything built on them: rendering outlines at a detail level, finding sections by name and comparing outlines before and after a write. It reads no config and no files.
@@ -42,9 +42,10 @@ Configuration:
 
 - **`allowed_dir` is the boundary.** Every path given to a tool is resolved against it (relative paths too) and must stay inside it. Commands also run in it.
 - **`forbidden_paths`** (relative to `allowed_dir`) are denied and hidden by every file-accessing server: filesystem, outline, search and git (through `:(top,exclude)` pathspecs, so a file's history cannot reveal its contents). Deleting or moving a folder that contains a forbidden path is denied.
-- **Protected files** are always denied, regardless of the config: files named `.mcp.json` at any depth, and the tools config file in use. Otherwise the AI could remove its own restrictions, which would take effect at the next server start. The name check covers Windows aliases of the same file: letter case, trailing dots or spaces, `::$DATA` streams, 8.3 short names and symlinks.
+- **Protected files** are always denied, regardless of the config: files named `.mcp.json` at any depth, the tools config file in use and the `commands_config` registry (`PROTECTED_PATHS`), also before the registry exists. Otherwise the AI could remove its own restrictions or register any command, which would take effect at the next server start. The name check covers Windows aliases of the same file: letter case, trailing dots or spaces, `::$DATA` streams, 8.3 short names and symlinks.
 - **`context-record-mcp`** only accepts plain `.md` names directly inside its folder (no `../`, no `:`), and `read_only_files` cannot be written, appended to or removed. A context file with the same name as a read-only file is hidden and cannot be created.
 - **`commands-mcp`** runs registered templates without a shell. The AI's argument is always one argument; arguments starting with `-` or containing line breaks are rejected, and for `.bat`/`.cmd` programs (e.g. `npm` on Windows) also `& | < > ^ % ! " ( )`. Commands get no input (prompts end immediately), have a timeout and succeed only with exit code 0.
+- **Only the user adds commands.** `suggest_command` validates a suggestion with the registry's own checks (`_command_problem`) and writes it to the `command_suggestions` file, never to the registry; the user reviews the exact template and copies it over. A tool-call confirmation in the client was not used as the boundary: the server cannot rely on it, and an approval prompt is easy to click through. The server writes the entry with `json.dumps`, as small models get JSON escaping wrong (`\"`, Windows backslashes), and saving it to a file means the user copies the server's text, not the model's retelling. Shells and `-c`-style options together with `{arg}` are warned about, not refused, as a fixed `python -c "..."` can be legitimate.
 - **Known limit, documented in the README:** commands execute project code that the AI can write, so they can read or change any file. Complete protection requires keeping `.mcp.json`, the tools config, the server scripts and the command registry outside the project folder (`ollmcp --servers-json <path>`).
 - **`web-search-mcp`** only calls Ollama's hosted API (ollama.com), with the key from `ollama_api_key`; it is passed to the `ollama` client explicitly, so the library's own `OLLAMA_API_KEY` environment variable is not used. `get_config` only reports whether the key is set. `web_fetch` accepts only `http(s)` URLs, and the page is fetched by Ollama's service, not locally. Web content can contain prompt injection; this is not filtered.
 - **The backup folder of `restore_file`** is denied and hidden like a protected file (`is_backup` in `mcp_common.py`), even if `backup_folder` points inside the project, and a folder containing it cannot be moved or deleted. Otherwise the AI could change or delete the backups that are meant to undo its mistakes. A `backup_folder` containing `allowed_dir` stops the servers at startup, as it would hide the whole project.
@@ -53,7 +54,7 @@ Configuration:
 ### One configuration, strictly validated
 
 - **Config file only.** Servers read no environment variables except `MCP_TOOLS_CONFIG`, apart from the home folder (`Path.home()`) for the default backup folder of `restore_file`. There is deliberately no fallback to the old per-server variables (`ALLOWED_DIR`, `INPUT_DIR`, `FORBIDDEN_PATHS`, `MAX_OUTPUT_CHARS`, `GITIGNORE_PATH`, `COMMANDS_CONFIG`, `CONTEXT_FOLDER_PATH`, `READ_ONLY_FILES`, `PROJECT_INSTRUCTIONS_FILE`): one source guarantees that all servers see the same settings.
-- **Fail at startup instead of silently degrading.** A server refuses to start if the config is missing or invalid JSON, has an unknown key (typo protection), lacks `allowed_dir` or points it to a missing folder, has a `backup_folder` that contains `allowed_dir`, or has a value of the wrong type. The same applies to the command registry (missing file, invalid JSON, command without `template`/`description`, invalid `timeout`) and to `read_only_files` (missing file, duplicate names).
+- **Fail at startup instead of silently degrading.** A server refuses to start if the config is missing or invalid JSON, has an unknown key (typo protection), lacks `allowed_dir` or points it to a missing folder, has a `backup_folder` that contains `allowed_dir`, or has a value of the wrong type. The same applies to the command registry (missing file, invalid JSON, command without `template`/`description`, invalid `timeout`, a placeholder other than `{arg}` such as `{args}`, which would otherwise be passed to the program as literal text) and to `read_only_files` (missing file, duplicate names).
 - **Paths in the config are relative to the config file's folder**, except `forbidden_paths`, which are relative to `allowed_dir`. This keeps the config working when it is moved outside the project.
 - **`null` means "use the default"** for every optional setting, so a config can list a setting without using it. An empty list is different: `"ignored_dirs": []` skips nothing, while `null` uses the defaults.
 - **Project-specific values belong in the config; code only holds defaults** (e.g. `DEFAULT_IGNORED_DIRS`). A given `ignored_dirs` list replaces the defaults completely, so that a default such as `build` can be un-ignored. Entries are folder names, not paths.

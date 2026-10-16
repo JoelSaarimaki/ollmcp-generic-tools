@@ -1,9 +1,11 @@
 # --- commands-mcp.py ---
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
+import textwrap
 import traceback
 from pathlib import Path
 from typing import Any
@@ -11,6 +13,7 @@ from typing import Any
 from mcp.server.mcpserver import MCPServer
 from mcp_common import (
     ALLOWED_DIR,
+    COMMAND_SUGGESTIONS,
     COMMANDS_CONFIG,
     MAX_OUTPUT_CHARS,
     prepare_tools
@@ -20,6 +23,12 @@ from mcp_common import (
 mcp = MCPServer("Commands-Server")
 
 ARG_PLACEHOLDER = "{arg}"
+# Anything in braces that looks like a named placeholder (e.g. {args}, {ARG}, { file }), but not {} or code such as {1: 2}
+PLACEHOLDER_PATTERN = re.compile(r"\{\s*[A-Za-z_][\w\s-]*\}")
+COMMAND_NAME_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
+# Programs and options that run any command or code given to them, which the user must review with extra care
+SHELL_PROGRAMS = {"cmd", "powershell", "pwsh", "bash", "sh", "zsh", "wsl"}
+CODE_OPTIONS = {"-c", "-e", "/c", "/k", "-command", "--command", "--eval"}
 DEFAULT_TIMEOUT_SECONDS = 120
 MAX_STREAM_CHARS = int(MAX_OUTPUT_CHARS * 0.45)  # Per stream (stdout and stderr), leaving room for JSON escaping
 OUTPUT_HEAD_RATIO = 0.25  # Share of truncated output kept from the start, the rest is kept from the end
@@ -44,12 +53,25 @@ def _load_registry() -> dict[str, dict[str, Any]]:
     if not isinstance(registry, dict):
         raise ValueError(f"{COMMANDS_CONFIG}: the command registry must be a JSON object of commands.")
     for name, info in registry.items():
-        if not isinstance(info, dict) or not isinstance(info.get("template"), str) or not isinstance(info.get("description"), str):
-            raise ValueError(f"{COMMANDS_CONFIG}: command '{name}' must have a 'template' and a 'description' string.")
-        timeout = info.get("timeout", DEFAULT_TIMEOUT_SECONDS)
-        if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
-            raise ValueError(f"{COMMANDS_CONFIG}: the 'timeout' of command '{name}' must be a positive number of seconds.")
+        problem = _command_problem(name, info)
+        if problem:
+            raise ValueError(f"{COMMANDS_CONFIG}: {problem}")
     return registry
+
+def _command_problem(name: str, info: Any) -> str | None:
+    """
+    Returns the reason why a command of the registry is invalid, or None if it is valid.
+    """
+    if not isinstance(info, dict) or not isinstance(info.get("template"), str) or not isinstance(info.get("description"), str):
+        return f"command '{name}' must have a 'template' and a 'description' string."
+    for placeholder in PLACEHOLDER_PATTERN.findall(info["template"]):
+        if placeholder != ARG_PLACEHOLDER:
+            return (f"command '{name}' has an unknown placeholder '{placeholder}' in its template."
+                    f" The only placeholder is {ARG_PLACEHOLDER}, which is replaced with the AI's argument.")
+    timeout = info.get("timeout", DEFAULT_TIMEOUT_SECONDS)
+    if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
+        return f"the 'timeout' of command '{name}' must be a positive number of seconds."
+    return None
 
 COMMAND_REGISTRY = _load_registry()
 
@@ -132,6 +154,88 @@ def _list_commands_logic() -> list[dict[str, Any]]:
         for name, info in COMMAND_REGISTRY.items()
     ]
 
+def _suggestion_warnings(tokens: list[str]) -> list[str]:
+    """
+    Returns what the user should check before adding a suggested command: a missing program, and templates
+    that let the AI run any command or code.
+    """
+    warnings = []
+    if not shutil.which(tokens[0]):
+        warnings.append(f"Program '{tokens[0]}' was not found on PATH. Install it before adding the command.")
+    if Path(tokens[0]).stem.lower() in SHELL_PROGRAMS:
+        warnings.append(f"The program '{tokens[0]}' is a shell, which can run any command. Check the whole template carefully.")
+    if any(ARG_PLACEHOLDER in t for t in tokens) and any(t.lower() in CODE_OPTIONS for t in tokens[1:]):
+        warnings.append(f"The template runs code given on the command line, and {ARG_PLACEHOLDER} can become part of that code,"
+                        " so the AI could run any code through this command.")
+    return warnings
+
+def _save_suggestion(name: str, entry: dict[str, Any]) -> bool:
+    """
+    Adds the suggested command to the COMMAND_SUGGESTIONS file, in the format of the registry.
+    Returns True if it replaced an earlier suggestion with the same name.
+    """
+    suggestions = {}
+    if COMMAND_SUGGESTIONS.is_file():
+        try:
+            with open(COMMAND_SUGGESTIONS, "r", encoding="utf-8") as f:
+                suggestions = json.load(f)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"The suggestions file {COMMAND_SUGGESTIONS} is not valid JSON ({e}). Ask the user to fix or remove it.") from e
+        if not isinstance(suggestions, dict):
+            raise ValueError(f"The suggestions file {COMMAND_SUGGESTIONS} must contain a JSON object. Ask the user to fix or remove it.")
+    replaced = name in suggestions
+    suggestions[name] = entry
+    COMMAND_SUGGESTIONS.parent.mkdir(parents=True, exist_ok=True)
+    temporary = COMMAND_SUGGESTIONS.with_name(COMMAND_SUGGESTIONS.name + ".tmp")
+    temporary.write_text(json.dumps(suggestions, indent=4, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(temporary, COMMAND_SUGGESTIONS)  # Replaced in one step, so that a failed write cannot leave a broken file
+    return replaced
+
+def _suggest_command_logic(name: str, template: str, description: str, timeout: int | float | None = None) -> dict[str, Any]:
+    """
+    Validates a suggested command as the registry is validated, and saves it to COMMAND_SUGGESTIONS if that is set.
+    Never changes the registry: the user reviews the suggestion and copies it there.
+    Returns the entry formatted for the registry, the warnings for the user and what the AI should tell the user.
+    """
+    if not COMMAND_NAME_PATTERN.fullmatch(name):
+        return {"success": False, "error": "invalid_name", "message": "The name must start with a letter and contain only letters, digits and '_', e.g. 'run_e2e_tests'."}
+    if name in COMMAND_REGISTRY:
+        return {"success": False, "error": "already_registered", "message": f"'{name}' is already a registered command. Run it with run_predefined_command, or suggest the new command with another name."}
+
+    entry: dict[str, Any] = {"template": template.strip(), "description": description.strip()}
+    if timeout is not None:
+        entry["timeout"] = timeout
+    if not entry["description"]:
+        return {"success": False, "error": "invalid_command", "message": "The description must say when to use the command, and what its argument is if it takes one."}
+    problem = _command_problem(name, entry)
+    if problem:
+        return {"success": False, "error": "invalid_command", "message": problem[0].upper() + problem[1:]}
+    try:
+        tokens = _split_template(entry["template"])
+    except ValueError as e:
+        return {"success": False, "error": "invalid_template", "message": f"The template cannot be split into a program and its arguments: {e}. Check the quotes."}
+    if not tokens:
+        return {"success": False, "error": "invalid_template", "message": "The template is empty. Give the program and its arguments, e.g. 'npm run e2e'."}
+    if ARG_PLACEHOLDER in tokens[0]:
+        return {"success": False, "error": "invalid_template", "message": f"The program cannot be {ARG_PLACEHOLDER}: the template must name the program to run."}
+
+    replaced = _save_suggestion(name, entry) if COMMAND_SUGGESTIONS else False
+    formatted = json.dumps({name: entry}, indent=4, ensure_ascii=False).splitlines()[1:-1]
+    where = f"is saved in {COMMAND_SUGGESTIONS.as_posix()}" if COMMAND_SUGGESTIONS else "is shown below"
+    registry = f"the command registry {COMMANDS_CONFIG.as_posix()}" if COMMANDS_CONFIG else "a command registry, set as commands_config in the tools config file"
+    return {
+        "success": True,
+        "name": name,
+        "requires_argument": ARG_PLACEHOLDER in entry["template"],
+        "warnings": _suggestion_warnings(tokens),
+        "suggestions_file": COMMAND_SUGGESTIONS.as_posix() if COMMAND_SUGGESTIONS else None,
+        "replaced_earlier_suggestion": replaced,
+        "entry": textwrap.dedent("\n".join(formatted)),
+        "message": (f"The command was not added and cannot be run yet. Tell the user that the suggestion {where}, show them the entry"
+                    f" and any warnings, and that they can copy it into {registry} and restart ollmcp to use it."
+                    " Do not try to run the command another way.")
+    }
+
 def _execute_command_logic(command_key: str, argument: str | None = None) -> dict[str, Any]:
     """
     Looks up, formats and executes a command from the registry without a shell, in ALLOWED_DIR.
@@ -143,7 +247,7 @@ def _execute_command_logic(command_key: str, argument: str | None = None) -> dic
         return {
             "success": False,
             "error": "command_not_found",
-            "message": f"'{command_key}' is not a registered command. Available commands: {available}. Use list_available_commands to see what each one does."
+            "message": f"'{command_key}' is not a registered command. Available commands: {available}. Use list_available_commands to see what each one does, or suggest_command to suggest a missing one to the user."
         }
 
     cmd_info = COMMAND_REGISTRY[command_key]
@@ -249,6 +353,28 @@ def run_predefined_command(command_name: str, argument: str = "") -> str:
         return json.dumps({
             "success": False,
             "error": "command_error",
+            "message": str(e),
+            "traceback": traceback.format_exc()
+        }, indent=2, ensure_ascii=False)
+
+@mcp.tool()
+def suggest_command(name: str, template: str, description: str, timeout: int | None = None) -> str:
+    """
+    Suggests a missing command to the user, who decides whether to add it. Tell the user the result.
+
+    Args:
+        name: e.g. 'run_e2e_tests'.
+        template: e.g. 'npm run e2e'. Put {arg} where the argument goes, if any.
+        description: When to use it, and what its argument is.
+        timeout: Seconds, if it needs more than 120.
+    """
+    try:
+        result = _suggest_command_logic(name, template, description, timeout)
+        return json.dumps(result, indent=2, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": "suggestion_error",
             "message": str(e),
             "traceback": traceback.format_exc()
         }, indent=2, ensure_ascii=False)

@@ -18,7 +18,7 @@ from pathlib import Path
 # --- Constants & Config ---
 
 CONFIG_ENV_VAR = "MCP_TOOLS_CONFIG"
-CONFIG_KEYS = {"allowed_dir", "forbidden_paths", "max_output_chars", "gitignore_path", "commands_config", "context_folder", "read_only_files", "ignored_dirs", "ollama_api_key", "backup_folder"}
+CONFIG_KEYS = {"allowed_dir", "forbidden_paths", "max_output_chars", "gitignore_path", "commands_config", "command_suggestions", "context_folder", "read_only_files", "ignored_dirs", "ollama_api_key", "backup_folder"}
 DEFAULT_MAX_OUTPUT_CHARS = 40000
 MIN_MAX_OUTPUT_CHARS = 2000
 PROTECTED_FILE_NAMES = {".mcp.json"}  # MCP server configuration, never accessible regardless of forbidden_paths
@@ -134,6 +134,11 @@ FORBIDDEN_PATHS = _setting_paths("forbidden_paths", ALLOWED_DIR)
 MAX_OUTPUT_CHARS = _setting_max_output_chars()
 GITIGNORE_PATH = _setting_path("gitignore_path", CONFIG_DIR) or ALLOWED_DIR / ".gitignore"
 COMMANDS_CONFIG = _setting_path("commands_config", CONFIG_DIR)
+# The file where suggest_command writes suggested commands for the user to review. It is never read as a registry.
+COMMAND_SUGGESTIONS = _setting_path("command_suggestions", CONFIG_DIR)
+# Files protected by their path: the tools config file and the command registry. If the AI could change them,
+# it could remove its own restrictions or register any command, which would take effect at the next server start.
+PROTECTED_PATHS = [CONFIG_PATH] + ([COMMANDS_CONFIG] if COMMANDS_CONFIG else [])
 CONTEXT_FOLDER = _setting_path("context_folder", CONFIG_DIR)
 READ_ONLY_FILES = _setting_paths("read_only_files", CONFIG_DIR)
 IGNORED_DIRS = _setting_ignored_dirs()
@@ -144,12 +149,15 @@ _PROJECT_KEY = hashlib.sha256(str(ALLOWED_DIR).lower().encode("utf-8")).hexdiges
 BACKUP_DIR = _setting_path("backup_folder", CONFIG_DIR) or DEFAULT_BACKUP_ROOT / f"{ALLOWED_DIR.name}-{_PROJECT_KEY}"
 if ALLOWED_DIR.is_relative_to(BACKUP_DIR):
     raise ValueError(f"{CONFIG_PATH}: 'backup_folder' must not contain 'allowed_dir', as the backup folder is hidden from the tools: {BACKUP_DIR}")
+if COMMAND_SUGGESTIONS and (COMMAND_SUGGESTIONS in PROTECTED_PATHS or COMMAND_SUGGESTIONS.name.lower() in PROTECTED_FILE_NAMES
+                            or COMMAND_SUGGESTIONS.is_relative_to(BACKUP_DIR)):
+    raise ValueError(f"{CONFIG_PATH}: 'command_suggestions' must be a file of its own, not the tools config file, the 'commands_config' registry, a '.mcp.json' file or in the backup folder: {COMMAND_SUGGESTIONS}")
 
 # --- Shared Helpers ---
 
 def is_protected(path: Path) -> bool:
     """
-    Checks if the given path is a protected file: a file named in PROTECTED_FILE_NAMES or the tools config file,
+    Checks if the given path is a protected file: a file named in PROTECTED_FILE_NAMES or in PROTECTED_PATHS,
     also through a symlink or a Windows alias of the name, such as a trailing dot or a '::$DATA' stream suffix.
     """
     names = [path.name]
@@ -164,12 +172,13 @@ def is_protected(path: Path) -> bool:
             name = name.split(":")[0].rstrip(" .")
         if name in PROTECTED_FILE_NAMES:
             return True
-        if name == CONFIG_PATH.name.lower():
-            try:
-                if path.resolve() == CONFIG_PATH:
+        for protected in PROTECTED_PATHS:
+            if name == protected.name.lower():
+                try:
+                    if path.resolve() == protected:
+                        return True
+                except OSError:
                     return True
-            except OSError:
-                return True
     return False
 
 def is_backup(path: Path) -> bool:
@@ -206,7 +215,7 @@ def contains_forbidden(path: Path) -> bool:
         return True
     if any(forbidden.is_relative_to(resolved) for forbidden in FORBIDDEN_PATHS):
         return True
-    if CONFIG_PATH.is_relative_to(resolved) or BACKUP_DIR.is_relative_to(resolved):
+    if any(protected.is_relative_to(resolved) for protected in PROTECTED_PATHS) or BACKUP_DIR.is_relative_to(resolved):
         return True
     if resolved.is_dir():
         for dirpath, _, filenames in os.walk(resolved):
@@ -235,7 +244,7 @@ def access_denied_message(path: Path, label: str = "Path") -> str:
     Returns the reason why access to the given path was denied.
     """
     if is_protected(path):
-        return f"{label} is protected: '{path.name}' contains the MCP server or tools configuration and cannot be accessed."
+        return f"{label} is protected: '{path.name}' contains the MCP server or tools configuration or the command registry, and cannot be accessed."
     if is_backup(path):
         return f"{label} is protected: it is in the backup folder of restore_file, which cannot be accessed directly."
     if is_forbidden(path):

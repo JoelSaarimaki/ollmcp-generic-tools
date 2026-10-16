@@ -8,10 +8,10 @@ from typing import Any
 from mcp.server.mcpserver import MCPServer
 from mcp_common import (
     ALLOWED_DIR,
-    CONFIG_PATH,
     FORBIDDEN_PATHS,
     MAX_OUTPUT_CHARS,
     PROTECTED_FILE_NAMES,
+    PROTECTED_PATHS,
     access_denied_message,
     display_path,
     get_repo_root,
@@ -97,11 +97,12 @@ def _pathspecs(repo_root: Path, target: Path) -> list[str]:
     for forbidden in FORBIDDEN_PATHS:
         if forbidden.is_relative_to(repo_root) and forbidden != repo_root:
             specs.append(f":(top,exclude){forbidden.relative_to(repo_root).as_posix()}")
-    # Protected files are excluded by name at any depth, in any letter case, and the tools config file by its path
+    # Protected files are excluded by name at any depth, in any letter case, and the tools config file and registry by their path
     for name in sorted(PROTECTED_FILE_NAMES):
         specs.append(f":(top,exclude,glob,icase)**/{name}")
-    if CONFIG_PATH.is_relative_to(repo_root):
-        specs.append(f":(top,exclude){CONFIG_PATH.relative_to(repo_root).as_posix()}")
+    for protected in PROTECTED_PATHS:
+        if protected.is_relative_to(repo_root):
+            specs.append(f":(top,exclude){protected.relative_to(repo_root).as_posix()}")
     return specs
 
 def _prepare(path: str) -> tuple[Path, Path, Path | None, str | None]:

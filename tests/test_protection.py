@@ -1,7 +1,7 @@
 # --- test_protection.py ---
 """
 Tests for the access rules shared by all servers: allowed_dir, forbidden paths and protected files
-(.mcp.json and the tools config file).
+(.mcp.json, the tools config file and the command registry).
 """
 import json
 
@@ -87,6 +87,32 @@ def test_relative_paths_resolve_against_allowed_dir_not_the_working_directory(pr
     assert "Lines: 1-1 of 1" in fs.read_file_with_metadata("src/app.py")
     assert fs.read_file_with_metadata("src/cwd_only.py").startswith("Error (file_not_found)")
 
+@pytest.fixture
+def registry_project(project):
+    project.write("_commands/registry.json", json.dumps({"x": {"template": "python", "description": SECRET}}))
+    project.write("src/app.py", 'print("hello")\n')
+    project.configure(commands_config="_commands/registry.json")
+    return project
+
+def test_the_command_registry_is_protected(registry_project):
+    fs = registry_project.load("filesystem")
+    assert denied(fs.read_file_with_metadata("_commands/registry.json"))
+    assert denied(fs.read_file_with_metadata("_COMMANDS/Registry.JSON"))
+    assert denied(fs.write_file("_commands/registry.json", "{}", "x"))
+    assert denied(fs.move_file("src/app.py", "_commands/registry.json"))
+    assert denied(fs.delete_file("_commands"))
+    assert "registry.json" not in [e["name"] for e in json.loads(fs.list_directory("_commands"))["entries"]]
+    assert SECRET in (registry_project.root / "_commands/registry.json").read_text()
+    assert json.loads(fs.get_config())["shared"]["protected_files"][1].endswith("_commands/registry.json")
+    assert "registry.json" not in registry_project.load("map").get_outline()
+    assert registry_project.load("search").search_text_in_files(SECRET).startswith("- No matches")
+
+def test_a_missing_command_registry_cannot_be_created(project):
+    project.configure(commands_config="_commands/registry.json")
+    fs = project.load("filesystem")
+    assert denied(fs.create_file("_commands/registry.json", "{}"))
+    assert not (project.root / "_commands/registry.json").exists()
+
 # --- Map and search ---
 
 def test_protected_and_forbidden_files_are_hidden_from_maps_and_searches(protected_project):
@@ -120,6 +146,16 @@ def test_protected_and_forbidden_files_are_left_out_of_git_output(protected_proj
     assert "src/app.py" in status and ".mcp.json" not in status.lower() and "secret" not in status and "tools-config" not in status
     assert denied(git.get_diff("head", ".mcp.json"))
     assert denied(git.get_file_history("secret/keys.txt"))
+
+@requires_git
+def test_the_command_registry_is_left_out_of_git_output(registry_project):
+    registry_project.init_git()
+    with open(registry_project.root / "_commands/registry.json", "a") as f:
+        f.write("\n")
+    git = registry_project.load("git")
+    assert json.loads(git.get_diff("head"))["changed_files"] == []
+    assert "registry" not in json.loads(git.get_git_status())["stdout"]
+    assert denied(git.get_file_history("_commands/registry.json"))
 
 # --- Context ---
 

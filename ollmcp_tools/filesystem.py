@@ -1103,7 +1103,7 @@ def get_tools_config() -> str:
                 "Only the tools of the enabled toolsets are available, except the disabled_tools. The user chooses them in the config_file.",
                 "Only paths within allowed_dir can be accessed. Relative paths given to the tools are resolved against allowed_dir.",
                 "Forbidden paths and everything inside forbidden folders are denied and hidden, and so are protected files: files named in protected_file_names and the protected_files (the config_file and the command registry).",
-                "Commands are added to the registry only by the user. Suggest a missing command with suggest_command.",
+                "Commands are added to the registry only by the user.",
                 "restore_file undoes the last max_backups changes of the file tools. Their backups, including deleted files, are kept in backup_folder, which the tools cannot access directly.",
                 "The outline and search tools also skip folders named in ignored_dirs at any depth, files matching the .gitignore patterns and, for search, binary files.",
                 "get_outline lists every file that is not ignored, with the sections of the outline_file_types.",

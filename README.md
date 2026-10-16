@@ -110,7 +110,8 @@ Every toolset is loaded unless it is listed in `disabled_toolsets`, and every to
 
 - Every tool definition is sent to the model with each request, so leaving out the tools a project does not need saves context, e.g. `web` without an Ollama API key, or `git` in a folder without git.
 - A disabled toolset is not loaded at all, so its settings are not checked either: a project without a command registry can disable `commands` instead of creating an empty one. A toolset whose tools are all in `disabled_tools` is not loaded either.
-- Other tools mention `get_tools_config` when a path is denied, so keep it unless you disable the whole `filesystem` toolset.
+- The toolsets work best together: their responses point to tools of other toolsets, e.g. `get_outline` to `read_file_with_metadata`, and the other tools to `get_tools_config` when a path is denied. Disable a toolset when the project does not need it, not to make the AI use another one.
+- The example [`_instructions/app-instructions.md`](_instructions/app-instructions.md) names tools of every toolset. Remove the disabled ones from your own instructions, so that the AI does not try to call tools it does not have.
 - A toolset added in a later version of the tools is loaded unless you disable it.
 
 ### Running

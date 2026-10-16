@@ -55,7 +55,7 @@ CODE_LANGUAGES = {
 def _load_config() -> tuple[Path, dict]:
     """
     Loads the config file named by MCP_TOOLS_CONFIG. Raises an error if it is not set, does not exist,
-    is not a JSON object or contains unknown settings, so that a server never starts with a wrong configuration.
+    is not a JSON object or contains unknown settings, so that the server never starts with a wrong configuration.
     """
     raw_path = os.getenv(CONFIG_ENV_VAR)
     if not raw_path:
@@ -175,7 +175,7 @@ PROTECTED_PATHS = [CONFIG_PATH] + ([COMMANDS_CONFIG] if COMMANDS_CONFIG else [])
 CONTEXT_FOLDER = _setting_path("context_folder", CONFIG_DIR)
 READ_ONLY_FILES = _setting_paths("read_only_files", CONFIG_DIR)
 IGNORED_DIRS = _setting_ignored_dirs()
-# API key for Ollama's hosted web search and fetch (web-search-mcp). Never shown to the AI: the config file is protected.
+# API key for Ollama's hosted web search and fetch (the web toolset). Never shown to the AI: the config file is protected.
 OLLAMA_API_KEY = _setting_secret("ollama_api_key")
 # One default backup folder per project, named after it and its path, so that projects with the same name do not share one
 _PROJECT_KEY = hashlib.sha256(str(ALLOWED_DIR).lower().encode("utf-8")).hexdigest()[:12]

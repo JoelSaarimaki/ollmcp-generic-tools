@@ -1,3 +1,3 @@
-# Packages for developing the servers and running the test suite: python -m pip install -r requirements-dev.txt
+# Packages for developing the tools and running the test suite: python -m pip install -r requirements-dev.txt
 -r requirements.txt
 pytest>=9.0

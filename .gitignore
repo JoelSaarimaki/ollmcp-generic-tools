@@ -1,6 +1,6 @@
 # NOTE: the outline and search tools also read this file with a simplified matcher.
 # Keep patterns simple: no "!" negations, and write folders without a trailing "/"
-# so they are excluded at any depth by both git and the codebase map.
+# so they are excluded at any depth by both git and the outline.
 
 # Python bytecode and caches
 __pycache__

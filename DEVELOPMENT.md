@@ -183,11 +183,11 @@ Add tests for every new tool or fixed bug.
 In recommended order.
 
 1. **Test with a local model on real tasks** (fix a bug, add a feature, rename something), compared with other tools such as the MCP reference servers. The test suite shows that the tools behave as designed, not that a small model finishes tasks better with them.
-2. **Add a repo-wide commit log**, e.g. `get_recent_commits(limit, path=None)` and a way to show one commit. Git history is currently only available per file.
+2. **Add a repo-wide commit log**, e.g. `get_git_log(limit, path="")` and a way to show one commit, named by their context like the other git tools. Git history is currently only available per file.
 3. **Allow a working folder per command**: an optional `cwd` key in the command registry, relative to `allowed_dir`, for monorepos.
 4. **Find where a name is defined: a `name` parameter for `get_outline`**, e.g. `get_outline(path="", name="validate_order")` → `src/orders/service.py  42-67 validate_order(): Checks the order`. Small models often know a name (from a traceback, a call site or the task) but not its file, and `read_file_with_metadata(path, section=...)` needs the file. `search_text_in_files` finds every use of the name, not only the definition, and a regex covering all JS/TS definition forms (`function x`, `const x = () =>`, class methods and fields, default exports) is too hard for a small model; a folder outline of a large project leaves out nested sections such as methods to fit the output limit. The parameter would outline the files within `path` as now and return only the sections matching `name`, with the matching of section reads (`find_sections` in `parsing.py`, also `Class.method`), each with its file and line span, and the usual limits if many match. A parameter instead of a new `find_definition` tool keeps the tool definitions smaller (about 100 characters instead of 300) and fits the outline → section read workflow. `search_relevant_files` with the name as the query already ranks a section named after it high, which may be enough. Do this after item 1 shows whether models actually get stuck finding definitions.
 
-Also worth considering: allowing more than one argument in command templates.
+Also worth considering: allowing more than one argument in command templates, with numbered placeholders (`{arg1}`, `{arg2}`) checked like `{arg}`, once a real command needs them. A count of arguments was rejected, as an argument string split on spaces breaks expressions such as `pytest -k "total and not slow"`, and small models fill in list parameters less reliably than one string.
 
 ## What is deliberately left out
 
@@ -197,6 +197,7 @@ Also worth considering: allowing more than one argument in command templates.
 - **Shell features in command templates** (pipes, `&&`, redirection): no safe way to allow them with arguments on Windows. Such logic goes into a script that a template calls.
 - **Operating system read-only flags or a `readonly/` subfolder** for read-only files: platform-dependent and easy to lose; `read_only_files` in the config is used instead.
 - **An opt-out for `.mcp.json` protection**: not needed, as the user edits the file directly.
+- **An `allow_arguments` flag instead of the `{arg}` placeholder**: it could only append the argument to the end, which loses templates such as `ruff check --select={arg} .`, and a misspelled flag would be ignored as silently as a misspelled placeholder. The real problem, a placeholder such as `{args}` passed to the program as literal text, is solved by refusing unknown placeholders at startup.
 
 ## Notes for working on this repository
 

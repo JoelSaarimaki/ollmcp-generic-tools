@@ -57,7 +57,7 @@ def test_the_created_config_points_to_the_project_and_hides_its_own_folder(new_p
 def test_the_checklist_explains_allowed_dir(new_project):
     stdout = init(new_project).stdout
     assert "'allowed_dir' is \"..\"" in stdout and str(new_project.resolve()) in stdout
-    assert "user-config.json" in stdout and "dev.read_context_file" in stdout
+    assert "user-config.json" in stdout and "dev_read_context_file" in stdout
 
 def test_init_never_overwrites_files(new_project):
     init(new_project)

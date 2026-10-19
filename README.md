@@ -65,7 +65,7 @@ my-project/
 
 - `python` is the Python found on PATH when `ollmcp` starts, so the package must be installed into it. The project's commands, such as `python -m pytest`, run with the same Python. If you start `ollmcp` in a project's activated virtual environment, so that the commands use the project's packages, install the tools into that environment too: `python -m pip install -e <path to this repository>`.
 - A relative `MCP_TOOLS_CONFIG` path is resolved against the folder where `ollmcp` is started, so start it in the project's root folder.
-- ollmcp names the tools `<server key>.<tool>`, e.g. `dev.get_outline`. The instructions template uses these names, so change them there if you use another key. For cloud providers, ollmcp writes the names with `_` instead of `.`, e.g. `dev_get_outline`.
+- ollmcp names the tools `<server key>.<tool>`, e.g. `dev.get_outline`, and since version 0.35 sends them to the model with `_` instead of `.`, e.g. `dev_get_outline`, for Ollama too. The instructions template uses the `.` names, which the model understands, so change them there if you use another key.
 
 **Why `allowed_dir` is `".."`:** the paths in the tools config are relative to the config file's own folder, `.ollmcp-tools`, so `".."` is the project folder above it. `init` prints the folder it resolves to, and if `allowed_dir` points to a folder that does not exist, the error says what it was resolved against.
 
@@ -73,14 +73,16 @@ After `init`, follow its checklist:
 1. Check `allowed_dir`, and add the folders and files the AI must never access to `forbidden_paths`.
 2. Keep the commands in `commands.json` that fit the project, and change or delete the rest. The template has commands for Python projects that use pip and a `requirements.txt`, and for npm projects.
 3. Adapt `instructions.md` to the project, and remove the tools you disable (see [Choosing the toolsets](#choosing-the-toolsets)).
-4. Add your Ollama API key to the [user config file](#user-config-file), or disable the `web` toolset.
-5. Add the session start instruction to ollmcp's system prompt (see [Running](#running)).
+4. Add your Ollama API key to the [user config file](#user-config-file) if you want web search. Without a key the `web` tools are not offered.
+5. Set the system prompt in ollmcp (see [Set a system prompt](#set-a-system-prompt)). It also keeps the tool calls working.
 
 #### What to commit
 
 Commit `.mcp.json` and the `.ollmcp-tools` folder: the settings, commands and instructions are the same for everyone who works on the project, and `forbidden_paths` protects the same files for all of them. The `.gitignore` in the folder leaves out each person's own files:
 - `context/`, as the plans are for one person's current task: someone else's AI would otherwise take them as its own plans.
 - `suggested-commands.json`, as the suggestions are for the person who reviews them.
+
+If you use the tools alone and do not want to share them, e.g. with colleagues who do not use them, you can instead add `.mcp.json` and `.ollmcp-tools/` to the project's own `.gitignore`. The tools still read them, as `.gitignore` only hides files from the outline, search and git tools, and the folder is forbidden anyway.
 
 The API key is not in the project at all, but in each person's [user config file](#user-config-file). Someone who clones the project runs `python -m ollmcp_tools init` once: it leaves the committed files as they are and creates the context folder and the user config file.
 
@@ -96,7 +98,7 @@ The API key is not in the project at all, but in each person's [user config file
 
 | Setting | Description |
 |---|---|
-| `ollama_api_key` | The Ollama API key used by the `web` toolset. Create one at [ollama.com/settings/keys](https://ollama.com/settings/keys). The key is never shown to the AI, as the file is [protected](#protected-files). (Optional, without it the web search tools only return a `not_configured` error) |
+| `ollama_api_key` | The Ollama API key used by the `web` toolset. Create one at [ollama.com/settings/keys](https://ollama.com/settings/keys). The key is never shown to the AI, as the file is [protected](#protected-files). (Optional, without it the `web` tools are not offered to the AI) |
 
 The server refuses to start if the file is not valid JSON or contains an unknown setting. An `ollama_api_key` in a project's tools config stops the server with an error saying to move it here, so that it is not committed with the project.
 
@@ -156,10 +158,10 @@ The AI can see the effective configuration with the `get_tools_config` tool of t
 
 Every toolset is loaded unless it is listed in `disabled_toolsets`, and every tool of a loaded toolset is offered unless it is listed in `disabled_tools`. Change the settings and restart `ollmcp` to apply them.
 
-- Every tool definition is sent to the model with each request, so leaving out the tools a project does not need saves context, e.g. `web` without an Ollama API key, or `git` in a folder without git.
+- Every tool definition is sent to the model with each request, so leaving out the tools a project does not need saves context, e.g. `git` in a folder without git. The `web` tools are left out automatically while no Ollama API key is set, and `get_tools_config` tells the AI why (`not_served`).
 - A disabled toolset is not loaded at all, so its settings are not checked either: a project without a command registry can disable `commands` instead of creating an empty one. A toolset whose tools are all in `disabled_tools` is not loaded either.
 - The toolsets work best together: their responses point to tools of other toolsets, e.g. `get_outline` to `read_file_with_metadata`, and the other tools to `get_tools_config` when a path is denied. Disable a toolset when the project does not need it, not to make the AI use another one.
-- The [instructions template](ollmcp_tools/templates/instructions.md) names tools of every toolset. Remove the disabled ones from your own instructions, so that the AI does not try to call tools it does not have.
+- The [instructions template](ollmcp_tools/templates/instructions.md) names tools of every toolset. Remove the disabled ones from your own instructions, and `dev.web_search` if you have no API key, so that the AI does not try to call tools it does not have.
 - A toolset added in a later version of the tools is loaded unless you disable it.
 
 ### Running
@@ -170,7 +172,25 @@ Once set up, start `ollmcp` in the project's root folder:
 ollmcp
 ```
 
-The AI only sees your project instructions (`read_only_files`) and earlier plans (`context_folder`) after it has read them. Start a session by asking it to call `read_context_file` without a filename, or add that instruction to ollmcp's system prompt (`/model-config` in ollmcp), e.g.: *At the start of a session, call dev.read_context_file to read the project instructions and plans.*
+#### Set a system prompt
+
+Set this system prompt in ollmcp and save it:
+
+```text
+At the start of a session, call dev_read_context_file to read the project instructions and plans.
+```
+
+1. In ollmcp, type `/model-config` (or `/mc`) and set the system prompt.
+2. Type `/save-config` (or `/sc`) and save it as `default`, which ollmcp loads automatically when it starts.
+
+The system prompt does two things:
+- **The AI reads your project instructions** (`read_only_files`) and earlier plans (`context_folder`) at the start of a session. Without it, the AI only sees them after you ask it to call `read_context_file`.
+- **It keeps tool calls working.** qwen3-coder 30b sometimes writes a tool call without its opening `<tool_call>` tag, e.g. `<function=dev_read_context_file> </tool_call>` as plain text in its answer. ollmcp then shows the call as an answer, and the tool is never called. Without a system prompt, this happened in 3 of 24 test requests with all tools enabled (0 of 3 for "Read the task in the context files and act accordingly"); with this system prompt, in none of the 24. A generic prompt such as "You are a helpful assistant." did not help. The tool name is written as the model sees it, with `_`.
+
+If a broken call still appears:
+- Type `/clear` before trying again. ollmcp keeps the broken call in the chat history as an ordinary answer, and the model then repeats it.
+- Leave out the tools the project does not need (see [Choosing the toolsets](#choosing-the-toolsets)): the more tool definitions, the more often it happens.
+- Leave `num_ctx` unset in `/model-config`, or keep it large: ollmcp then asks for a 32 000-token context. With Ollama's own default of 4 096 tokens, the tool definitions alone (about 4 200 tokens with every tool) fill the context, the prompt is cut, and the tool calls break.
 
 ### Testing
 
@@ -198,7 +218,7 @@ Provides safe and robust file system operations, including metadata retrieval, a
 - **move_file** Moves or renames a file or directory, creating missing destination folders. There is no separate tool for creating folders: `create_file` and `move_file` create the folders they need.
 - **delete_file** Deletes a file or a directory. It is moved into the backup folder, so `restore_file` can bring it back.
 - **restore_file** Undoes the last change that `edit_file`, `write_file`, `create_file`, `move_file` or `delete_file` made to a file or folder, e.g. when an edit broke a file; calling it again undoes earlier changes. A restored edit gets back its exact bytes (line endings and BOM), a created file is removed, a moved file is moved back (by its old or new path), and a deleted file or folder comes back. The response shows the new SHA-256 and outline of a restored file. See [Backups](#backups).
-- **get_tools_config** Returns the tools config (enabled toolsets and disabled tools, allowed directory, forbidden and protected paths, output limit) and what each toolset sees: the files the outline and searches skip, the git repository, the command registry, the context files and the backup folder. Helps the AI find out why a file is missing or a path is denied.
+- **get_tools_config** Returns the tools config (enabled toolsets, toolsets that are enabled but not served, such as `web` without an API key, and disabled tools, allowed directory, forbidden and protected paths, output limit) and what each toolset sees: the files the outline and searches skip, the git repository, the command registry, the context files and the backup folder. Helps the AI find out why a file is missing or a path is denied.
 
 The file reading and editing tools are designed to let local AI models read and edit files accurately:
 - File content is returned as plain text in a fenced code block, not inside JSON, so quotes, backslashes and line breaks appear exactly as in the file and can be copied into `edit_file` as-is.
@@ -316,7 +336,7 @@ Read-only only applies to the `context` toolset. The `filesystem` toolset could 
 
 ### web
 
-Searches the web and reads web pages using Ollama's hosted [web search API](https://docs.ollama.com/capabilities/web-search). Requires `ollama_api_key` in the [user config file](#user-config-file); the `ollama` Python package is installed with the tools. Disable the toolset if you do not use it. The queries and URLs are sent to ollama.com.
+Searches the web and reads web pages using Ollama's hosted [web search API](https://docs.ollama.com/capabilities/web-search). Requires `ollama_api_key` in the [user config file](#user-config-file): without it the tools are not offered to the AI, as they could only return an error. The `ollama` Python package is installed with the tools. The queries and URLs are sent to ollama.com.
 
 - **web_search** Searches the web and returns the title, URL and content of the best matching pages (`max_results`, 1–10, default 3).
 - **web_fetch** Fetches a web page and returns its title, links and text content. The content is shown as-is in a code block, so code copied from a page is not JSON-escaped. Long pages are read in parts with `start_char`.

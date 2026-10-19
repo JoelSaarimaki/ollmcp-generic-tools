@@ -26,6 +26,7 @@ from .common import (
     MAX_OUTPUT_CHARS,
     OLLAMA_API_KEY,
     USER_CONFIG_PATH,
+    UNAVAILABLE_TOOLSETS,
     PROTECTED_FILE_NAMES,
     PROTECTED_PATHS,
     READ_ONLY_FILES,
@@ -1061,6 +1062,7 @@ def get_tools_config() -> str:
             "config_file": CONFIG_PATH.as_posix(),
             "toolsets": {
                 "enabled": ENABLED_TOOLSETS,
+                "not_served": UNAVAILABLE_TOOLSETS,
                 "disabled_tools": sorted(DISABLED_TOOLS)
             },
             "shared": {
@@ -1102,7 +1104,7 @@ def get_tools_config() -> str:
                 "user_config_file": USER_CONFIG_PATH.as_posix()
             },
             "notes": [
-                "Only the tools of the enabled toolsets are available, except the disabled_tools. The user chooses them in the config_file.",
+                "Only the tools of the enabled toolsets are available, except the disabled_tools. The user chooses them in the config_file. Toolsets in not_served are enabled but not available, for the reason given.",
                 "Only paths within allowed_dir can be accessed. Relative paths given to the tools are resolved against allowed_dir.",
                 "Forbidden paths and everything inside forbidden folders are denied and hidden, and so are protected files: files named in protected_file_names and the protected_files (the config_file, the user_config_file and the command registry).",
                 "Commands are added to the registry only by the user.",
@@ -1110,7 +1112,7 @@ def get_tools_config() -> str:
                 "The outline and search tools also skip folders named in ignored_dirs at any depth, files matching the .gitignore patterns and, for search, binary files.",
                 "get_outline lists every file that is not ignored, with the sections of the outline_file_types.",
                 "Git's own .gitignore rules decide which untracked files the git tools list. If repository_root is null, allowed_dir is not in a git repository.",
-                "The web search tools only work if ollama_api_key_set is true: the user sets the key in the user_config_file. The key itself is never shown.",
+                "The web search tools are only available if ollama_api_key_set is true: the user sets the key in the user_config_file. The key itself is never shown.",
                 "Responses longer than max_output_chars are cut short with an 'Output limited:' message that explains how to see the rest."
             ]
         }, indent=2, ensure_ascii=False)

@@ -78,7 +78,19 @@ def test_get_config_reports_the_key_without_showing_it(project):
     response = project.load("filesystem").get_tools_config()
     assert json.loads(response)["web_search"]["ollama_api_key_set"] is True
     assert json.loads(response)["web_search"]["user_config_file"].endswith(".ollmcp-tools/user-config.json")
+    assert json.loads(response)["toolsets"]["not_served"] == {}
     assert "secret-key" not in response
+
+def test_get_config_reports_why_the_web_tools_are_not_served(project):
+    project.configure()
+    data = json.loads(project.load("filesystem").get_tools_config())
+    assert "web" not in data["toolsets"]["enabled"]
+    assert data["toolsets"]["not_served"] == {"web": "'ollama_api_key' is not set in the user config file"}
+    assert data["web_search"]["ollama_api_key_set"] is False
+
+def test_disabled_web_toolset_is_not_reported_as_not_served(project):
+    project.configure(disabled_toolsets=["web"])
+    assert json.loads(project.load("filesystem").get_tools_config())["toolsets"]["not_served"] == {}
 
 def test_web_search_returns_the_results(web):
     web.CLIENT = FakeClient([result("Ä title", "https://a.example", "First"), result(url="https://b.example")])

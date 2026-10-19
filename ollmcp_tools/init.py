@@ -25,7 +25,9 @@ TEMPLATE_FILES = {
 CONTEXT_FOLDER = f"{TOOLS_FOLDER}/context"
 # Same path as USER_CONFIG_PATH in common.py, which cannot be imported here
 USER_CONFIG_PATH = Path.home() / ".ollmcp-tools" / "user-config.json"
-SYSTEM_PROMPT = "At the start of a session, call dev.read_context_file to read the project instructions and plans."
+# Tested with qwen3-coder: it also keeps the tool calls working (see "Set a system prompt" in the README). The tool name
+# is written as ollmcp sends it to the model.
+SYSTEM_PROMPT = "At the start of a session, call dev_read_context_file to read the project instructions and plans."
 
 # --- Internal Helpers ---
 
@@ -83,9 +85,10 @@ def _checklist(project: Path) -> list[str]:
         f"{TOOLS_FOLDER}/commands.json: keep the commands that fit this project, and change or delete the rest."
         " The AI can suggest missing commands with suggest_command, for you to copy here.",
         f"{TOOLS_FOLDER}/instructions.md: adapt the instructions to the project, and remove the tools you disable.",
-        f"Web search: add your Ollama API key to {USER_CONFIG_PATH} (one key for all your projects),"
-        f" or add \"web\" to 'disabled_toolsets' in {CONFIG_FILE}.",
-        f"Add this to ollmcp's system prompt (/model-config in ollmcp): \"{SYSTEM_PROMPT}\"",
+        f"Web search: add your Ollama API key to {USER_CONFIG_PATH} (one key for all your projects)."
+        " Without a key the web tools are not offered to the AI.",
+        f"Set ollmcp's system prompt with /model-config and save it with /save-config as 'default': \"{SYSTEM_PROMPT}\""
+        " It also keeps the tool calls working.",
         f"Commit .mcp.json and {TOOLS_FOLDER}. {TOOLS_FOLDER}/.gitignore leaves out the context folder and the"
         " suggested commands, which are each person's own. Others who clone the project run 'python -m ollmcp_tools init' to create them.",
         "Start ollmcp in this folder.",

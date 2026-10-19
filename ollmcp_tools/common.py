@@ -8,6 +8,7 @@ so that every toolset sees exactly the same allowed directory, forbidden paths a
 """
 import fnmatch
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -185,6 +186,8 @@ def _setting_max_output_chars() -> int:
 CONFIG_PATH, CONFIG = _load_config()
 CONFIG_DIR = CONFIG_PATH.parent
 USER_CONFIG = _load_user_config()
+# API key for Ollama's hosted web search and fetch (the web toolset). Never shown to the AI: the user config file is protected.
+OLLAMA_API_KEY = _user_secret("ollama_api_key")
 DISABLED_TOOLSETS = _setting_names("disabled_toolsets", list(TOOLSETS))
 DISABLED_TOOLS = _setting_names("disabled_tools", [tool for tools in TOOLSETS.values() for tool in tools])
 # A toolset whose tools are all disabled is not loaded either, so its settings are not checked
@@ -192,6 +195,12 @@ ENABLED_TOOLSETS = [name for name, tools in TOOLSETS.items()
                     if name not in DISABLED_TOOLSETS and not DISABLED_TOOLS.issuperset(tools)]
 if not ENABLED_TOOLSETS:
     raise ValueError(f"{CONFIG_PATH}: 'disabled_toolsets' and 'disabled_tools' disable every tool.")
+# Enabled toolsets that are not served, with the reason, shown by get_tools_config. Without an API key the web tools
+# could only return an error, and every tool definition costs the model context on every request.
+UNAVAILABLE_TOOLSETS = {"web": "'ollama_api_key' is not set in the user config file"} if "web" in ENABLED_TOOLSETS and not OLLAMA_API_KEY else {}
+ENABLED_TOOLSETS = [name for name in ENABLED_TOOLSETS if name not in UNAVAILABLE_TOOLSETS]
+if not ENABLED_TOOLSETS:
+    raise ValueError(f"{CONFIG_PATH}: the only enabled toolset is 'web', and 'ollama_api_key' is not set in the user config file {USER_CONFIG_PATH}.")
 ALLOWED_DIR = _setting_path("allowed_dir", CONFIG_DIR)
 if not ALLOWED_DIR.is_dir():
     raise NotADirectoryError(f"{CONFIG_PATH}: 'allowed_dir' is not an existing folder: {ALLOWED_DIR}."
@@ -209,8 +218,6 @@ PROTECTED_PATHS = [CONFIG_PATH, USER_CONFIG_PATH] + ([REGISTRY_PATH] if REGISTRY
 CONTEXT_FOLDER = _setting_path("context_folder", CONFIG_DIR)
 READ_ONLY_FILES = _setting_paths("read_only_files", CONFIG_DIR)
 IGNORED_DIRS = _setting_ignored_dirs()
-# API key for Ollama's hosted web search and fetch (the web toolset). Never shown to the AI: the user config file is protected.
-OLLAMA_API_KEY = _user_secret("ollama_api_key")
 # One default backup folder per project, named after it and its path, so that projects with the same name do not share one
 _PROJECT_KEY = hashlib.sha256(str(ALLOWED_DIR).lower().encode("utf-8")).hexdigest()[:12]
 BACKUP_DIR = _setting_path("backup_folder", CONFIG_DIR) or DEFAULT_BACKUP_ROOT / f"{ALLOWED_DIR.name}-{_PROJECT_KEY}"
@@ -411,6 +418,8 @@ def get_repo_root(directory: Path) -> Path | None:
 def prepare_tools(server) -> None:
     """
     Prepares a server's tools for small models, after they are defined:
+    - Removes the docstring indentation from the descriptions, which is sent to the model as it is
+      (about 90 prompt tokens for all tools). The wording is not changed.
     - Shortens the parameter schemas, which are sent to the model with every request: removes the titles
       generated from the parameter names, and turns 'anyOf: [type, null]' of optional parameters into the type.
     - Makes an argument given as null use the parameter's default, as small models often send null for
@@ -420,6 +429,8 @@ def prepare_tools(server) -> None:
     """
     manager = server._tool_manager
     for tool in manager.list_tools():
+        if tool.description:
+            tool.description = inspect.cleandoc(tool.description)
         schema = tool.parameters
         schema.pop("title", None)
         for prop in schema.get("properties", {}).values():

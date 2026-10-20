@@ -41,5 +41,8 @@ htmlcov
 .DS_Store
 Thumbs.db
 
+# Scripts that test the tools with a local model, kept only in the developer's own copy (see local_ai_test_results.md)
+local_ai_tests
+
 # Claude Code local settings
 .claude/settings.local.json

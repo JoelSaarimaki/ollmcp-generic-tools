@@ -60,6 +60,7 @@ def test_the_checklist_explains_project_dir(new_project):
     stdout = init(new_project).stdout
     assert "'project_dir' is \"..\"" in stdout and str(new_project.resolve()) in stdout
     assert "user-config.json" in stdout and "dev_read_file_with_metadata with path '.ollmcp-tools/instructions.md'" in stdout
+    assert 'Start every session, also after /clear, with "Read the project instructions."' in stdout
 
 def test_the_ai_can_read_the_instructions_and_write_plans_in_a_created_project(new_project, project):
     """The created config forbids .ollmcp-tools, and users often gitignore it, but the plans and instructions stay usable."""

@@ -4,7 +4,7 @@ Generic MCP tools for [ollmcp](https://github.com/jonigl/mcp-client-for-ollama),
 
 The tools are designed for small local models with small context windows: every response is limited in size and says how to get the rest, the AI reads an outline first and then only the sections it needs, edits are checked against the file's hash and tolerate common copying mistakes, every file change can be undone, and the tools stay within one project folder that you choose.
 
-For the design principles behind the tools and the planned improvements, see [DEVELOPMENT.md](DEVELOPMENT.md).
+For the design principles behind the tools and the planned improvements, see [DEVELOPMENT.md](DEVELOPMENT.md). The methods the tools use for small local models are summarized in [local_ai_methods.md](local_ai_methods.md), and what a local model did with them in replayed requests in [local_ai_test_results.md](local_ai_test_results.md).
 
 ## Setup
 
@@ -74,7 +74,7 @@ After `init`, follow its checklist:
 2. Keep the commands in `commands.json` that fit the project, and change or delete the rest. The template has commands for Python projects that use pip and a `requirements.txt`, and for npm projects.
 3. Adapt `instructions.md` to the project, and remove the tools you disable (see [Choosing the toolsets](#choosing-the-toolsets)).
 4. Add your Ollama API key to the [user config file](#user-config-file) if you want web search. Without a key the `web` tools are not offered.
-5. Set the system prompt in ollmcp (see [Set a system prompt](#set-a-system-prompt)). It also keeps the tool calls working.
+5. Set the system prompt in ollmcp, and start each session by asking the AI to read the project instructions (see [Starting a session](#starting-a-session)).
 
 #### What to commit
 
@@ -171,20 +171,26 @@ Once set up, start `ollmcp` in the project's root folder:
 ollmcp
 ```
 
-#### Set a system prompt
+#### Starting a session
 
-Set this system prompt in ollmcp and save it:
+The AI follows your project instructions only after it has read them, and they tell it, among other things, to choose a mode before it changes anything and to check its earlier plans in `.ollmcp-tools/context`. Two steps make sure it reads them:
 
-```text
-At the start of a session, call dev_read_file_with_metadata with path '.ollmcp-tools/instructions.md' and follow it.
-```
+1. **Set this system prompt once**, and save it:
+   ```text
+   At the start of a session, call dev_read_file_with_metadata with path '.ollmcp-tools/instructions.md' and follow it.
+   ```
+   In ollmcp, type `/model-config` (or `/mc`) and set the system prompt, then type `/save-config` (or `/sc`) and save it as `default`, which ollmcp loads automatically when it starts. The tool name is written as the model sees it, with `_`.
+2. **Start every session with "Read the project instructions."**, also after `/clear`, and give the AI its task after that.
 
-1. In ollmcp, type `/model-config` (or `/mc`) and set the system prompt.
-2. Type `/save-config` (or `/sc`) and save it as `default`, which ollmcp loads automatically when it starts.
+Neither step is enough alone. In tests with qwen3-coder 30b (see [local_ai_test_results.md](local_ai_test_results.md#session-start-and-plans-2026-10-20)), the model's first tool call read the instructions:
 
-The system prompt does two things:
-- **The AI reads your project instructions** at the start of a session, and they tell it to check its earlier plans in `.ollmcp-tools/context`. Without it, the AI only sees them after you ask it to read them.
-- **It keeps tool calls working.** qwen3-coder 30b sometimes writes a tool call without its opening `<tool_call>` tag, e.g. `<function=dev_read_context_file> </tool_call>` as plain text in its answer. ollmcp then shows the call as an answer, and the tool is never called. Without a system prompt, this happened in 3 of 24 test requests with all of the 26 tools of the time enabled (0 of 3 for "Read the task in the context files and act accordingly"); with the earlier system prompt *At the start of a session, call dev_read_context_file to read the project instructions and plans.*, in none of the 24. The current prompt, written for the file tools after the `context` toolset was removed, has not been tested this way yet. A generic prompt such as "You are a helpful assistant." did not help. The tool name is written as the model sees it, with `_`.
+| Setup | First call reads the instructions |
+|---|---|
+| System prompt, first message "Read the project instructions." | 20 of 20 |
+| No system prompt, first message "Read the project instructions." | 9 of 20 |
+| System prompt, first message already the task | 2 of 18 |
+
+**The system prompt also keeps the tool calls working.** qwen3-coder 30b sometimes writes a tool call without its opening `<tool_call>` tag, e.g. `<function=dev_read_context_file> </tool_call>` as plain text in its answer. ollmcp then shows the call as an answer, and the tool is never called. Without a system prompt, this happened in 3 of 24 test requests with the 26 tools of the time (0 of 3 for "Read the task in the context files and act accordingly"), and with the session-start prompt of the time in none of the 24. A generic prompt such as "You are a helpful assistant." did not help. With the current prompt, none of the 38 first calls measured on 2026-10-20 was broken. See [local_ai_test_results.md](local_ai_test_results.md#broken-tool-calls-2026-10-19).
 
 If a broken call still appears:
 - Type `/clear` before trying again. ollmcp keeps the broken call in the chat history as an ordinary answer, and the model then repeats it.

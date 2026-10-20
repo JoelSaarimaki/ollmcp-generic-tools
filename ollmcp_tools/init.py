@@ -28,9 +28,11 @@ TEMPLATE_FILES = {
     "suggested-commands.json": f"{TOOLS_FOLDER}/suggested-commands.json",
 }
 CONTEXT_FOLDER = f"{TOOLS_FOLDER}/context"
-# Starting the session with a tool call also keeps qwen3-coder's tool calls working (see "Set a system prompt" in the README).
+# Starting the session with a tool call also keeps qwen3-coder's tool calls working (see "Starting a session" in the README).
 # The tool name is written as ollmcp sends it to the model.
 SYSTEM_PROMPT = f"At the start of a session, call dev_read_file_with_metadata with path '{TOOLS_FOLDER}/instructions.md' and follow it."
+# The first message of every session: with the system prompt, it got the instructions read in every test (see local_ai_test_results.md)
+FIRST_MESSAGE = "Read the project instructions."
 
 # --- Internal Helpers ---
 
@@ -129,6 +131,8 @@ def _checklist(project: Path) -> list[str]:
         " Without a key the web tools are not offered to the AI.",
         f"Set ollmcp's system prompt with /model-config and save it with /save-config as 'default': \"{SYSTEM_PROMPT}\""
         " It also keeps the tool calls working.",
+        f"Start every session, also after /clear, with \"{FIRST_MESSAGE}\" and give the AI its task after that:"
+        " the AI often skips the system prompt when the first message is already a task.",
         f"Commit .mcp.json and {TOOLS_FOLDER}. {TOOLS_FOLDER}/.gitignore leaves out the context folder and the"
         " suggested commands, which are each person's own. Others who clone the project run 'python -m ollmcp_tools init' to create them.",
         "Start ollmcp in this folder.",

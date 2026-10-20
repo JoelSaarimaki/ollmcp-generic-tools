@@ -25,23 +25,23 @@ TEMPLATE_FILES = {
 CONTEXT_FOLDER = f"{TOOLS_FOLDER}/context"
 # Same path as USER_CONFIG_PATH in common.py, which cannot be imported here
 USER_CONFIG_PATH = Path.home() / ".ollmcp-tools" / "user-config.json"
-# Tested with qwen3-coder: it also keeps the tool calls working (see "Set a system prompt" in the README). The tool name
-# is written as ollmcp sends it to the model.
-SYSTEM_PROMPT = "At the start of a session, call dev_read_context_file to read the project instructions and plans."
+# Starting the session with a tool call also keeps qwen3-coder's tool calls working (see "Set a system prompt" in the README).
+# The tool name is written as ollmcp sends it to the model.
+SYSTEM_PROMPT = f"At the start of a session, call dev_read_file_with_metadata with path '{TOOLS_FOLDER}/instructions.md' and follow it."
 
 # --- Internal Helpers ---
 
-def _allowed_dir_line(project: Path) -> str:
+def _project_dir_line(project: Path) -> str:
     """
-    Returns the checklist line that explains the allowed_dir of the project's tools config, resolved to a folder.
+    Returns the checklist line that explains the project_dir of the project's tools config, resolved to a folder.
     """
     config_path = project / CONFIG_FILE
     try:
-        allowed_dir = json.loads(config_path.read_text(encoding="utf-8"))["allowed_dir"]
-        resolved = (config_path.parent / allowed_dir).resolve()
+        project_dir = json.loads(config_path.read_text(encoding="utf-8"))["project_dir"]
+        resolved = (config_path.parent / project_dir).resolve()
     except Exception as e:
-        return f"{CONFIG_FILE} could not be read to check its 'allowed_dir' ({e}). Fix the file before starting ollmcp."
-    return (f"{CONFIG_FILE}: 'allowed_dir' is \"{allowed_dir}\", as paths in the config are relative to its own folder,"
+        return f"{CONFIG_FILE} could not be read to check its 'project_dir' ({e}). Fix the file before starting ollmcp."
+    return (f"{CONFIG_FILE}: 'project_dir' is \"{project_dir}\", as paths in the config are relative to its own folder,"
             f" {TOOLS_FOLDER}. It is the project folder the tools can access: {resolved}."
             f" Add the folders and files the AI must never access to 'forbidden_paths'.")
 
@@ -81,7 +81,7 @@ def _checklist(project: Path) -> list[str]:
     Returns the steps the user should take after init, in order.
     """
     return [
-        _allowed_dir_line(project),
+        _project_dir_line(project),
         f"{TOOLS_FOLDER}/commands.json: keep the commands that fit this project, and change or delete the rest."
         " The AI can suggest missing commands with suggest_command, for you to copy here.",
         f"{TOOLS_FOLDER}/instructions.md: adapt the instructions to the project, and remove the tools you disable.",

@@ -7,7 +7,7 @@ from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 from .common import (
-    ALLOWED_DIR,
+    PROJECT_DIR,
     FORBIDDEN_PATHS,
     MAX_OUTPUT_CHARS,
     PROTECTED_FILE_NAMES,
@@ -106,12 +106,21 @@ def _pathspecs(repo_root: Path, target: Path) -> list[str]:
 
 def _prepare(path: str) -> tuple[Path, Path, Path | None, str | None]:
     """
-    Resolves the path (defaulting to ALLOWED_DIR) and finds its working directory and repository root.
+    Resolves the path (defaulting to PROJECT_DIR) and finds its working directory and repository root.
     Returns (path, working directory, repository root, error response); the error response is None on success.
     """
-    p = resolve_path(path) if path else ALLOWED_DIR
+    p = resolve_path(path) if path else PROJECT_DIR
     if not is_path_allowed(p):
         return p, p, None, _access_denied(p)
+    # A git pathspec cannot include a path again after excluding its folder, so allowed paths inside forbidden folders are left out too
+    hidden_by = next((forbidden for forbidden in FORBIDDEN_PATHS if p.is_relative_to(forbidden)), None)
+    if hidden_by:
+        return p, p, None, json.dumps({
+            "success": False,
+            "error": "forbidden_folder",
+            "message": f"{display_path(p, PROJECT_DIR)} is in the forbidden folder {display_path(hidden_by, PROJECT_DIR)}. The git tools leave out forbidden folders"
+                       " completely, also the allowed_paths inside them. Read the file with read_file_with_metadata instead."
+        }, indent=2, ensure_ascii=False)
 
     cwd = _existing_dir(p)
     repo_root = get_repo_root(cwd)
@@ -119,7 +128,7 @@ def _prepare(path: str) -> tuple[Path, Path, Path | None, str | None]:
         return p, cwd, None, json.dumps({
             "success": False,
             "error": "not_a_repository",
-            "message": f"{display_path(p, ALLOWED_DIR)} is not inside a git repository."
+            "message": f"{display_path(p, PROJECT_DIR)} is not inside a git repository."
         }, indent=2, ensure_ascii=False)
     return p, cwd, repo_root, None
 
@@ -157,11 +166,22 @@ def _invalid_mode(mode: str) -> str | None:
         "message": f"Invalid mode '{mode}'. Must be one of: {', '.join(DIFF_MODES)}"
     }, indent=2, ensure_ascii=False)
 
+def _diff_args(mode: str, repo_root: Path) -> list[str]:
+    """
+    Returns the git diff arguments of a mode. In a repository without commits, 'head' compares with the
+    empty tree, as HEAD does not exist yet, so that the files added so far are still shown.
+    """
+    if mode == "head" and not _run_git_command(["rev-parse", "--verify", "--quiet", "HEAD"], cwd=repo_root)["success"]:
+        empty_tree = subprocess.run(["git", "hash-object", "-t", "tree", "--stdin"], cwd=repo_root, input="",
+                                    capture_output=True, encoding="utf-8", check=True).stdout.strip()
+        return ["diff", empty_tree]
+    return DIFF_MODES[mode]
+
 def _file_diff(path: str, p: Path, cwd: Path, repo_root: Path, mode: str) -> str:
     """
     Returns the JSON response with the diff of one file, with the same fields as the diff of all changes.
     """
-    result = _run_git_command(DIFF_MODES[mode] + ["--"] + _pathspecs(repo_root, p), cwd=cwd)
+    result = _run_git_command(_diff_args(mode, repo_root) + ["--"] + _pathspecs(repo_root, p), cwd=cwd)
     if not result["success"]:
         return json.dumps(result, indent=2, ensure_ascii=False)
 
@@ -184,7 +204,7 @@ def _file_diff(path: str, p: Path, cwd: Path, repo_root: Path, mode: str) -> str
     return json.dumps({
         "success": True,
         "mode": mode,
-        "path": display_path(p, ALLOWED_DIR),
+        "path": display_path(p, PROJECT_DIR),
         "output_limited": result.get("output_limited"),
         "diff": result["stdout"],
         "message": message,
@@ -193,15 +213,16 @@ def _file_diff(path: str, p: Path, cwd: Path, repo_root: Path, mode: str) -> str
 
 def _all_changes_diff(p: Path, repo_root: Path, mode: str) -> str:
     """
-    Returns the JSON response with the changed files (M = modified, A = added, D = deleted, R = renamed),
-    the new untracked files, which are not in the diff, and the diff of all changed files within p.
+    Returns the JSON response with the current branch, the changed files (M = modified, A = added, D = deleted,
+    R = renamed, U = unmerged), the new untracked files, which are not in the diff, and the diff of all changed files within p.
     """
     specs = _pathspecs(repo_root, p)
-    name_status = _run_git_command(DIFF_MODES[mode] + ["--name-status", "--"] + specs, cwd=repo_root)
+    diff_args = _diff_args(mode, repo_root)
+    name_status = _run_git_command(diff_args + ["--name-status", "--"] + specs, cwd=repo_root)
     if not name_status["success"]:
         return json.dumps(name_status, indent=2, ensure_ascii=False)
 
-    diff = _run_git_command(DIFF_MODES[mode] + ["--"] + specs, cwd=repo_root)
+    diff = _run_git_command(diff_args + ["--"] + specs, cwd=repo_root)
     if not diff["success"]:
         return json.dumps(diff, indent=2, ensure_ascii=False)
 
@@ -211,6 +232,7 @@ def _all_changes_diff(p: Path, repo_root: Path, mode: str) -> str:
         if untracked["success"]:
             untracked_files = untracked["stdout"].splitlines()
 
+    branch = _run_git_command(["branch", "--show-current"], cwd=repo_root)
     changed_files = name_status["stdout"].splitlines()
     notes = []
     if len(changed_files) > MAX_LISTED_FILES or len(untracked_files) > MAX_LISTED_FILES:
@@ -228,6 +250,7 @@ def _all_changes_diff(p: Path, repo_root: Path, mode: str) -> str:
         "success": True,
         "mode": mode,
         "repository_root": repo_root.as_posix(),
+        "branch": branch.get("stdout", "").strip() or "(detached HEAD)",
         "output_limited": " ".join(notes) or None,
         "changed_files": listed_changed,
         "untracked_files": listed_untracked,
@@ -239,18 +262,15 @@ def _all_changes_diff(p: Path, repo_root: Path, mode: str) -> str:
 # --- Public MCP Tools ---
 
 @mcp.tool()
-def get_git_diff(mode: str, path: str = "") -> str:
+def get_git_diff(mode: str = "head", path: str = "") -> str:
     """
-    Shows the git changes of one file, or of all changed files with lists of the changed and
-    new untracked files (which have no diff). Use it to review changes.
+    Shows the git changes of one file, or of all changed files with the branch and lists of the
+    changed and new untracked files (which have no diff). Use it to review changes.
 
     Args:
-        mode: 'unstaged' (changes not staged yet), 'staged' (changes staged for commit) or
-            'head' (all changes since the last commit).
+        mode: 'head' (all changes since the last commit), 'unstaged' (changes not staged yet) or
+            'staged' (changes staged for commit). Defaults to 'head'.
         path: A file, or a folder to limit the changes to. Defaults to the whole repository.
-
-    Returns:
-        JSON with the diff, or an error.
     """
     error = _invalid_mode(mode)
     if error:
@@ -306,22 +326,3 @@ def get_git_history(path: str, limit: int = 10) -> str:
         return json.dumps(result, indent=2, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"success": False, "error": "history_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
-
-@mcp.tool()
-def get_git_status(path: str = "") -> str:
-    """
-    Returns 'git status'. The error 'not_a_repository' means the folder is not in a git repository.
-
-    Args:
-        path: A folder. Defaults to the whole project.
-    """
-    try:
-        p, cwd, repo_root, error = _prepare(path)
-        if error:
-            return error
-
-        result = _run_git_command(["status", "--"] + _pathspecs(repo_root, p), cwd=cwd)
-        result = _limit_stdout(result, "Limit the status to one folder with path, or list the changed files with get_git_diff.")
-        return json.dumps(result, indent=2, ensure_ascii=False)
-    except Exception as e:
-        return json.dumps({"success": False, "error": "status_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)

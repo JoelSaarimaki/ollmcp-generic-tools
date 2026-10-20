@@ -9,18 +9,19 @@ from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 from .common import (
-    ALLOWED_DIR,
-    IGNORED_DIRS,
+    HIDDEN,
+    PROJECT_DIR,
     MAX_OUTPUT_CHARS,
+    THROUGH,
     access_denied_message,
     code_block,
     code_language,
     display_path,
-    is_ignored,
-    is_path_allowed,
+    is_path_readable,
     load_gitignore_patterns,
     resolve_path,
     text_response,
+    visibility,
     walk
 )
 from .parsing import (
@@ -57,17 +58,19 @@ COMMON_KEYWORD_WEIGHT = 0.3  # Keywords below this weight (0-1) are too common t
 
 def _resolve_scope(path: str, gitignore_patterns: list[str]) -> tuple[Path, str | None]:
     """
-    Resolves the folder or file a search is limited to. Relative paths are resolved against ALLOWED_DIR.
+    Resolves the folder or file a search is limited to. Relative paths are resolved against PROJECT_DIR.
+    A forbidden or ignored folder can be searched if it contains allowed paths or read-only files, which are then searched.
     Returns the path and an error message, which is None if the path can be searched.
     """
     if not path:
-        return ALLOWED_DIR, None
+        return PROJECT_DIR, None
     p = resolve_path(path)
-    if not is_path_allowed(p):
+    state = visibility(p, PROJECT_DIR, gitignore_patterns) if p.is_relative_to(PROJECT_DIR) and p != PROJECT_DIR else None
+    if not is_path_readable(p) and state != THROUGH:
         return p, f"Error: {access_denied_message(p)}"
     if not p.exists():
-        return p, f"Error: Path '{path}' does not exist in the allowed directory {ALLOWED_DIR.as_posix()}."
-    if p != ALLOWED_DIR and is_ignored(p, ALLOWED_DIR, IGNORED_DIRS, gitignore_patterns):
+        return p, f"Error: Path '{path}' does not exist in the project folder {PROJECT_DIR.as_posix()}."
+    if state == HIDDEN:
         return p, f"Error: Path '{path}' is ignored: it is in an ignored folder or matched by .gitignore. Use get_tools_config to see why."
     return p, None
 
@@ -202,7 +205,7 @@ def _suggest_folder(scope: Path, file_matches: list[tuple[tuple[str, ...], int]]
         break
     if not prefix:
         return None
-    return scope.joinpath(*prefix).relative_to(ALLOWED_DIR).as_posix(), count
+    return scope.joinpath(*prefix).relative_to(PROJECT_DIR).as_posix(), count
 
 def _format_list(items: list[str], location: str) -> str:
     """
@@ -223,8 +226,8 @@ def _files_in_scope(scope: Path, gitignore_patterns: list[str], file_pattern: st
         return [scope]
     # Anchored at a '/' so that 'tests/*.py' matches 'src/tests/a.py' but not 'src/mytests/a.py'
     file_regex = _glob_to_regex("/" + file_pattern.replace("\\", "/").lstrip("/")) if file_pattern else None
-    return [p for p, is_dir in walk(ALLOWED_DIR, gitignore_patterns, scope)
-            if not is_dir and (not file_regex or file_regex.search("/" + p.relative_to(ALLOWED_DIR).as_posix()))]
+    return [p for p, is_dir in walk(PROJECT_DIR, gitignore_patterns, scope)
+            if not is_dir and (not file_regex or file_regex.search("/" + p.relative_to(PROJECT_DIR).as_posix()))]
 
 def _is_keyword(word: str) -> bool:
     """
@@ -432,7 +435,7 @@ def search_text_in_files(query: str, case_sensitive: bool = False, path: str = "
         file_matches = []
         output = []
         for file in files:
-            rel_path = file.relative_to(ALLOWED_DIR).as_posix()
+            rel_path = display_path(file, PROJECT_DIR)
             lines, matches = _search_file(file, pattern)
             if not matches:
                 continue
@@ -452,7 +455,7 @@ def search_text_in_files(query: str, case_sensitive: bool = False, path: str = "
                 shown_matches += is_match
             output.append("")
 
-        location = f"'{display_path(scope, ALLOWED_DIR)}'" if scope != ALLOWED_DIR else "the project"
+        location = f"'{display_path(scope, PROJECT_DIR)}'" if scope != PROJECT_DIR else "the project"
         if not total_matches:
             filter_note = f" (files matching '{file_pattern}')" if file_pattern else ""
             return text_response([literal_note, f"No matches found for '{query}' in {location}{filter_note}"])
@@ -496,8 +499,8 @@ def search_files_by_pattern(pattern: str, recursive: bool = False) -> str:
 
         gitignore_patterns = load_gitignore_patterns()
         matches = []
-        for path, is_dir in walk(ALLOWED_DIR, gitignore_patterns, ALLOWED_DIR, max_depth):
-            rel_path = path.relative_to(ALLOWED_DIR).as_posix()
+        for path, is_dir in walk(PROJECT_DIR, gitignore_patterns, PROJECT_DIR, max_depth):
+            rel_path = path.relative_to(PROJECT_DIR).as_posix()
             if regex.match(rel_path):
                 matches.append(rel_path + ("/" if is_dir else ""))
 
@@ -545,7 +548,7 @@ def search_relevant_files(query: str, path: str = "", file_pattern: str = "", ma
                 continue
             total_files += 1
             total_chars += sum(len(line) for line in lines)
-            rel_path = file.relative_to(ALLOWED_DIR).as_posix()
+            rel_path = display_path(file, PROJECT_DIR)
             path_hits = set(counter(rel_path))
             line_hits = {}
             if counter.may_match("\n".join(lines)):
@@ -560,7 +563,7 @@ def search_relevant_files(query: str, path: str = "", file_pattern: str = "", ma
                         counts[keyword] = counts.get(keyword, 0) + count
                 matched.append((file, rel_path, counts, path_hits, line_hits, sum(len(line) for line in lines)))
 
-        location = f"'{display_path(scope, ALLOWED_DIR)}'" if scope != ALLOWED_DIR else "the project"
+        location = f"'{display_path(scope, PROJECT_DIR)}'" if scope != PROJECT_DIR else "the project"
         filter_note = f" (files matching '{file_pattern}')" if file_pattern else ""
         if not matched:
             return text_response([f"No files contain any of the keywords {', '.join(keywords)} in {location}{filter_note}."

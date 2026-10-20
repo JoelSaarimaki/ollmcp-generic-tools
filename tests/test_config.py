@@ -9,23 +9,23 @@ import pytest
 from conftest import start_server
 
 @pytest.mark.parametrize("config_text, message", [
-    ("{ allowed_dir: . }", "Expecting property name"),
+    ("{ project_dir: . }", "Expecting property name"),
     ("[]", "must contain a JSON object"),
-    ('{"forbidden_paths": []}', "'allowed_dir' is required"),
-    ('{"allowed_dir": null}', "'allowed_dir' is required"),
-    ('{"allowed_dir": "missing-folder"}', "'missing-folder' is relative to the folder of the config file"),
-    ('{"allowed_dir": ".", "commands_config": "c.json"}', "'commands_config' is no longer a setting of the tools config file: it is now called 'command_registry'"),
-    ('{"allowed_dir": ".", "forbiden_paths": []}', "unknown settings"),
-    ('{"allowed_dir": ".", "forbidden_paths": "secret"}', "must be a list of path strings"),
-    ('{"allowed_dir": ".", "max_output_chars": "4000"}', "must be a whole number"),
-    ('{"allowed_dir": ".", "gitignore_path": 5}', "must be a path string"),
-    ('{"allowed_dir": ".", "ignored_dirs": "node_modules"}', "must be a list of folder names"),
-    ('{"allowed_dir": ".", "ignored_dirs": ["node_modules", " "]}', "must be a list of folder names"),
-    ('{"allowed_dir": ".", "ignored_dirs": ["docs/build"]}', "not paths"),
-    ('{"allowed_dir": ".", "backup_folder": "."}', "'backup_folder' must not contain 'allowed_dir'"),
-    ('{"allowed_dir": ".", "command_registry": "c.json", "command_suggestions": "c.json"}', "'command_suggestions' must be a file of its own"),
-    ('{"allowed_dir": ".", "command_suggestions": "tools-config.json"}', "'command_suggestions' must be a file of its own"),
-    ('{"allowed_dir": ".", "command_suggestions": "sub/.mcp.json"}', "'command_suggestions' must be a file of its own"),
+    ('{"forbidden_paths": []}', "'project_dir' is required"),
+    ('{"project_dir": null}', "'project_dir' is required"),
+    ('{"project_dir": "missing-folder"}', "'missing-folder' is relative to the folder of the config file"),
+    ('{"project_dir": ".", "commands_config": "c.json"}', "'commands_config' is no longer a setting of the tools config file: it is now called 'command_registry'"),
+    ('{"project_dir": ".", "forbiden_paths": []}', "unknown settings"),
+    ('{"project_dir": ".", "forbidden_paths": "secret"}', "must be a list of path strings"),
+    ('{"project_dir": ".", "max_output_chars": "4000"}', "must be a whole number"),
+    ('{"project_dir": ".", "gitignore_path": 5}', "must be a path string"),
+    ('{"project_dir": ".", "ignored_dirs": "node_modules"}', "must be a list of folder names"),
+    ('{"project_dir": ".", "ignored_dirs": ["node_modules", " "]}', "must be a list of folder names"),
+    ('{"project_dir": ".", "ignored_dirs": ["docs/build"]}', "not paths"),
+    ('{"project_dir": ".", "backup_folder": "."}', "'backup_folder' must not contain 'project_dir'"),
+    ('{"project_dir": ".", "command_registry": "c.json", "command_suggestions": "c.json"}', "'command_suggestions' must be a file of its own"),
+    ('{"project_dir": ".", "command_suggestions": "tools-config.json"}', "'command_suggestions' must be a file of its own"),
+    ('{"project_dir": ".", "command_suggestions": "sub/.mcp.json"}', "'command_suggestions' must be a file of its own"),
 ])
 def test_invalid_config_stops_the_server(project, config_text, message):
     project.config_path.write_text(config_text, encoding="utf-8")
@@ -51,7 +51,8 @@ def test_every_toolset_starts_with_a_minimal_config(project):
     ({"disabled_toolsets": "web"}, "'disabled_toolsets' must be a list of names"),
     ({"disabled_toolsets": ["webs"]}, "'disabled_toolsets' contains unknown names ['webs']"),
     ({"disabled_tools": ["get_diff"]}, "'disabled_tools' contains unknown names ['get_diff']"),
-    ({"disabled_toolsets": ["filesystem", "outline", "search", "git", "commands", "context"], "disabled_tools": ["web_search", "web_fetch"]}, "disable every tool"),
+    ({"disabled_tools": ["create_file"]}, "'disabled_tools' contains unknown names ['create_file']"),  # a removed tool
+    ({"disabled_toolsets": ["filesystem", "outline", "search", "git", "commands"], "disabled_tools": ["web_search", "web_fetch"]}, "disable every tool"),
 ])
 def test_invalid_toolset_settings_stop_the_server(project, settings, message):
     result = start_server(project.configure(**settings))
@@ -78,13 +79,13 @@ def test_invalid_user_config_stops_the_server(project, user_config_text, message
     assert result.returncode != 0 and "user-config.json" in result.stderr and message in result.stderr
 
 def test_null_settings_use_the_defaults(project):
-    optional = ["forbidden_paths", "ignored_dirs", "gitignore_path", "max_output_chars", "command_registry", "context_folder", "read_only_files"]
+    optional = ["forbidden_paths", "allowed_paths", "ignored_dirs", "gitignore_path", "max_output_chars", "command_registry", "read_only_files"]
     project.configure(**{key: None for key in optional})
     common = project.common()
     assert common.IGNORED_DIRS == common.DEFAULT_IGNORED_DIRS
     assert common.MAX_OUTPUT_CHARS == common.DEFAULT_MAX_OUTPUT_CHARS
-    assert common.FORBIDDEN_PATHS == [] and common.READ_ONLY_FILES == []
-    assert common.REGISTRY_PATH is None and common.CONTEXT_FOLDER is None
+    assert common.FORBIDDEN_PATHS == [] and common.ALLOWED_PATHS == [] and common.READ_ONLY_FILES == []
+    assert common.REGISTRY_PATH is None
     assert common.GITIGNORE_PATH == project.root.resolve() / ".gitignore"
 
 def test_empty_ignored_dirs_list_skips_no_folders(project):
@@ -105,17 +106,32 @@ def test_paths_are_relative_to_the_config_file_folder(make_project):
     config_dir.mkdir()
     project.config_path = config_dir / "tools-config.json"
     project.config_path.write_text(json.dumps({
-        "allowed_dir": "../project",
+        "project_dir": "../project",
         "forbidden_paths": ["secret"],
+        "allowed_paths": ["secret/plans"],
         "command_registry": "commands.json",
-        "context_folder": "../project/_context",
+        "read_only_files": ["instructions.md"],
     }), encoding="utf-8")
+    (config_dir / "instructions.md").write_text("# Instructions\n", encoding="utf-8")
     common = project.common()
     root = project.root.resolve()
-    assert common.ALLOWED_DIR == root
-    assert common.FORBIDDEN_PATHS == [root / "secret"]  # relative to allowed_dir
+    assert common.PROJECT_DIR == root
+    assert common.FORBIDDEN_PATHS == [root / "secret"] and common.ALLOWED_PATHS == [root / "secret/plans"]  # relative to project_dir
     assert common.REGISTRY_PATH == config_dir.resolve() / "commands.json"
-    assert common.CONTEXT_FOLDER == root / "_context"
+    assert common.READ_ONLY_FILES == [config_dir.resolve() / "instructions.md"]
+
+@pytest.mark.parametrize("settings, message", [
+    ({"allowed_paths": ["src"]}, "'allowed_paths' must be inside a folder of 'forbidden_paths'"),
+    ({"forbidden_paths": ["secret"], "allowed_paths": ["secret"]}, "'allowed_paths' must be inside a folder of 'forbidden_paths'"),
+    ({"forbidden_paths": ["secret"], "allowed_paths": ["../elsewhere"]}, "'allowed_paths' must be inside 'project_dir'"),
+    ({"forbidden_paths": ["secret"], "allowed_paths": ["secret/.mcp.json"]}, "cannot allow a protected file"),
+    ({"read_only_files": ["missing.md"]}, "'read_only_files' names a file that does not exist"),
+    ({"read_only_files": ["tools-config.json"]}, "'read_only_files' cannot contain a protected file"),
+    ({"context_folder": "context"}, "unknown settings ['context_folder']"),
+])
+def test_invalid_allowed_and_read_only_paths_stop_the_server(project, settings, message):
+    result = start_server(project.configure(**settings))
+    assert result.returncode != 0 and message in result.stderr
 
 def test_forbidden_path_entries_are_trimmed(project):
     project.configure(forbidden_paths=["  secret.txt  ", ""])

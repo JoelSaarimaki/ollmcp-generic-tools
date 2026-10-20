@@ -47,17 +47,31 @@ def test_the_created_config_points_to_the_project_and_hides_its_own_folder(new_p
     init(new_project)
     project.config_path = new_project / ".ollmcp-tools/tools-config.json"
     common = project.common()
-    assert common.ALLOWED_DIR == new_project.resolve()
+    assert common.PROJECT_DIR == new_project.resolve()
     assert common.FORBIDDEN_PATHS == [new_project.resolve() / ".ollmcp-tools"]
+    assert common.ALLOWED_PATHS == [new_project.resolve() / ".ollmcp-tools/context"]
     assert common.REGISTRY_PATH == new_project.resolve() / ".ollmcp-tools/commands.json"
     assert common.READ_ONLY_FILES == [new_project.resolve() / ".ollmcp-tools/instructions.md"]
     mcp = json.loads((new_project / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]["dev"]
     assert mcp["env"]["MCP_TOOLS_CONFIG"] == ".ollmcp-tools/tools-config.json"
 
-def test_the_checklist_explains_allowed_dir(new_project):
+def test_the_checklist_explains_project_dir(new_project):
     stdout = init(new_project).stdout
-    assert "'allowed_dir' is \"..\"" in stdout and str(new_project.resolve()) in stdout
-    assert "user-config.json" in stdout and "dev_read_context_file" in stdout
+    assert "'project_dir' is \"..\"" in stdout and str(new_project.resolve()) in stdout
+    assert "user-config.json" in stdout and "dev_read_file_with_metadata with path '.ollmcp-tools/instructions.md'" in stdout
+
+def test_the_ai_can_read_the_instructions_and_write_plans_in_a_created_project(new_project, project):
+    """The created config forbids .ollmcp-tools, and users often gitignore it, but the plans and instructions stay usable."""
+    init(new_project)
+    (new_project / ".gitignore").write_text(".ollmcp-tools\n.mcp.json\n", encoding="utf-8")
+    project.config_path = new_project / ".ollmcp-tools/tools-config.json"
+    fs = project.load("filesystem")
+    assert "Mode: planning" in fs.read_file_with_metadata(".ollmcp-tools/instructions.md")
+    assert json.loads(fs.write_file(".ollmcp-tools/context/plan-login.md", "# Plan\n## Steps\n"))["success"]
+    assert "read-only" in json.loads(fs.write_file(".ollmcp-tools/instructions.md", "x", "0"))["message"]
+    assert "access_denied" in fs.read_file_with_metadata(".ollmcp-tools/commands.json")
+    outline = project.load("outline").get_outline(".ollmcp-tools/context")
+    assert ".ollmcp-tools/context/plan-login.md" in outline and "## Steps" in outline
 
 def test_init_never_overwrites_files(new_project):
     init(new_project)

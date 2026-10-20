@@ -1,8 +1,8 @@
 # --- parsing.py ---
 """
 Outlines of source and Markdown files: their classes, functions and headings with the line spans
-of their content. Used by get_outline, by the section reads of read_file_with_metadata and
-read_context_file, and by the outlines shown after a file is written.
+of their content. Used by get_outline, by the section reads of read_file_with_metadata,
+by search_relevant_files and by the outlines shown after a file is written.
 
 Python files are parsed with the ast module and JS/TS files with tree-sitter, which gives exact
 line spans and still outlines a file with syntax errors. Markdown headings are read line by line,

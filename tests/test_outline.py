@@ -135,7 +135,7 @@ def test_file_outline_reports_a_syntax_error(project):
 @pytest.mark.parametrize("path, message", [
     ("node_modules", "is ignored: it is an ignored folder"),
     ("missing", "does not exist"),
-    ("../elsewhere", "not within the allowed directory"),
+    ("../elsewhere", "not within the project folder"),
 ])
 def test_invalid_outline_paths(project, path, message):
     project.write("src/app.py", "x = 1\n")

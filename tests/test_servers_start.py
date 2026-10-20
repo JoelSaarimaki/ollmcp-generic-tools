@@ -16,13 +16,12 @@ from conftest import PACKAGE, REPO_DIR, start_server
 
 # Listed here separately from TOOLSETS in common.py, so that a changed tool name is noticed
 EXPECTED_TOOLS = {
-    "filesystem": ["write_file", "edit_file", "create_file", "read_file_with_metadata", "read_image",
-                   "list_directory", "move_file", "delete_file", "restore_file", "get_tools_config"],
+    "filesystem": ["write_file", "edit_file", "read_file_with_metadata", "read_image",
+                   "move_file", "delete_file", "restore_file", "get_tools_config"],
     "outline": ["get_outline"],
     "search": ["search_text_in_files", "search_files_by_pattern", "search_relevant_files"],
-    "git": ["get_git_diff", "get_git_history", "get_git_status"],
+    "git": ["get_git_diff", "get_git_history"],
     "commands": ["list_available_commands", "run_predefined_command", "suggest_command"],
-    "context": ["list_context_files", "read_context_file", "write_context_file", "remove_context_file"],
     "web": ["web_search", "web_fetch"],
 }
 ALL_TOOLS = [tool for tools in EXPECTED_TOOLS.values() for tool in tools]
@@ -84,7 +83,7 @@ def test_repository_configuration_starts_every_tool(project):
     assert [tool.name for tool in tools] == ALL_TOOLS
 
 # Tool definitions are sent to the model with every request, so they must stay small
-MAX_TOOL_DEFINITION_CHARS = 11400
+MAX_TOOL_DEFINITION_CHARS = 9300
 
 def test_tool_definitions_stay_small(project):
     project.user_config(ollama_api_key="test-key")  # Measured with every tool served

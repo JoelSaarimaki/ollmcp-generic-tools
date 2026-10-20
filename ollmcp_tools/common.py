@@ -4,7 +4,7 @@ Shared configuration and helpers for the toolsets of this package.
 
 All settings come from one JSON config file, whose path is given with the MCP_TOOLS_CONFIG
 environment variable. The config is loaded when this module is first imported, before any toolset,
-so that every toolset sees exactly the same allowed directory, forbidden paths and output limit.
+so that every toolset sees exactly the same project folder, forbidden paths and output limit.
 """
 import fnmatch
 import hashlib
@@ -18,7 +18,7 @@ from pathlib import Path
 # --- Constants & Config ---
 
 CONFIG_ENV_VAR = "MCP_TOOLS_CONFIG"
-CONFIG_KEYS = {"allowed_dir", "forbidden_paths", "max_output_chars", "gitignore_path", "command_registry", "command_suggestions", "context_folder", "read_only_files", "ignored_dirs", "backup_folder", "disabled_toolsets", "disabled_tools"}
+CONFIG_KEYS = {"project_dir", "forbidden_paths", "max_output_chars", "gitignore_path", "command_registry", "command_suggestions", "allowed_paths", "read_only_files", "ignored_dirs", "backup_folder", "disabled_toolsets", "disabled_tools"}
 # Each person's own folder of the tools, for all their projects
 USER_FOLDER = Path.home() / ".ollmcp-tools"
 # The user config file holds each person's own settings, such as API keys, so that they are never committed with a project's tools config
@@ -32,13 +32,12 @@ MOVED_SETTINGS = {
 # The toolsets, each a module of this package, and their tools, in the order they are served.
 # Used to check the disabled_toolsets and disabled_tools settings before any toolset is imported.
 TOOLSETS = {
-    "filesystem": ["write_file", "edit_file", "create_file", "read_file_with_metadata", "read_image",
-                   "list_directory", "move_file", "delete_file", "restore_file", "get_tools_config"],
+    "filesystem": ["write_file", "edit_file", "read_file_with_metadata", "read_image",
+                   "move_file", "delete_file", "restore_file", "get_tools_config"],
     "outline": ["get_outline"],
     "search": ["search_text_in_files", "search_files_by_pattern", "search_relevant_files"],
-    "git": ["get_git_diff", "get_git_history", "get_git_status"],
+    "git": ["get_git_diff", "get_git_history"],
     "commands": ["list_available_commands", "run_predefined_command", "suggest_command"],
-    "context": ["list_context_files", "read_context_file", "write_context_file", "remove_context_file"],
     "web": ["web_search", "web_fetch"],
 }
 DEFAULT_MAX_OUTPUT_CHARS = 40000
@@ -85,8 +84,8 @@ def _load_config() -> tuple[Path, dict]:
     unknown = set(config) - CONFIG_KEYS
     if unknown:
         raise ValueError(f"{path}: unknown settings {sorted(unknown)}. Valid settings: {sorted(CONFIG_KEYS)}.")
-    if config.get("allowed_dir") in (None, ""):
-        raise ValueError(f"{path}: 'allowed_dir' is required.")
+    if config.get("project_dir") in (None, ""):
+        raise ValueError(f"{path}: 'project_dir' is required.")
     return path, config
 
 def _load_user_config() -> dict:
@@ -182,7 +181,7 @@ def _setting_max_output_chars() -> int:
         raise ValueError(f"{CONFIG_PATH}: 'max_output_chars' must be a whole number.")
     return max(MIN_MAX_OUTPUT_CHARS, value)
 
-# Paths in the config file are relative to its folder, except forbidden_paths, which are relative to allowed_dir
+# Paths in the config file are relative to its folder, except forbidden_paths and allowed_paths, which are relative to project_dir
 CONFIG_PATH, CONFIG = _load_config()
 CONFIG_DIR = CONFIG_PATH.parent
 USER_CONFIG = _load_user_config()
@@ -201,31 +200,51 @@ UNAVAILABLE_TOOLSETS = {"web": "'ollama_api_key' is not set in the user config f
 ENABLED_TOOLSETS = [name for name in ENABLED_TOOLSETS if name not in UNAVAILABLE_TOOLSETS]
 if not ENABLED_TOOLSETS:
     raise ValueError(f"{CONFIG_PATH}: the only enabled toolset is 'web', and 'ollama_api_key' is not set in the user config file {USER_CONFIG_PATH}.")
-ALLOWED_DIR = _setting_path("allowed_dir", CONFIG_DIR)
-if not ALLOWED_DIR.is_dir():
-    raise NotADirectoryError(f"{CONFIG_PATH}: 'allowed_dir' is not an existing folder: {ALLOWED_DIR}."
-                             f" '{CONFIG['allowed_dir']}' is relative to the folder of the config file, {CONFIG_DIR}.")
-FORBIDDEN_PATHS = _setting_paths("forbidden_paths", ALLOWED_DIR)
+PROJECT_DIR = _setting_path("project_dir", CONFIG_DIR)
+if not PROJECT_DIR.is_dir():
+    raise NotADirectoryError(f"{CONFIG_PATH}: 'project_dir' is not an existing folder: {PROJECT_DIR}."
+                             f" '{CONFIG['project_dir']}' is relative to the folder of the config file, {CONFIG_DIR}.")
+FORBIDDEN_PATHS = _setting_paths("forbidden_paths", PROJECT_DIR)
+# Folders and files inside forbidden folders that the tools may use again, e.g. the AI's plans in .ollmcp-tools/context.
+# The most specific path wins, so a forbidden path inside an allowed one stays forbidden.
+ALLOWED_PATHS = _setting_paths("allowed_paths", PROJECT_DIR)
 # Largest response size in characters (about 4 characters per token). Lower it for models with small context windows.
 MAX_OUTPUT_CHARS = _setting_max_output_chars()
-GITIGNORE_PATH = _setting_path("gitignore_path", CONFIG_DIR) or ALLOWED_DIR / ".gitignore"
+GITIGNORE_PATH = _setting_path("gitignore_path", CONFIG_DIR) or PROJECT_DIR / ".gitignore"
 REGISTRY_PATH = _setting_path("command_registry", CONFIG_DIR)
 # The file where suggest_command writes suggested commands for the user to review. It is never read as a registry.
 COMMAND_SUGGESTIONS = _setting_path("command_suggestions", CONFIG_DIR)
 # Files protected by their path: the tools config file, the user config file and the command registry. If the AI could
 # change them, it could remove its own restrictions or register any command, which would take effect at the next server start.
 PROTECTED_PATHS = [CONFIG_PATH, USER_CONFIG_PATH] + ([REGISTRY_PATH] if REGISTRY_PATH else [])
-CONTEXT_FOLDER = _setting_path("context_folder", CONFIG_DIR)
+# Files the tools can read wherever they are, also in a forbidden folder or outside project_dir, but never change,
+# such as the project instructions
 READ_ONLY_FILES = _setting_paths("read_only_files", CONFIG_DIR)
 IGNORED_DIRS = _setting_ignored_dirs()
 # One default backup folder per project, named after it and its path, so that projects with the same name do not share one
-_PROJECT_KEY = hashlib.sha256(str(ALLOWED_DIR).lower().encode("utf-8")).hexdigest()[:12]
-BACKUP_DIR = _setting_path("backup_folder", CONFIG_DIR) or DEFAULT_BACKUP_ROOT / f"{ALLOWED_DIR.name}-{_PROJECT_KEY}"
-if ALLOWED_DIR.is_relative_to(BACKUP_DIR):
-    raise ValueError(f"{CONFIG_PATH}: 'backup_folder' must not contain 'allowed_dir', as the backup folder is hidden from the tools: {BACKUP_DIR}")
+_PROJECT_KEY = hashlib.sha256(str(PROJECT_DIR).lower().encode("utf-8")).hexdigest()[:12]
+BACKUP_DIR = _setting_path("backup_folder", CONFIG_DIR) or DEFAULT_BACKUP_ROOT / f"{PROJECT_DIR.name}-{_PROJECT_KEY}"
+if PROJECT_DIR.is_relative_to(BACKUP_DIR):
+    raise ValueError(f"{CONFIG_PATH}: 'backup_folder' must not contain 'project_dir', as the backup folder is hidden from the tools: {BACKUP_DIR}")
 if COMMAND_SUGGESTIONS and (COMMAND_SUGGESTIONS in PROTECTED_PATHS or COMMAND_SUGGESTIONS.name.lower() in PROTECTED_FILE_NAMES
                             or COMMAND_SUGGESTIONS.is_relative_to(BACKUP_DIR)):
     raise ValueError(f"{CONFIG_PATH}: 'command_suggestions' must be a file of its own, not the tools config file, the user config file, the 'command_registry', a '.mcp.json' file or in the backup folder: {COMMAND_SUGGESTIONS}")
+for allowed in ALLOWED_PATHS:
+    if not allowed.is_relative_to(PROJECT_DIR):
+        raise ValueError(f"{CONFIG_PATH}: 'allowed_paths' must be inside 'project_dir', {PROJECT_DIR}: {allowed}")
+    if not any(allowed != forbidden and allowed.is_relative_to(forbidden) for forbidden in FORBIDDEN_PATHS):
+        raise ValueError(f"{CONFIG_PATH}: 'allowed_paths' must be inside a folder of 'forbidden_paths', as everything else in 'project_dir' is allowed already: {allowed}."
+                         f" The paths are relative to 'project_dir', {PROJECT_DIR}.")
+    if allowed in PROTECTED_PATHS or allowed.name.lower() in PROTECTED_FILE_NAMES or allowed.is_relative_to(BACKUP_DIR):
+        raise ValueError(f"{CONFIG_PATH}: 'allowed_paths' cannot allow a protected file or the backup folder: {allowed}")
+for read_only in READ_ONLY_FILES:
+    if not read_only.is_file():
+        raise FileNotFoundError(f"{CONFIG_PATH}: 'read_only_files' names a file that does not exist: {read_only}."
+                                f" The paths are relative to the folder of the config file, {CONFIG_DIR}.")
+    if read_only in PROTECTED_PATHS or read_only.name.lower() in PROTECTED_FILE_NAMES or read_only.is_relative_to(BACKUP_DIR):
+        raise ValueError(f"{CONFIG_PATH}: 'read_only_files' cannot contain a protected file or a file in the backup folder: {read_only}")
+# How the outline and search tools treat a path (see visibility)
+SHOWN, THROUGH, HIDDEN = "shown", "through", "hidden"
 
 # --- Shared Helpers ---
 
@@ -264,9 +283,17 @@ def is_backup(path: Path) -> bool:
     except OSError:
         return True
 
+def _deepest(path: Path, roots: list[Path]) -> int:
+    """
+    Returns the number of parts of the deepest of roots that contains path, or -1 if none does.
+    """
+    return max((len(root.parts) for root in roots if path.is_relative_to(root)), default=-1)
+
 def is_forbidden(path: Path) -> bool:
     """
-    Checks if the given path is a protected file, in the backup folder, a forbidden file or is located within a forbidden folder.
+    Checks if the given path is a protected file, in the backup folder, a forbidden file or is located within a forbidden
+    folder. The most specific path wins: a path in an allowed path inside a forbidden folder is not forbidden, unless
+    a forbidden path inside the allowed one contains it.
     """
     if is_protected(path) or is_backup(path):
         return True
@@ -276,7 +303,26 @@ def is_forbidden(path: Path) -> bool:
         resolved = path.resolve()
     except OSError:
         return True
-    return any(resolved.is_relative_to(forbidden) for forbidden in FORBIDDEN_PATHS)
+    return _deepest(resolved, FORBIDDEN_PATHS) > _deepest(resolved, ALLOWED_PATHS)
+
+def is_read_only(path: Path) -> bool:
+    """
+    Checks if the given path is one of the read_only_files, which the tools can read but never change.
+    """
+    try:
+        return path.resolve() in READ_ONLY_FILES
+    except OSError:
+        return False
+
+def contains_read_only(path: Path) -> bool:
+    """
+    Checks if the given path is a read-only file or a folder containing one, which cannot be moved or deleted.
+    """
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return True
+    return any(read_only.is_relative_to(resolved) for read_only in READ_ONLY_FILES)
 
 def contains_forbidden(path: Path) -> bool:
     """
@@ -299,19 +345,25 @@ def contains_forbidden(path: Path) -> bool:
 
 def resolve_path(path: str) -> Path:
     """
-    Resolves a path given to a tool. Relative paths are resolved against ALLOWED_DIR.
+    Resolves a path given to a tool. Relative paths are resolved against PROJECT_DIR.
     """
     p = Path(path)
-    return (p if p.is_absolute() else ALLOWED_DIR / p).resolve()
+    return (p if p.is_absolute() else PROJECT_DIR / p).resolve()
 
 def is_path_allowed(path: Path) -> bool:
     """
-    Checks if the given path is within ALLOWED_DIR and not forbidden.
+    Checks if the given path is within PROJECT_DIR and not forbidden. Read-only files are checked separately.
     """
     try:
-        return path.resolve().is_relative_to(ALLOWED_DIR) and not is_forbidden(path)
+        return path.resolve().is_relative_to(PROJECT_DIR) and not is_forbidden(path)
     except (ValueError, OSError):
         return False
+
+def is_path_readable(path: Path) -> bool:
+    """
+    Checks if the read tools may read the given path: an allowed path, or a read-only file wherever it is.
+    """
+    return is_path_allowed(path) or (is_read_only(path) and not is_protected(path) and not is_backup(path))
 
 def access_denied_message(path: Path, label: str = "Path") -> str:
     """
@@ -321,9 +373,11 @@ def access_denied_message(path: Path, label: str = "Path") -> str:
         return f"{label} is protected: '{path.name}' contains the MCP server, tools or user configuration or the command registry, and cannot be accessed."
     if is_backup(path):
         return f"{label} is protected: it is in the backup folder of restore_file, which cannot be accessed directly."
+    if is_read_only(path):
+        return f"{label} is read-only: it is one of the read_only_files, which the tools can read but not change. Tell the user if it needs a change."
     if is_forbidden(path):
-        return f"{label} is forbidden: {display_path(path, ALLOWED_DIR)}"
-    return f"{label} is not within the allowed directory: {ALLOWED_DIR.as_posix()}"
+        return f"{label} is forbidden: {display_path(path, PROJECT_DIR)}"
+    return f"{label} is not within the project folder: {PROJECT_DIR.as_posix()}"
 
 def display_path(path: Path, base_dir: Path) -> str:
     """
@@ -352,15 +406,12 @@ def load_gitignore_patterns() -> list[str]:
         pass
     return patterns
 
-def is_ignored(path: Path, base_dir: Path, ignored_dirs: set[str], gitignore_patterns: list[str]) -> bool:
+def _matches_ignored(path: Path, base_dir: Path, ignored_dirs: set[str], gitignore_patterns: list[str]) -> bool:
     """
-    Checks if a path is excluded by forbidden paths, ignored_dirs or .gitignore patterns.
+    Checks if a path is excluded by ignored_dirs or .gitignore patterns.
     Only the part of the path within base_dir is compared, so that a project located in a folder
     named like an ignored folder (e.g. 'C:/work/out/project') is not ignored as a whole.
     """
-    if is_forbidden(path):
-        return True
-
     try:
         rel_parts = path.relative_to(base_dir).parts
     except ValueError:
@@ -378,26 +429,55 @@ def is_ignored(path: Path, base_dir: Path, ignored_dirs: set[str], gitignore_pat
 
     return False
 
+def visibility(path: Path, base_dir: Path, gitignore_patterns: list[str], inside_hidden: bool = False) -> str:
+    """
+    Returns how the outline and search tools treat an absolute path within base_dir: SHOWN; THROUGH for a hidden
+    folder (forbidden, in ignored_dirs or matched by .gitignore) that is entered only to show the allowed paths
+    and read-only files in it; or HIDDEN. ignored_dirs and .gitignore do not hide allowed paths and read-only files:
+    inside an allowed path, only the part of the path below it is compared with them. inside_hidden is True for
+    the contents of a THROUGH folder, which are only shown if they are allowed paths or read-only files.
+    Protected files and the backup folder are hidden by is_forbidden, as no allowed path or read-only file can be one.
+    """
+    if path in READ_ONLY_FILES:
+        return SHOWN
+    if not is_forbidden(path):
+        roots = [allowed for allowed in ALLOWED_PATHS if path.is_relative_to(allowed)]
+        if roots:
+            if not _matches_ignored(path, max(roots, key=lambda root: len(root.parts)), IGNORED_DIRS, gitignore_patterns):
+                return SHOWN
+        elif not inside_hidden and not _matches_ignored(path, base_dir, IGNORED_DIRS, gitignore_patterns):
+            return SHOWN
+    if any(p != path and p.is_relative_to(path) for p in ALLOWED_PATHS + READ_ONLY_FILES) and path.is_dir():
+        return THROUGH
+    return HIDDEN
+
 def walk(base_dir: Path, gitignore_patterns: list[str], start_dir: Path, max_depth: int | None = None):
     """
-    Yields (path, is_dir) for the folders and files within start_dir that are not ignored, in sorted order.
-    Ignored folders are skipped without being entered, which keeps large folders such as node_modules fast.
+    Yields (path, is_dir) for the folders and files within start_dir that are shown (see visibility), in sorted order.
+    Hidden folders are skipped without being entered, which keeps large folders such as node_modules fast, unless
+    they contain an allowed path or a read-only file: then only those are shown.
     Folders deeper than max_depth levels below start_dir are not entered.
     """
+    through = {start_dir} if start_dir != base_dir and visibility(start_dir, base_dir, gitignore_patterns) == THROUGH else set()
     for dirpath, dirnames, filenames in os.walk(start_dir):
         current_dir = Path(dirpath)
+        inside_hidden = current_dir in through
         depth = len(current_dir.relative_to(start_dir).parts)
-        dirnames[:] = sorted(
-            (d for d in dirnames if not is_ignored(current_dir / d, base_dir, IGNORED_DIRS, gitignore_patterns)),
-            key=str.lower
-        )
+        kept = []
+        for name in sorted(dirnames, key=str.lower):
+            state = visibility(current_dir / name, base_dir, gitignore_patterns, inside_hidden)
+            if state == THROUGH:
+                through.add(current_dir / name)
+            if state != HIDDEN:
+                kept.append(name)
+        dirnames[:] = kept
         for name in dirnames:
             yield current_dir / name, True
         if max_depth is not None and depth + 1 >= max_depth:
             dirnames[:] = []
         for name in sorted(filenames, key=str.lower):
             path = current_dir / name
-            if not is_ignored(path, base_dir, IGNORED_DIRS, gitignore_patterns):
+            if visibility(path, base_dir, gitignore_patterns, inside_hidden) == SHOWN:
                 yield path, False
 
 def get_repo_root(directory: Path) -> Path | None:

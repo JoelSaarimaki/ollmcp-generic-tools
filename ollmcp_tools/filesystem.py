@@ -11,13 +11,13 @@ from pathlib import Path
 
 from mcp.server.mcpserver import Image, MCPServer
 from .common import (
-    ALLOWED_DIR,
+    PROJECT_DIR,
     BACKUP_DIR,
     COMMAND_SUGGESTIONS,
     REGISTRY_PATH,
     CONFIG,
+    ALLOWED_PATHS,
     CONFIG_PATH,
-    CONTEXT_FOLDER,
     DISABLED_TOOLS,
     ENABLED_TOOLSETS,
     FORBIDDEN_PATHS,
@@ -34,9 +34,12 @@ from .common import (
     code_block,
     code_language,
     contains_forbidden,
+    contains_read_only,
     display_path,
     get_repo_root,
     is_path_allowed,
+    is_path_readable,
+    is_read_only,
     load_gitignore_patterns,
     resolve_path,
     text_response
@@ -56,7 +59,6 @@ MAX_READ_LINES = 1000  # Longer files are read in parts
 MAX_LINE_CHARS = 2000  # Longer lines (e.g. minified code) are shown shortened, ending with SHORTENED_LINE_MARK
 SHORTENED_LINE_MARK = " [...]"
 MAX_TEXT_FILE_BYTES = 50 * 1024 * 1024  # Larger text files are not read
-MAX_LIST_ENTRIES = 250
 MAX_BACKUPS = 200  # Changes kept for restore_file; the backups of older ones are removed
 BACKUP_JOURNAL = "journal.json"
 EDIT_SNIPPET_CONTEXT_LINES = 3  # Lines shown around a change after an edit
@@ -91,9 +93,15 @@ class FileMetadata:
 
 def _rel(path: Path) -> str:
     """
-    Returns a path as shown in responses: relative to ALLOWED_DIR, like the paths given to and shown by the other tools.
+    Returns a path as shown in responses: relative to PROJECT_DIR, like the paths given to and shown by the other tools.
     """
-    return display_path(path, ALLOWED_DIR)
+    return display_path(path, PROJECT_DIR)
+
+def _is_writable(path: Path) -> bool:
+    """
+    Checks if the file tools may change the given path: an allowed path that is not a read-only file.
+    """
+    return is_path_allowed(path) and not is_read_only(path)
 
 def _access_denied(path: Path, label: str = "Path") -> str:
     """
@@ -106,6 +114,27 @@ def _text_error(error: str, message: str) -> str:
     Returns a plain-text error response, used by the tools whose responses contain file content.
     """
     return f"Error ({error}): {message}"
+
+def _edit_error(error: str, message: str, sha256_valid: bool = False) -> str:
+    """
+    Returns the plain-text error of an edit that was not made, saying that the file was not changed and,
+    once the hash has been checked, that the same expected_sha256 can be used for the next try.
+    """
+    unchanged = "Nothing was changed, and expected_sha256 is still valid." if sha256_valid else "Nothing was changed."
+    return _text_error(error, f"{unchanged} {message}")
+
+def _not_changed(error: str, message: str, **fields) -> str:
+    """
+    Returns the JSON error of a change that was not made, starting the message with 'Nothing was changed.'.
+    """
+    return json.dumps({"success": False, "error": error, "message": f"Nothing was changed. {message}", **fields}, indent=2, ensure_ascii=False)
+
+def _maybe_changed(error: str, e: Exception, check: str) -> str:
+    """
+    Returns the JSON error of an unexpected failure during a change, which may have been partly made, with the call that checks it.
+    """
+    return json.dumps({"success": False, "error": error, "message": f"{e}. The change may have been partly made: check it with {check} before trying again.",
+                       "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
 
 class _EditError(Exception):
     """
@@ -161,22 +190,18 @@ def _write_logic(path: Path, content: str, expected_sha256: str, tool: str) -> s
     while keeping the original line endings and BOM. Returns a JSON response with the new metadata.
     """
     if not path.exists():
-        return json.dumps({"success": False, "error": "file_not_found", "message": f"File not found: {_rel(path)}. To create a new file, use create_file."}, indent=2, ensure_ascii=False)
+        return _not_changed("file_not_found", f"File not found: {_rel(path)}.")
 
     # 1. Read metadata to validate
     try:
         info = _get_file_info(path)
     except Exception as e:
-        return json.dumps({"success": False, "error": "read_error", "message": str(e)}, indent=2, ensure_ascii=False)
+        return _not_changed("read_error", str(e))
 
     # 2. Hash validation
     if info.sha256 != expected_sha256:
-        return json.dumps({
-            "success": False,
-            "error": "hash_mismatch",
-            "message": "File changed since it was read.",
-            "current_sha256": info.sha256
-        }, indent=2, ensure_ascii=False)
+        return _not_changed("hash_mismatch", "The file has changed since it was read. Read it again with read_file_with_metadata before writing it.",
+                            current_sha256=info.sha256)
 
     # 3. Normalize all line endings to LF, then restore the original line endings
     normalized_content = _normalize_newlines(content)
@@ -199,13 +224,13 @@ def _write_logic(path: Path, content: str, expected_sha256: str, tool: str) -> s
             os.fsync(f.fileno())
 
         os.replace(temp_path, path)
-
-        new_info = _get_file_info(path)
-        return json.dumps({"success": True, **asdict(new_info)}, indent=2, ensure_ascii=False)
     except Exception as e:
         if temp_path.exists():
             os.remove(temp_path)
-        return json.dumps({"success": False, "error": "write_error", "message": str(e)}, indent=2, ensure_ascii=False)
+        return _not_changed("write_error", f"The file could not be written: {e}")
+
+    new_info = _get_file_info(path)
+    return json.dumps({"success": True, **asdict(new_info)}, indent=2, ensure_ascii=False)
 
 def _detect_image_format(data: bytes) -> str | None:
     """
@@ -425,35 +450,36 @@ def _edit_logic(path: Path, old_text: str, new_text: str, expected_sha256: str, 
     Returns a plain-text response with the new SHA-256 and the changed lines, or an error.
     """
     if not path.is_file():
-        return _text_error("file_not_found", f"File not found: {_rel(path)}")
+        return _edit_error("file_not_found", f"File not found: {_rel(path)}. To create a new file, use write_file.")
 
     try:
         info = _get_file_info(path)
     except Exception as e:
-        return _text_error("read_error", str(e))
+        return _edit_error("read_error", str(e))
 
     if info.sha256 != expected_sha256:
-        return _text_error("hash_mismatch", f"File changed since it was read. Current SHA-256: {info.sha256}. Read the file again with 'read_file_with_metadata' before editing it.")
+        return _edit_error("hash_mismatch", f"The file has changed since it was read. Current SHA-256: {info.sha256}. Read the file again with 'read_file_with_metadata' before editing it.")
 
     old = _normalize_newlines(old_text)
     new = _normalize_newlines(new_text)
     if not old:
-        return _text_error("empty_old_text", "old_text must not be empty. Use write_file to replace the whole file.")
+        return _edit_error("empty_old_text", "old_text must not be empty. Use write_file to replace the whole file.", sha256_valid=True)
     if old == new:
-        return _text_error("no_change", "old_text and new_text are identical.")
+        return _edit_error("no_change", "old_text and new_text are identical.", sha256_valid=True)
 
     content = _read_text(path, info.has_bom)
     placeholder = _find_placeholder(new, content)
     if placeholder:
-        return _text_error("placeholder_in_new_text", f"new_text contains the placeholder comment '{placeholder}'. Text is written literally, so the placeholder would replace real code. Write out the full code in new_text, or make old_text cover only the lines you change.")
+        return _edit_error("placeholder_in_new_text", f"new_text contains the placeholder comment '{placeholder}'. Text is written literally, so the placeholder would replace real code. Write out the full code in new_text, or make old_text cover only the lines you change.", sha256_valid=True)
 
     try:
         new_content, first_line, last_line, replacements, note = _apply_edit(content, old, new, replace_all)
     except _EditError as e:
-        return _text_error(e.error, e.message)
+        return _edit_error(e.error, e.message, sha256_valid=True)
 
     result = json.loads(_write_logic(path, new_content, expected_sha256, "edit_file"))
     if not result.get("success"):
+        # The message of _write_logic already says that nothing was changed
         return _text_error(result.get("error", "write_error"), result.get("message", ""))
 
     report = _write_report(path, content, new_content)
@@ -577,7 +603,7 @@ def _latest_change(entries: list[dict], path: Path) -> dict | None:
     Returns the latest change that is not restored yet to path or to a folder containing it, also as the source of a move.
     """
     for entry in reversed(entries):
-        paths = [ALLOWED_DIR / entry["path"]] + ([ALLOWED_DIR / entry["source"]] if entry["source"] else [])
+        paths = [PROJECT_DIR / entry["path"]] + ([PROJECT_DIR / entry["source"]] if entry["source"] else [])
         if not entry["restored"] and any(path.is_relative_to(p) for p in paths):
             return entry
     return None
@@ -598,51 +624,83 @@ def _text_or_none(path: Path) -> str | None:
     except Exception:
         return None
 
+def _create_logic(path: Path, content: str) -> str:
+    """
+    Creates a new file and any missing folders, with the line endings of the neighbouring files,
+    after recording the creation for restore_file. Returns a JSON response with the metadata and outline.
+    """
+    target_newline, note = _detect_neighbor_line_ending(path.parent)
+
+    normalized_content = _normalize_newlines(content)
+    if target_newline == "\r\n":
+        normalized_content = normalized_content.replace("\n", "\r\n")
+
+    try:
+        _record_change("write_file", path)
+    except Exception as e:
+        return _backup_error(e)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(normalized_content)
+
+    message = f"File created successfully.{note}"
+    try:
+        new_info = _get_file_info(path)
+        result = {"success": True, **asdict(new_info), "message": message}
+        return json.dumps(_add_report(result, _write_report(path, None, content)), indent=2, ensure_ascii=False)
+    except Exception:
+        # Fallback if metadata retrieval fails
+        return json.dumps({"success": True, "message": message}, indent=2, ensure_ascii=False)
+
 # --- Public MCP Tools ---
 
 @mcp.tool()
-def write_file(path: str, content: str, expected_sha256: str) -> str:
+def write_file(path: str, content: str, expected_sha256: str = "") -> str:
     """
-    Replaces the whole content of an existing file. To change only part of a file, use edit_file.
+    Writes a whole file: creates a new file and any missing folders, or replaces an existing file.
+    To change only part of a file, use edit_file.
     content is written literally: never use placeholders such as '// ... existing code ...'.
 
     Args:
-        path: The file to replace.
-        content: The complete new content.
-        expected_sha256: The SHA-256 from the last read or edit of the file.
+        path: The file.
+        content: The complete content.
+        expected_sha256: To replace a file, the SHA-256 from its last read or edit. Empty for a new file.
 
     Returns:
         JSON with the new SHA-256 and, for code and Markdown files, the new outline and removed sections.
     """
     try:
         p = resolve_path(path)
-        if not is_path_allowed(p):
-            return _access_denied(p)
+        if not _is_writable(p):
+            return _not_changed("access_denied", access_denied_message(p))
+        if p.is_dir():
+            return _not_changed("is_a_directory", f"{_rel(p)} is a folder, not a file.")
 
-        if p.is_file():
-            try:
-                info = _get_file_info(p)
-                original = _read_text(p, info.has_bom)
-            except Exception as e:
-                return json.dumps({"success": False, "error": "read_error", "message": str(e)}, indent=2, ensure_ascii=False)
+        if not p.exists():
+            if expected_sha256:
+                return _not_changed("file_not_found", f"File not found: {_rel(p)}. Check the path, or leave expected_sha256 empty to create a new file.")
+            return _create_logic(p, content)
+        if not expected_sha256:
+            return _not_changed("file_exists", f"{_rel(p)} already exists. To replace it, give the SHA-256 from read_file_with_metadata as expected_sha256, or change only part of it with edit_file.")
 
-            placeholder = _find_placeholder(_normalize_newlines(content), original)
-            if placeholder:
-                return json.dumps({
-                    "success": False,
-                    "error": "placeholder_in_content",
-                    "message": f"content contains the placeholder comment '{placeholder}'. The content is written literally, so the placeholder would replace real code. Write out the complete file, or use edit_file to change only part of it."
-                }, indent=2, ensure_ascii=False)
+        try:
+            info = _get_file_info(p)
+            original = _read_text(p, info.has_bom)
+        except Exception as e:
+            return _not_changed("read_error", str(e))
 
-            result = json.loads(_write_logic(p, content, expected_sha256, "write_file"))
-            old_count, new_count = len(_split_lines(original)), len(_split_lines(_normalize_newlines(content)))
-            if result.get("success") and old_count >= 20 and new_count < old_count * SHRINK_WARNING_RATIO:
-                result["warning"] = f"The file shrank from {old_count} to {new_count} lines. If you meant to change only part of it, restore the missing lines: write_file replaces the whole file, while edit_file changes only part of it."
-            return json.dumps(_add_report(result, _write_report(p, original, content)), indent=2, ensure_ascii=False)
+        placeholder = _find_placeholder(_normalize_newlines(content), original)
+        if placeholder:
+            return _not_changed("placeholder_in_content", f"content contains the placeholder comment '{placeholder}'. The content is written literally, so the placeholder would replace real code. Write out the complete file, or use edit_file to change only part of it.")
 
-        return _write_logic(p, content, expected_sha256, "write_file")
+        result = json.loads(_write_logic(p, content, expected_sha256, "write_file"))
+        old_count, new_count = len(_split_lines(original)), len(_split_lines(_normalize_newlines(content)))
+        if result.get("success") and old_count >= 20 and new_count < old_count * SHRINK_WARNING_RATIO:
+            result["warning"] = f"The file shrank from {old_count} to {new_count} lines. If you meant to change only part of it, restore the missing lines: write_file replaces the whole file, while edit_file changes only part of it."
+        return json.dumps(_add_report(result, _write_report(p, original, content)), indent=2, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"success": False, "error": "write_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
+        return _maybe_changed("write_error", e, f"read_file_with_metadata(path='{path}')")
 
 @mcp.tool()
 def edit_file(path: str, old_text: str, new_text: str, expected_sha256: str, replace_all: bool = False) -> str:
@@ -665,55 +723,12 @@ def edit_file(path: str, old_text: str, new_text: str, expected_sha256: str, rep
     """
     try:
         p = resolve_path(path)
-        if not is_path_allowed(p):
-            return _text_error("access_denied", access_denied_message(p))
+        if not _is_writable(p):
+            return _edit_error("access_denied", access_denied_message(p))
 
         return _edit_logic(p, old_text, new_text, expected_sha256, replace_all)
     except Exception as e:
-        return _text_error("edit_error", f"{e}\n{traceback.format_exc()}")
-
-@mcp.tool()
-def create_file(path: str, content: str) -> str:
-    """
-    Creates a new file, and any missing folders. Fails if the file exists.
-
-    Args:
-        path: The new file.
-        content: Its content.
-    """
-    try:
-        p = resolve_path(path)
-        if not is_path_allowed(p):
-            return _access_denied(p)
-
-        if p.exists():
-            return json.dumps({"success": False, "error": "file_exists", "message": "File already exists."}, indent=2, ensure_ascii=False)
-
-        target_newline, note = _detect_neighbor_line_ending(p.parent)
-
-        normalized_content = _normalize_newlines(content)
-        if target_newline == "\r\n":
-            normalized_content = normalized_content.replace("\n", "\r\n")
-
-        try:
-            _record_change("create_file", p)
-        except Exception as e:
-            return _backup_error(e)
-        p.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(p, "w", encoding="utf-8", newline="") as f:
-            f.write(normalized_content)
-
-        message = f"File created successfully.{note}"
-        try:
-            new_info = _get_file_info(p)
-            result = {"success": True, **asdict(new_info), "message": message}
-            return json.dumps(_add_report(result, _write_report(p, None, content)), indent=2, ensure_ascii=False)
-        except Exception:
-            # Fallback if metadata retrieval fails
-            return json.dumps({"success": True, "message": message}, indent=2, ensure_ascii=False)
-    except Exception as e:
-        return json.dumps({"success": False, "error": "create_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
+        return _text_error("edit_error", f"The edit may have been partly made: read the file again with read_file_with_metadata(path='{path}') before editing it. {e}\n{traceback.format_exc()}")
 
 @mcp.tool()
 def read_file_with_metadata(path: str, start_line: int | None = None, end_line: int | None = None, line_numbers: bool = False, section: str = "") -> str:
@@ -732,10 +747,10 @@ def read_file_with_metadata(path: str, start_line: int | None = None, end_line: 
     """
     try:
         p = resolve_path(path)
-        if not is_path_allowed(p):
+        if not is_path_readable(p):
             return _text_error("access_denied", access_denied_message(p))
         if p.is_dir():
-            return _text_error("is_a_directory", f"{_rel(p)} is a directory. Use 'list_directory' to see its contents.")
+            return _text_error("is_a_directory", f"{_rel(p)} is a directory. Use get_outline(path='{_rel(p)}') to see its files.")
         if not p.exists():
             return _text_error("file_not_found", f"File not found: {_rel(p)}")
 
@@ -815,7 +830,7 @@ def read_image(path: str) -> list[str | Image] | str:
     """
     try:
         p = resolve_path(path)
-        if not is_path_allowed(p):
+        if not is_path_readable(p):
             return _access_denied(p)
 
         if not p.is_file():
@@ -851,56 +866,6 @@ def read_image(path: str) -> list[str | Image] | str:
         return json.dumps({"success": False, "error": "read_image_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
-def list_directory(path: str) -> str:
-    """
-    Lists the files and folders in a folder, with their sizes and modification times.
-
-    Args:
-        path: The folder.
-    """
-    try:
-        p = resolve_path(path)
-        if not is_path_allowed(p):
-            return _access_denied(p)
-        if not p.is_dir():
-            return json.dumps({"success": False, "error": "not_a_directory", "message": f"{_rel(p)} is not a directory."}, indent=2, ensure_ascii=False)
-
-        entries = []
-        for entry in p.iterdir():
-            if not is_path_allowed(entry):
-                continue
-            try:
-                info = entry.stat()
-                entries.append({
-                    "name": entry.name,
-                    "type": "DIR" if entry.is_dir() else "FILE",
-                    "size_bytes": info.st_size,
-                    "modified_at": datetime.datetime.fromtimestamp(info.st_mtime, tz=datetime.timezone.utc).isoformat()
-                })
-            except Exception as e:
-                entries.append({
-                    "name": entry.name,
-                    "type": "UNKNOWN",
-                    "error": str(e)
-                })
-
-        # Folders first, then files, by name, so that a limited listing is predictable.
-        # Each listed entry takes about 150 characters of JSON.
-        entries.sort(key=lambda e: (e["type"] != "DIR", e["name"].lower()))
-        limit = max(10, min(MAX_LIST_ENTRIES, (MAX_OUTPUT_CHARS - 1000) // 150))
-        response = {"success": True, "total_entries": len(entries), "entries": entries[:limit]}
-        if len(entries) > limit:
-            rel = display_path(p, ALLOWED_DIR)
-            prefix = "" if rel == "." else f"{rel}/"
-            suffixes = [Path(e["name"]).suffix for e in entries if e["type"] == "FILE" and Path(e["name"]).suffix]
-            example = max(set(suffixes), key=suffixes.count) if suffixes else ".py"
-            response["output_limited"] = (f"Output limited: the directory has {len(entries)} entries, but only the first {limit} (folders first, then files, by name) are listed."
-                                          f" Find specific files with search_files_by_pattern, e.g. pattern='{prefix}*{example}' or pattern='{prefix}name*'.")
-        return json.dumps(response, indent=2, ensure_ascii=False)
-    except Exception as e:
-        return json.dumps({"success": False, "error": "list_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
-
-@mcp.tool()
 def move_file(source: str, destination: str) -> str:
     """
     Moves or renames a file or folder. Missing destination folders are created.
@@ -914,19 +879,21 @@ def move_file(source: str, destination: str) -> str:
         dst = resolve_path(destination)
 
         if not is_path_allowed(src):
-            return _access_denied(src, "Source path")
-        if not is_path_allowed(dst):
-            return _access_denied(dst, "Destination path")
+            return _not_changed("access_denied", access_denied_message(src, "Source path"))
+        if not _is_writable(dst):
+            return _not_changed("access_denied", access_denied_message(dst, "Destination path"))
         if contains_forbidden(src):
-            return json.dumps({"success": False, "error": "access_denied", "message": f"Source path contains forbidden or protected files or folders: {_rel(src)}"}, indent=2, ensure_ascii=False)
+            return _not_changed("access_denied", f"Source path contains forbidden or protected files or folders: {_rel(src)}")
+        if contains_read_only(src):
+            return _not_changed("access_denied", f"Source path is or contains a read-only file, which the tools can read but not change: {_rel(src)}")
 
         if not src.exists():
-            return json.dumps({"success": False, "error": "source_not_found", "message": f"Source not found: {_rel(src)}"}, indent=2, ensure_ascii=False)
+            return _not_changed("source_not_found", f"Source not found: {_rel(src)}")
         if dst.exists() and os.path.samefile(src, dst):
             # Only the letter case changes, e.g. 'app.py' to 'App.py' on Windows, where both name the same file
             new_name = Path(destination).name
             if new_name == src.name:
-                return json.dumps({"success": False, "error": "same_path", "message": f"Source and destination are the same: {_rel(src)}"}, indent=2, ensure_ascii=False)
+                return _not_changed("same_path", f"Source and destination are the same: {_rel(src)}")
             try:
                 _record_change("move_file", src.with_name(new_name), source=src)
             except Exception as e:
@@ -934,9 +901,9 @@ def move_file(source: str, destination: str) -> str:
             os.rename(src, src.with_name(new_name))
             return json.dumps({"success": True, "message": f"Renamed {_rel(src)} to {_rel(src.with_name(new_name))}"}, indent=2, ensure_ascii=False)
         if dst.exists():
-            return json.dumps({"success": False, "error": "destination_exists", "message": f"Destination already exists: {_rel(dst)}"}, indent=2, ensure_ascii=False)
+            return _not_changed("destination_exists", f"Destination already exists: {_rel(dst)}")
         if src.is_dir() and dst.is_relative_to(src):
-            return json.dumps({"success": False, "error": "invalid_destination", "message": f"A folder cannot be moved into itself: {_rel(dst)} is inside {_rel(src)}."}, indent=2, ensure_ascii=False)
+            return _not_changed("invalid_destination", f"A folder cannot be moved into itself: {_rel(dst)} is inside {_rel(src)}.")
 
         try:
             _record_change("move_file", dst, source=src)
@@ -946,7 +913,7 @@ def move_file(source: str, destination: str) -> str:
         shutil.move(str(src), str(dst))
         return json.dumps({"success": True, "message": f"Moved {_rel(src)} to {_rel(dst)}"}, indent=2, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"success": False, "error": "move_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
+        return _maybe_changed("move_error", e, f"get_outline(path='{source}') and get_outline(path='{destination}')")
 
 @mcp.tool()
 def delete_file(path: str) -> str:
@@ -959,11 +926,13 @@ def delete_file(path: str) -> str:
     try:
         p = resolve_path(path)
         if not is_path_allowed(p):
-            return _access_denied(p)
+            return _not_changed("access_denied", access_denied_message(p))
         if contains_forbidden(p):
-            return json.dumps({"success": False, "error": "access_denied", "message": f"Path contains forbidden or protected files or folders: {_rel(p)}"}, indent=2, ensure_ascii=False)
+            return _not_changed("access_denied", f"Path contains forbidden or protected files or folders: {_rel(p)}")
+        if contains_read_only(p):
+            return _not_changed("access_denied", f"Path is or contains a read-only file, which the tools can read but not change: {_rel(p)}")
         if not p.exists():
-            return json.dumps({"success": False, "error": "not_found", "message": f"Path not found: {_rel(p)}"}, indent=2, ensure_ascii=False)
+            return _not_changed("not_found", f"Path not found: {_rel(p)}")
 
         # Moved into the backup folder instead of being removed, so that restore_file can bring it back
         try:
@@ -972,40 +941,42 @@ def delete_file(path: str) -> str:
             return _backup_error(e)
         return json.dumps({"success": True, "message": f"Deleted: {_rel(p)}. Undo with restore_file(path='{_rel(p)}') if needed."}, indent=2, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"success": False, "error": "delete_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
+        return _maybe_changed("delete_error", e, f"get_outline(path='{path}')")
 
 @mcp.tool()
 def restore_file(path: str) -> str:
     """
-    Undoes the last change edit_file, write_file, create_file, move_file or delete_file made to a
-    path, e.g. a broken edit. Call it again to undo earlier changes.
+    Undoes the last change edit_file, write_file, move_file or delete_file made to a path,
+    e.g. a broken edit. Call it again to undo earlier changes.
 
     Args:
         path: The file or folder, before or after a move.
     """
     try:
         p = resolve_path(path)
-        if not is_path_allowed(p):
-            return _access_denied(p)
+        if not _is_writable(p):
+            return _not_changed("access_denied", access_denied_message(p))
 
         entries = _load_journal()
         entry = _latest_change(entries, p)
         if not entry:
             recent = list(dict.fromkeys(e["path"] for e in reversed(entries) if not e["restored"]))[:10]
             hint = f" Paths with changes that can be undone: {', '.join(recent)}." if recent else " No changes are recorded."
-            return json.dumps({"success": False, "error": "no_backup", "message": f"No change to {_rel(p)} by the file tools is recorded.{hint}"}, indent=2, ensure_ascii=False)
+            return _not_changed("no_backup", f"No change to {_rel(p)} by the file tools is recorded.{hint}")
 
-        target = ALLOWED_DIR / entry["path"]
-        source = ALLOWED_DIR / entry["source"] if entry["source"] else None
+        target = PROJECT_DIR / entry["path"]
+        source = PROJECT_DIR / entry["source"] if entry["source"] else None
         for checked in [target, source]:
-            if checked and not is_path_allowed(checked):
-                return _access_denied(checked)
+            if checked and not _is_writable(checked):
+                return _not_changed("access_denied", access_denied_message(checked))
+            if checked and contains_read_only(checked):
+                return _not_changed("access_denied", f"{_rel(checked)} is or contains a read-only file, which the tools can read but not change.")
         entry_dir = BACKUP_DIR / entry["id"]
         when = f"{entry['tool']} at {entry['time'].replace('T', ' ')}"
 
         if source:
             if not target.exists():
-                return json.dumps({"success": False, "error": "not_found", "message": f"{entry['path']}, which {when} moved from {entry['source']}, no longer exists, so it cannot be moved back."}, indent=2, ensure_ascii=False)
+                return _not_changed("not_found", f"{entry['path']}, which {when} moved from {entry['source']}, no longer exists, so it cannot be moved back.")
             _set_aside(source, entry_dir)
             source.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(target), str(source))
@@ -1035,17 +1006,17 @@ def restore_file(path: str) -> str:
             result = _add_report(result, _write_report(restored, None if source else before_text, after_text))
         return json.dumps(result, indent=2, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"success": False, "error": "restore_error", "message": str(e), "traceback": traceback.format_exc()}, indent=2, ensure_ascii=False)
+        return _maybe_changed("restore_error", e, f"read_file_with_metadata(path='{path}') or get_outline(path='{path}')")
 
 @mcp.tool()
 def get_tools_config() -> str:
     """
-    Shows the tools config and what each toolset sees: allowed and forbidden paths, ignored
-    folders, the git repository, commands and context files. Use it when a file is not found or a path is denied.
+    Shows the tools config and what each toolset sees: the project folder, forbidden, allowed and
+    read-only paths, ignored folders, the git repository and commands. Use it when a file is not found or a path is denied.
     """
     try:
         gitignore_patterns = load_gitignore_patterns()
-        repo_root = get_repo_root(ALLOWED_DIR) if ALLOWED_DIR.exists() else None
+        repo_root = get_repo_root(PROJECT_DIR) if PROJECT_DIR.exists() else None
 
         commands = {"registry": REGISTRY_PATH.as_posix() if REGISTRY_PATH else None,
                     "registry_found": bool(REGISTRY_PATH and REGISTRY_PATH.is_file()),
@@ -1066,9 +1037,11 @@ def get_tools_config() -> str:
                 "disabled_tools": sorted(DISABLED_TOOLS)
             },
             "shared": {
-                "allowed_dir": ALLOWED_DIR.as_posix(),
-                "allowed_dir_exists": ALLOWED_DIR.exists(),
-                "forbidden_paths": [display_path(p, ALLOWED_DIR) for p in FORBIDDEN_PATHS],
+                "project_dir": PROJECT_DIR.as_posix(),
+                "project_dir_exists": PROJECT_DIR.exists(),
+                "forbidden_paths": [display_path(p, PROJECT_DIR) for p in FORBIDDEN_PATHS],
+                "allowed_paths": [display_path(p, PROJECT_DIR) for p in ALLOWED_PATHS],
+                "read_only_files": [display_path(p, PROJECT_DIR) for p in READ_ONLY_FILES],
                 "protected_file_names": sorted(PROTECTED_FILE_NAMES),
                 "protected_files": [p.as_posix() for p in PROTECTED_PATHS],
                 "max_output_chars": MAX_OUTPUT_CHARS
@@ -1076,7 +1049,6 @@ def get_tools_config() -> str:
             "filesystem": {
                 "max_read_lines": MAX_READ_LINES,
                 "max_line_chars": MAX_LINE_CHARS,
-                "max_list_entries": MAX_LIST_ENTRIES,
                 "backup_folder": BACKUP_DIR.as_posix(),
                 "max_backups": MAX_BACKUPS
             },
@@ -1094,24 +1066,21 @@ def get_tools_config() -> str:
                 "repository_root": repo_root.as_posix() if repo_root else None
             },
             "commands": commands,
-            "context": {
-                "context_folder": CONTEXT_FOLDER.as_posix() if CONTEXT_FOLDER else None,
-                "context_folder_exists": bool(CONTEXT_FOLDER and CONTEXT_FOLDER.is_dir()),
-                "read_only_files": [{"path": p.as_posix(), "found": p.is_file()} for p in READ_ONLY_FILES]
-            },
             "web_search": {
                 "ollama_api_key_set": OLLAMA_API_KEY is not None,
                 "user_config_file": USER_CONFIG_PATH.as_posix()
             },
             "notes": [
                 "Only the tools of the enabled toolsets are available, except the disabled_tools. The user chooses them in the config_file. Toolsets in not_served are enabled but not available, for the reason given.",
-                "Only paths within allowed_dir can be accessed. Relative paths given to the tools are resolved against allowed_dir.",
+                "Only paths within project_dir can be accessed. Relative paths given to the tools are resolved against project_dir.",
                 "Forbidden paths and everything inside forbidden folders are denied and hidden, and so are protected files: files named in protected_file_names and the protected_files (the config_file, the user_config_file and the command registry).",
+                "allowed_paths inside forbidden folders can be used again, unless a forbidden path inside them is more specific. The git tools still leave out the whole forbidden folders.",
+                "read_only_files can be read and outlined wherever they are, also in a forbidden folder or outside project_dir, but never changed, moved or deleted. get_outline of the whole project lists the ones outside project_dir last, with their full paths.",
                 "Commands are added to the registry only by the user.",
                 "restore_file undoes the last max_backups changes of the file tools. Their backups, including deleted files, are kept in backup_folder, which the tools cannot access directly.",
-                "The outline and search tools also skip folders named in ignored_dirs at any depth, files matching the .gitignore patterns and, for search, binary files.",
+                "The outline and search tools also skip folders named in ignored_dirs at any depth, files matching the .gitignore patterns and, for search, binary files. They do not skip allowed_paths and read_only_files for these reasons.",
                 "get_outline lists every file that is not ignored, with the sections of the outline_file_types.",
-                "Git's own .gitignore rules decide which untracked files the git tools list. If repository_root is null, allowed_dir is not in a git repository.",
+                "Git's own .gitignore rules decide which untracked files the git tools list. If repository_root is null, project_dir is not in a git repository.",
                 "The web search tools are only available if ollama_api_key_set is true: the user sets the key in the user_config_file. The key itself is never shown.",
                 "Responses longer than max_output_chars are cut short with an 'Output limited:' message that explains how to see the rest."
             ]

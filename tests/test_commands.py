@@ -48,12 +48,13 @@ def test_unsafe_arguments_are_rejected(commands, argument, message):
 
 def test_missing_argument_and_unknown_command(commands):
     assert run(commands, "argv")["error"] == "missing_argument"
-    assert run(commands, "nope")["error"] == "command_not_found"
+    result = run(commands, "nope")
+    assert result["error"] == "command_not_found" and result["message"].startswith("The command was not run.")
     assert run(commands, "missing")["error"] == "program_not_found"
 
 def test_exit_code_decides_success(commands):
     result = run(commands, "fail")
-    assert result["success"] is False and result["returncode"] == 3
+    assert result["success"] is False and result["returncode"] == 3 and "failed with exit code 3" in result["message"]
 
 def test_timeout_stops_the_command_and_keeps_partial_output(commands):
     result = run(commands, "slow")
@@ -70,7 +71,7 @@ def test_long_output_keeps_start_and_end(commands):
 def test_braces_that_are_not_placeholders_are_kept(commands):
     assert run(commands, "braces")["stdout"].strip() == "{1: 2} {}"
 
-def test_commands_run_in_allowed_dir(commands, project):
+def test_commands_run_in_project_dir(commands, project):
     assert run(commands, "where")["stdout"].strip() == str(project.root.resolve())
 
 def test_list_available_commands(commands):
@@ -141,7 +142,7 @@ def test_suggestion_keeps_quotes_and_backslashes_exact(suggesting):
 ])
 def test_invalid_suggestions_are_rejected_and_not_saved(suggesting, args, error, message):
     result = suggest(suggesting.load("commands"), *args)
-    assert result["error"] == error and message in result["message"]
+    assert result["error"] == error and message in result["message"] and result["message"].startswith("The suggestion was not saved.")
     assert not (suggesting.root / "_commands/suggested.json").exists()
 
 def test_risky_suggestions_are_saved_with_warnings(suggesting):

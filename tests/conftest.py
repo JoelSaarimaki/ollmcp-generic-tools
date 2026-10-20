@@ -5,7 +5,7 @@ Shared fixtures for the MCP server tests.
 Every test gets its own temporary project and tools config file. Toolsets are loaded fresh for
 each test, with the package's modules removed from sys.modules first, so that every toolset reads
 the test's config, as a real server start would. The working directory is a different folder than the project,
-as the tools must resolve paths against allowed_dir, not the working directory.
+as the tools must resolve paths against project_dir, not the working directory.
 """
 import importlib
 import importlib.util
@@ -50,8 +50,8 @@ class Project:
         return path
 
     def configure(self, **settings) -> Path:
-        """Writes the tools config file with allowed_dir '.' and the given settings."""
-        self.config_path.write_text(json.dumps({"allowed_dir": ".", **settings}), encoding="utf-8")
+        """Writes the tools config file with project_dir '.' and the given settings."""
+        self.config_path.write_text(json.dumps({"project_dir": ".", **settings}), encoding="utf-8")
         return self.config_path
 
     def user_config(self, **settings) -> Path:

@@ -5,16 +5,19 @@ from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 from .common import (
-    ALLOWED_DIR,
-    IGNORED_DIRS,
+    HIDDEN,
+    PROJECT_DIR,
     MAX_OUTPUT_CHARS,
+    READ_ONLY_FILES,
+    THROUGH,
     access_denied_message,
     code_block,
-    is_ignored,
-    is_path_allowed,
+    display_path,
+    is_path_readable,
     load_gitignore_patterns,
     resolve_path,
     text_response,
+    visibility,
     walk
 )
 from .parsing import (
@@ -57,6 +60,7 @@ class _FileEntry:
     lines: int | None = None  # None for binary, unreadable or very large files
     outline: Outline | None = None
     note: str = ""  # Why the file has no line count or outline
+    read_only: bool = False
 
 # --- Internal Helpers ---
 
@@ -74,7 +78,7 @@ def _read_entry(path: Path, known: dict | None = None) -> _FileEntry:
     """
     Reads a file's line count and outline. Binary, unreadable and very large files only get their size.
     """
-    entry = _FileEntry(path, path.relative_to(ALLOWED_DIR).as_posix(), 0)
+    entry = _FileEntry(path, display_path(path, PROJECT_DIR), 0, read_only=path in READ_ONLY_FILES)
     try:
         entry.size = path.stat().st_size
         if entry.size > MAX_PARSE_CHARS:
@@ -97,7 +101,7 @@ def _file_line(entry: _FileEntry, detail: int, depth: int = 0) -> str:
     """
     if entry.lines is None:
         return f"{'  ' * depth}{entry.rel} ({entry.note}, {_format_size(entry.size)})"
-    info = [f"{entry.lines} {'line' if entry.lines == 1 else 'lines'}"]
+    info = [f"{entry.lines} {'line' if entry.lines == 1 else 'lines'}"] + (["read-only"] if entry.read_only else [])
     if entry.outline and entry.outline.error:
         info.append(f"not outlined: {entry.outline.error}")
     elif entry.outline and entry.outline.syntax_error:
@@ -125,7 +129,7 @@ def _render_entries(entries: list[_FileEntry], detail: int, scope_dir: Path) -> 
         for entry in entries:
             parts = entry.path.relative_to(scope_dir).parts
             if len(parts) > 1:
-                folder = (scope_dir / parts[0]).relative_to(ALLOWED_DIR).as_posix()
+                folder = (scope_dir / parts[0]).relative_to(PROJECT_DIR).as_posix()
                 counts[folder] = counts.get(folder, 0) + 1
             else:
                 direct.append(_file_line(entry, FILES))
@@ -157,7 +161,7 @@ def _folder_suggestions(scope_dir: Path, files: list[Path]) -> str:
             continue
         break
 
-    suggestions = [f"path='{folder.relative_to(ALLOWED_DIR).as_posix()}' ({count} {'file' if count == 1 else 'files'})"
+    suggestions = [f"path='{folder.relative_to(PROJECT_DIR).as_posix()}' ({count} {'file' if count == 1 else 'files'})"
                    for folder, count in sorted(counts.items(), key=lambda item: -item[1])[:MAX_FOLDER_SUGGESTIONS]]
     instructions = []
     if suggestions:
@@ -167,17 +171,19 @@ def _folder_suggestions(scope_dir: Path, files: list[Path]) -> str:
 
 def _resolve_target(path: str, gitignore_patterns: list[str]) -> tuple[Path, str | None]:
     """
-    Resolves the folder or file to outline. Relative paths are resolved against ALLOWED_DIR.
+    Resolves the folder or file to outline. Relative paths are resolved against PROJECT_DIR.
+    A forbidden or ignored folder can be outlined if it contains allowed paths or read-only files, which are then shown.
     Returns the path and an error message, which is None if the path can be outlined.
     """
     if not path:
-        return ALLOWED_DIR, None
+        return PROJECT_DIR, None
     p = resolve_path(path)
-    if not is_path_allowed(p):
+    state = visibility(p, PROJECT_DIR, gitignore_patterns) if p.is_dir() and p.is_relative_to(PROJECT_DIR) and p != PROJECT_DIR else None
+    if not is_path_readable(p) and state != THROUGH:
         return p, f"Error: {access_denied_message(p)}"
     if not p.exists():
-        return p, f"Error: Path '{path}' does not exist within the allowed directory {ALLOWED_DIR.as_posix()}. Use get_outline() to see the files."
-    if p.is_dir() and p != ALLOWED_DIR and is_ignored(p, ALLOWED_DIR, IGNORED_DIRS, gitignore_patterns):
+        return p, f"Error: Path '{path}' does not exist within the project folder {PROJECT_DIR.as_posix()}. Use get_outline() to see the files."
+    if state == HIDDEN:
         return p, f"Error: Folder '{path}' is ignored: it is an ignored folder or matched by .gitignore. Use get_tools_config to see why."
     return p, None
 
@@ -185,28 +191,35 @@ def _outline_folder(scope_dir: Path, gitignore_patterns: list[str]) -> str:
     """
     Returns the outline of all files in the folder, with the most detail that fits in MAX_OUTPUT_CHARS.
     """
-    files = [path for path, is_dir in walk(ALLOWED_DIR, gitignore_patterns, scope_dir) if not is_dir]
-    rel = scope_dir.relative_to(ALLOWED_DIR).as_posix()
-    title = f"Outline of {'the allowed directory' if rel == '.' else rel} ({len(files)} {'file' if len(files) == 1 else 'files'})"
-    if not files:
+    files = [path for path, is_dir in walk(PROJECT_DIR, gitignore_patterns, scope_dir) if not is_dir]
+    # Read-only files outside the project are listed last in the outline of the whole project, so that the AI can find them
+    outside = [p for p in READ_ONLY_FILES if not p.is_relative_to(PROJECT_DIR)] if scope_dir == PROJECT_DIR else []
+    rel = scope_dir.relative_to(PROJECT_DIR).as_posix()
+    count = len(files) + len(outside)
+    title = f"Outline of {'the project folder' if rel == '.' else rel} ({count} {'file' if count == 1 else 'files'})"
+    if not count:
         return text_response([title, "No files found. Use get_tools_config to see which files are ignored or forbidden."])
 
     if len(files) > MAX_OUTLINED_FILES:
-        entries = [_read_entry(p) if p.parent == scope_dir else _FileEntry(p, p.relative_to(ALLOWED_DIR).as_posix(), 0) for p in files]
+        entries = [_read_entry(p) if p.parent == scope_dir else _FileEntry(p, display_path(p, PROJECT_DIR), 0, read_only=p in READ_ONLY_FILES) for p in files]
         levels = [FOLDERS]
     else:
         entries = [_read_entry(p) for p in files]
         levels = [SUMMARIES, NAMES, TOP_LEVEL, FILES, FOLDERS]
+    outside_entries = [_read_entry(p) for p in outside]
 
     budget = MAX_OUTPUT_CHARS - min(2500, MAX_OUTPUT_CHARS // 4)
     for detail in levels:
-        lines = _render_entries(entries, detail, scope_dir)
+        lines = _render_entries(entries, detail, scope_dir) if entries else []
+        lines += _render_entries(outside_entries, min(detail, FILES), scope_dir)
         if sum(len(line) + 1 for line in lines) <= budget:
             break
     else:
         lines = fit_lines(lines, budget)
 
     header = [title, READ_HINT]
+    if outside:
+        header.append("The read-only files outside the project folder are listed last, with their full paths.")
     if detail != SUMMARIES or lines[-1].startswith("... ("):
         reason = f"the folder has more than {MAX_OUTLINED_FILES} files" if len(files) > MAX_OUTLINED_FILES else f"the full outline is longer than {MAX_OUTPUT_CHARS} characters"
         header.append(f"Output limited: {LEVEL_NOTES.get(detail, 'the list is cut short')}, as {reason}. {_folder_suggestions(scope_dir, files)}")
@@ -220,7 +233,7 @@ def _outline_file(path: Path, gitignore_patterns: list[str]) -> str:
     known = None
     if path.suffix.lower() in PYTHON_SUFFIXES:
         modules = []
-        for p, is_dir in walk(ALLOWED_DIR, gitignore_patterns, ALLOWED_DIR):
+        for p, is_dir in walk(PROJECT_DIR, gitignore_patterns, PROJECT_DIR):
             if not is_dir and p.suffix.lower() in PYTHON_SUFFIXES and p.stat().st_size <= MAX_PARSE_CHARS:
                 try:
                     modules.append((p.stem, p.read_text(encoding="utf-8-sig")))
@@ -270,8 +283,8 @@ def get_outline(path: str = "") -> str:
     Args:
         path: A folder or file, e.g. 'src' or 'src/app.py'. Defaults to the whole project.
     """
-    if not ALLOWED_DIR.exists():
-        return f"Error: Allowed directory {ALLOWED_DIR.as_posix()} does not exist."
+    if not PROJECT_DIR.exists():
+        return f"Error: Allowed directory {PROJECT_DIR.as_posix()} does not exist."
 
     try:
         gitignore_patterns = load_gitignore_patterns()

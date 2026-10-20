@@ -1,6 +1,6 @@
 # --- test_git.py ---
 """
-Tests for the git toolset: diffs, history and status.
+Tests for the git toolset: diffs and history.
 """
 import json
 
@@ -38,6 +38,20 @@ def test_all_changes_lists_changed_and_untracked_files(repo):
     assert result["untracked_files"] == ["src/new.py"]
     assert result["output_limited"] is None
 
+def test_all_changes_default_to_head_and_show_the_branch(repo):
+    result = json.loads(repo.load("git").get_git_diff())
+    assert result["mode"] == "head" and result["changed_files"] == ["M\tsrc/app.py", "M\tsrc/ääkköset.py"]
+    assert result["branch"] == repo.git("branch", "--show-current").stdout.strip()
+
+def test_head_mode_in_a_repository_without_commits(project):
+    project.write("src/app.py", "x\n")
+    project.configure()
+    project.git("init", "-q")
+    project.git("add", "src/app.py")
+    project.write("src/app.py", "x\ny\n")
+    result = json.loads(project.load("git").get_git_diff())
+    assert result["success"] and result["changed_files"] == ["A\tsrc/app.py"] and "+y" in result["diff"]
+
 def test_all_changes_in_staged_mode(repo):
     repo.git("add", "src/app.py")
     result = json.loads(repo.load("git").get_git_diff("staged"))
@@ -54,15 +68,15 @@ def test_file_history_and_limit_below_one(repo):
     assert json.loads(git.get_git_history("src/app.py", 0))["stdout"].count("commit ") == 1
     assert "No commit history" in json.loads(git.get_git_history("src/new.py"))["message"]
 
-def test_status_keeps_non_ascii_names_readable(repo):
-    response = repo.load("git").get_git_status()
+def test_non_ascii_names_stay_readable(repo):
+    response = repo.load("git").get_git_diff()
     assert "ääkköset.py" in response and "\\u00e4" not in response
 
 def test_folder_outside_a_repository(project):
     project.write("src/app.py", "x\n")
-    assert json.loads(project.load("git").get_git_status())["error"] == "not_a_repository"
+    assert json.loads(project.load("git").get_git_diff())["error"] == "not_a_repository"
 
-def test_allowed_dir_as_a_repository_subfolder_limits_the_output(make_project):
+def test_project_dir_as_a_repository_subfolder_limits_the_output(make_project):
     repo = make_project("repo")
     repo.write("inside/app.py", "x\n")
     repo.write("outside/other.py", "y\n")
@@ -70,7 +84,7 @@ def test_allowed_dir_as_a_repository_subfolder_limits_the_output(make_project):
     repo.write("inside/app.py", "x\nx2\n")
     repo.write("outside/other.py", "y\ny2\n")
     repo.config_path = repo.root / "inside" / "tools-config.json"
-    repo.config_path.write_text('{"allowed_dir": "."}', encoding="utf-8")
+    repo.config_path.write_text('{"project_dir": "."}', encoding="utf-8")
     result = json.loads(repo.load("git").get_git_diff("head"))
     assert result["changed_files"] == ["M\tinside/app.py"]
 

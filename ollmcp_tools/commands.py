@@ -12,7 +12,7 @@ from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 from .common import (
-    ALLOWED_DIR,
+    PROJECT_DIR,
     COMMAND_SUGGESTIONS,
     REGISTRY_PATH,
     MAX_OUTPUT_CHARS
@@ -190,6 +190,18 @@ def _save_suggestion(name: str, entry: dict[str, Any]) -> bool:
     os.replace(temporary, COMMAND_SUGGESTIONS)  # Replaced in one step, so that a failed write cannot leave a broken file
     return replaced
 
+def _not_saved(error: str, message: str) -> dict[str, Any]:
+    """
+    Returns the error of a suggestion that was not saved, starting the message with 'The suggestion was not saved.'.
+    """
+    return {"success": False, "error": error, "message": f"The suggestion was not saved. {message}"}
+
+def _not_run(error: str, message: str) -> dict[str, Any]:
+    """
+    Returns the error of a command that was not run, starting the message with 'The command was not run.'.
+    """
+    return {"success": False, "error": error, "message": f"The command was not run. {message}"}
+
 def _suggest_command_logic(name: str, template: str, description: str, timeout: int | float | None = None) -> dict[str, Any]:
     """
     Validates a suggested command as the registry is validated, and saves it to COMMAND_SUGGESTIONS if that is set.
@@ -197,26 +209,26 @@ def _suggest_command_logic(name: str, template: str, description: str, timeout: 
     Returns the entry formatted for the registry, the warnings for the user and what the AI should tell the user.
     """
     if not COMMAND_NAME_PATTERN.fullmatch(name):
-        return {"success": False, "error": "invalid_name", "message": "The name must start with a letter and contain only letters, digits and '_', e.g. 'run_e2e_tests'."}
+        return _not_saved("invalid_name", "The name must start with a letter and contain only letters, digits and '_', e.g. 'run_e2e_tests'.")
     if name in COMMAND_REGISTRY:
-        return {"success": False, "error": "already_registered", "message": f"'{name}' is already a registered command. Run it with run_predefined_command, or suggest the new command with another name."}
+        return _not_saved("already_registered", f"'{name}' is already a registered command. Run it with run_predefined_command, or suggest the new command with another name.")
 
     entry: dict[str, Any] = {"template": template.strip(), "description": description.strip()}
     if timeout is not None:
         entry["timeout"] = timeout
     if not entry["description"]:
-        return {"success": False, "error": "invalid_command", "message": "The description must say when to use the command, and what its argument is if it takes one."}
+        return _not_saved("invalid_command", "The description must say when to use the command, and what its argument is if it takes one.")
     problem = _command_problem(name, entry)
     if problem:
-        return {"success": False, "error": "invalid_command", "message": problem[0].upper() + problem[1:]}
+        return _not_saved("invalid_command", problem[0].upper() + problem[1:])
     try:
         tokens = _split_template(entry["template"])
     except ValueError as e:
-        return {"success": False, "error": "invalid_template", "message": f"The template cannot be split into a program and its arguments: {e}. Check the quotes."}
+        return _not_saved("invalid_template", f"The template cannot be split into a program and its arguments: {e}. Check the quotes.")
     if not tokens:
-        return {"success": False, "error": "invalid_template", "message": "The template is empty. Give the program and its arguments, e.g. 'npm run e2e'."}
+        return _not_saved("invalid_template", "The template is empty. Give the program and its arguments, e.g. 'npm run e2e'.")
     if ARG_PLACEHOLDER in tokens[0]:
-        return {"success": False, "error": "invalid_template", "message": f"The program cannot be {ARG_PLACEHOLDER}: the template must name the program to run."}
+        return _not_saved("invalid_template", f"The program cannot be {ARG_PLACEHOLDER}: the template must name the program to run.")
 
     replaced = _save_suggestion(name, entry) if COMMAND_SUGGESTIONS else False
     formatted = json.dumps({name: entry}, indent=4, ensure_ascii=False).splitlines()[1:-1]
@@ -237,17 +249,13 @@ def _suggest_command_logic(name: str, template: str, description: str, timeout: 
 
 def _execute_command_logic(command_key: str, argument: str | None = None) -> dict[str, Any]:
     """
-    Looks up, formats and executes a command from the registry without a shell, in ALLOWED_DIR.
+    Looks up, formats and executes a command from the registry without a shell, in PROJECT_DIR.
     The argument is inserted as a single command-line argument, so it cannot add further commands.
     Returns the success status (exit code 0), exit code, stdout, stderr and the command used.
     """
     if command_key not in COMMAND_REGISTRY:
         available = ", ".join(COMMAND_REGISTRY) or "(none)"
-        return {
-            "success": False,
-            "error": "command_not_found",
-            "message": f"'{command_key}' is not a registered command. Available commands: {available}. Use list_available_commands to see what each one does, or suggest_command to suggest a missing one to the user."
-        }
+        return _not_run("command_not_found", f"'{command_key}' is not a registered command. Available commands: {available}. Use list_available_commands to see what each one does, or suggest_command to suggest a missing one to the user.")
 
     cmd_info = COMMAND_REGISTRY[command_key]
     template = cmd_info["template"]
@@ -255,22 +263,18 @@ def _execute_command_logic(command_key: str, argument: str | None = None) -> dic
 
     tokens = _split_template(template)
     if not tokens:
-        return {"success": False, "error": "invalid_template", "message": f"Command '{command_key}' has an empty template."}
+        return _not_run("invalid_template", f"Command '{command_key}' has an empty template.")
 
     executable = shutil.which(tokens[0])
     if not executable:
-        return {"success": False, "error": "program_not_found", "message": f"Program '{tokens[0]}' was not found on PATH. Tell the user that it is not installed or not on PATH."}
+        return _not_run("program_not_found", f"Program '{tokens[0]}' was not found on PATH. Tell the user that it is not installed or not on PATH.")
 
     if ARG_PLACEHOLDER in template:
         if not argument:
-            return {
-                "success": False,
-                "error": "missing_argument",
-                "message": f"Command '{command_key}' requires an argument. {cmd_info['description']}"
-            }
+            return _not_run("missing_argument", f"Command '{command_key}' requires an argument. {cmd_info['description']}")
         reason = _validate_argument(argument, tokens, executable)
         if reason:
-            return {"success": False, "error": "invalid_argument", "message": reason}
+            return _not_run("invalid_argument", reason)
         tokens = [t.replace(ARG_PLACEHOLDER, argument) for t in tokens]
 
     args = [executable] + tokens[1:]
@@ -279,7 +283,7 @@ def _execute_command_logic(command_key: str, argument: str | None = None) -> dic
     try:
         result = subprocess.run(
             args,
-            cwd=ALLOWED_DIR,  # Commands such as tests and linters work on the project, like the other toolsets
+            cwd=PROJECT_DIR,  # Commands such as tests and linters work on the project, like the other toolsets
             # Python programs (e.g. pytest, pip) write their output as UTF-8, as it is read, instead of the Windows code page
             env={**os.environ, "PYTHONIOENCODING": os.environ.get("PYTHONIOENCODING", "utf-8")},
             capture_output=True,
@@ -293,6 +297,8 @@ def _execute_command_logic(command_key: str, argument: str | None = None) -> dic
         return {
             "success": result.returncode == 0,
             "returncode": result.returncode,
+            "message": "" if result.returncode == 0 else (f"The command failed with exit code {result.returncode}: see stderr and stdout."
+                                                          " A command that changes files, such as a formatter or an install, may have changed some of them before it failed."),
             "output_limited": _limit_note(result.stdout, result.stderr),
             "stdout": _truncate_output(result.stdout),
             "stderr": _truncate_output(result.stderr),
@@ -303,7 +309,7 @@ def _execute_command_logic(command_key: str, argument: str | None = None) -> dic
         return {
             "success": False,
             "error": "timeout",
-            "message": f"Command did not finish within {timeout} seconds and was stopped.",
+            "message": f"The command did not finish within {timeout} seconds and was stopped. It may have changed files before it was stopped.",
             "output_limited": _limit_note(_decode_output(e.stdout), _decode_output(e.stderr)),
             "stdout": _truncate_output(_decode_output(e.stdout)),
             "stderr": _truncate_output(_decode_output(e.stderr)),

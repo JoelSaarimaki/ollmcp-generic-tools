@@ -114,6 +114,16 @@ def test_edit_with_wrong_indentation_shows_the_lines_to_copy(fs):
     assert "Lines 6-7 match when indentation is ignored" in response
     assert content_of(response) == "\tprint(msg)\n    return msg"
 
+def test_failed_edits_say_that_nothing_was_changed(fs, project):
+    original = file_bytes(project)
+    sha = sha_of(fs.read_file_with_metadata("app.py"))
+    response = fs.edit_file("app.py", "no such text", "x", sha)
+    assert response.startswith("Error (no_match): Nothing was changed, and expected_sha256 is still valid.")
+    stale = fs.edit_file("app.py", "import os", "import sys", "0" * 64)
+    assert stale.startswith("Error (hash_mismatch): Nothing was changed.") and "still valid" not in stale
+    assert file_bytes(project) == original
+    assert fs.edit_file("app.py", "import os", "import sys", sha).startswith("- Edited")  # the same hash still works
+
 def test_edit_reports_multiple_matches_with_line_numbers(fs):
     sha = sha_of(fs.read_file_with_metadata("app.py"))
     response = fs.edit_file("app.py", "return", "yield", sha)
@@ -166,37 +176,36 @@ def test_write_keeps_line_endings(project):
     assert json.loads(fs.write_file("crlf.txt", "x\ny\n", sha))["success"]
     assert file_bytes(project, "crlf.txt") == b"x\r\ny\r\n"
 
-def test_write_to_a_missing_file_points_to_create_file(project):
-    assert "create_file" in json.loads(project.load("filesystem").write_file("new.py", "x", "0"))["message"]
+def test_write_with_a_hash_to_a_missing_file_is_refused(project):
+    result = json.loads(project.load("filesystem").write_file("new.py", "x", "0"))
+    assert result["error"] == "file_not_found" and result["message"].startswith("Nothing was changed.")
+    assert "leave expected_sha256 empty" in result["message"] and not (project.root / "new.py").exists()
 
-def test_create_file_uses_the_line_endings_of_neighbouring_files(project):
+def test_write_without_a_hash_creates_a_file_with_the_line_endings_of_neighbouring_files(project):
     project.write("src/a.py", "a\r\nb\r\n", newline="")
     project.write("src/b.py", "a\r\nb\r\n", newline="")
     fs = project.load("filesystem")
-    assert json.loads(fs.create_file("src/new.py", "x\ny\n"))["line_ending"] == "CRLF"
-    assert json.loads(fs.create_file("src/new.py", "x"))["error"] == "file_exists"
+    assert json.loads(fs.write_file("src/new.py", "x\ny\n"))["line_ending"] == "CRLF"
+    result = json.loads(fs.write_file("src/new.py", "x"))
+    assert result["error"] == "file_exists" and result["message"].startswith("Nothing was changed.")
+    assert file_bytes(project, "src/new.py") == b"x\r\ny\r\n"
+
+def test_failed_moves_deletes_and_restores_say_that_nothing_was_changed(project):
+    project.write("a.txt", "a")
+    project.write("b.txt", "b")
+    fs = project.load("filesystem")
+    for result in [fs.move_file("a.txt", "b.txt"), fs.move_file("missing.txt", "c.txt"), fs.delete_file("missing.txt"), fs.restore_file("a.txt")]:
+        assert json.loads(result)["message"].startswith("Nothing was changed.")
+    assert (project.root / "a.txt").read_text() == "a" and (project.root / "b.txt").read_text() == "b"
 
 def test_create_move_and_delete(project):
     fs = project.load("filesystem")
-    assert json.loads(fs.create_file("a/b/c.txt", "x"))["success"]
+    assert json.loads(fs.write_file("a/b/c.txt", "x"))["success"]
     assert json.loads(fs.move_file("a/b/c.txt", "a/d.txt"))["success"]
     assert json.loads(fs.delete_file("a"))["success"]
     assert not (project.root / "a").exists()
 
-# --- Listing and images ---
-
-def test_list_directory_lists_folders_first(project):
-    project.write("b.txt")
-    project.write("a/x.txt")
-    entries = json.loads(project.load("filesystem").list_directory("."))["entries"]
-    assert [e["name"] for e in entries if e["name"] != "tools-config.json"][:2] == ["a", "b.txt"]
-
-def test_large_directory_listing_is_limited(project):
-    for i in range(300):
-        project.write(f"many/file_{i:03}.txt")
-    result = json.loads(project.load("filesystem").list_directory("many"))
-    assert result["total_entries"] == 300 and len(result["entries"]) == 250
-    assert "pattern='many/*.txt'" in result["output_limited"]
+# --- Images ---
 
 def test_read_image_returns_an_image(project):
     project.write("logo.png", PNG)
@@ -215,8 +224,7 @@ def test_read_image_rejects_other_files(project):
     assert json.loads(fs.read_image("fake.png"))["error"] == "unsupported_format"
 
 def test_json_responses_keep_non_ascii_characters_readable(project):
-    project.write("ääkköset.txt")
-    response = project.load("filesystem").list_directory(".")
+    response = project.load("filesystem").write_file("ääkköset.txt", "x")
     assert "ääkköset.txt" in response and "\\u00e4" not in response
 
 # --- Sections and outlines ---
@@ -297,11 +305,11 @@ def test_write_file_reports_removed_sections(service):
     assert result["removed_sections"] == ["class Service", "class Service > start()", "class Service > stop()"]
     assert "no longer in the file" in result["warning"]
 
-def test_create_file_shows_the_outline(project):
-    result = json.loads(project.load("filesystem").create_file("new.md", "# Title\n## Part\n"))
+def test_a_created_file_shows_the_outline(project):
+    result = json.loads(project.load("filesystem").write_file("new.md", "# Title\n## Part\n"))
     assert result["outline"] == ["1-2 # Title", "  2-2 ## Part"] and "warning" not in result
 
-def test_responses_show_paths_relative_to_the_allowed_directory(service):
+def test_responses_show_paths_relative_to_the_project_directory(service):
     response = service.read_file_with_metadata("service.py")
     assert response.startswith("- File: `service.py`\n")
     edit = service.edit_file("service.py", "return 1", "return 3", sha_of(response))
@@ -392,8 +400,8 @@ def test_restore_keeps_line_endings_and_bom_exactly(fs, project):
 
 def test_restore_removes_a_created_file(project):
     fs = project.load("filesystem")
-    fs.create_file("src/new.py", "x = 1\n")
-    assert "Removed src/new.py, undoing create_file" in restore(fs, "src/new.py")["message"]
+    fs.write_file("src/new.py", "x = 1\n")
+    assert "Removed src/new.py, undoing write_file" in restore(fs, "src/new.py")["message"]
     assert not (project.root / "src/new.py").exists()
 
 def test_restore_brings_back_a_deleted_folder(project):
@@ -433,13 +441,13 @@ def test_restore_keeps_the_version_it_replaces(project):
 
 def test_restore_without_backup_lists_the_paths_that_have_one(project):
     fs = project.load("filesystem")
-    fs.create_file("x.txt", "x")
+    fs.write_file("x.txt", "x")
     result = restore(fs, "y.txt")
     assert result["error"] == "no_backup" and "can be undone: x.txt" in result["message"]
 
 def test_backups_are_kept_outside_the_project_by_default(project):
     fs = project.load("filesystem")
-    fs.create_file("x.txt", "x")
+    fs.write_file("x.txt", "x")
     folder = Path(json.loads(fs.get_tools_config())["filesystem"]["backup_folder"])
     assert folder.parent == project.root.parent / "home" / ".ollmcp-tools" / "backups" and folder.name.startswith("project-")
     assert (folder / "journal.json").is_file()
@@ -448,7 +456,7 @@ def test_old_backups_are_removed(project, monkeypatch):
     fs = project.load("filesystem")
     monkeypatch.setattr(fs, "MAX_BACKUPS", 3)
     for i in range(5):
-        fs.create_file(f"f{i}.txt", "x")
+        fs.write_file(f"f{i}.txt", "x")
     assert len(fs._load_journal()) == 3 and len([p for p in fs.BACKUP_DIR.iterdir() if p.is_dir()]) == 3
     assert restore(fs, "f0.txt")["error"] == "no_backup" and restore(fs, "f4.txt")["success"]
 

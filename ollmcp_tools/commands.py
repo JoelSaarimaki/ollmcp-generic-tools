@@ -46,7 +46,7 @@ def _load_registry() -> dict[str, dict[str, Any]]:
     if not REGISTRY_PATH:
         return {}
     if not REGISTRY_PATH.is_file():
-        raise FileNotFoundError(f"command_registry: command registry not found: {REGISTRY_PATH}")
+        raise FileNotFoundError(f"command_registry: command registry not found: {REGISTRY_PATH}. Paths in the tools config are relative to 'project_dir', {PROJECT_DIR}.")
     with open(REGISTRY_PATH, "r", encoding="utf-8") as f:
         registry = json.load(f)
     if not isinstance(registry, dict):

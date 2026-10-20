@@ -7,7 +7,6 @@ environment variable. The config is loaded when this module is first imported, b
 so that every toolset sees exactly the same project folder, forbidden paths and output limit.
 """
 import fnmatch
-import hashlib
 import inspect
 import json
 import os
@@ -15,14 +14,12 @@ import re
 import subprocess
 from pathlib import Path
 
+from .locations import USER_CONFIG_PATH, default_backup_folder
+
 # --- Constants & Config ---
 
 CONFIG_ENV_VAR = "MCP_TOOLS_CONFIG"
 CONFIG_KEYS = {"project_dir", "forbidden_paths", "max_output_chars", "gitignore_path", "command_registry", "command_suggestions", "allowed_paths", "read_only_files", "ignored_dirs", "backup_folder", "disabled_toolsets", "disabled_tools"}
-# Each person's own folder of the tools, for all their projects
-USER_FOLDER = Path.home() / ".ollmcp-tools"
-# The user config file holds each person's own settings, such as API keys, so that they are never committed with a project's tools config
-USER_CONFIG_PATH = USER_FOLDER / "user-config.json"
 USER_CONFIG_KEYS = {"ollama_api_key"}
 # Settings that were renamed or moved, with what to do instead, shown when an old config uses them
 MOVED_SETTINGS = {
@@ -43,8 +40,6 @@ TOOLSETS = {
 DEFAULT_MAX_OUTPUT_CHARS = 40000
 MIN_MAX_OUTPUT_CHARS = 2000
 PROTECTED_FILE_NAMES = {".mcp.json"}  # MCP server configuration, never accessible regardless of forbidden_paths
-# Backups of the files changed by the filesystem tools, for restore_file. Outside the project, so that they are not in git.
-DEFAULT_BACKUP_ROOT = USER_FOLDER / "backups"
 # Folder names the map and search tools skip at any depth, unless the tools config sets its own ignored_dirs
 DEFAULT_IGNORED_DIRS = {
     "node_modules", ".git", "__pycache__", "dist", "build", ".next",
@@ -181,7 +176,7 @@ def _setting_max_output_chars() -> int:
         raise ValueError(f"{CONFIG_PATH}: 'max_output_chars' must be a whole number.")
     return max(MIN_MAX_OUTPUT_CHARS, value)
 
-# Paths in the config file are relative to its folder, except forbidden_paths and allowed_paths, which are relative to project_dir
+# project_dir is relative to the folder of the config file, and every other path in it is relative to project_dir
 CONFIG_PATH, CONFIG = _load_config()
 CONFIG_DIR = CONFIG_PATH.parent
 USER_CONFIG = _load_user_config()
@@ -210,20 +205,18 @@ FORBIDDEN_PATHS = _setting_paths("forbidden_paths", PROJECT_DIR)
 ALLOWED_PATHS = _setting_paths("allowed_paths", PROJECT_DIR)
 # Largest response size in characters (about 4 characters per token). Lower it for models with small context windows.
 MAX_OUTPUT_CHARS = _setting_max_output_chars()
-GITIGNORE_PATH = _setting_path("gitignore_path", CONFIG_DIR) or PROJECT_DIR / ".gitignore"
-REGISTRY_PATH = _setting_path("command_registry", CONFIG_DIR)
+GITIGNORE_PATH = _setting_path("gitignore_path", PROJECT_DIR) or PROJECT_DIR / ".gitignore"
+REGISTRY_PATH = _setting_path("command_registry", PROJECT_DIR)
 # The file where suggest_command writes suggested commands for the user to review. It is never read as a registry.
-COMMAND_SUGGESTIONS = _setting_path("command_suggestions", CONFIG_DIR)
+COMMAND_SUGGESTIONS = _setting_path("command_suggestions", PROJECT_DIR)
 # Files protected by their path: the tools config file, the user config file and the command registry. If the AI could
 # change them, it could remove its own restrictions or register any command, which would take effect at the next server start.
 PROTECTED_PATHS = [CONFIG_PATH, USER_CONFIG_PATH] + ([REGISTRY_PATH] if REGISTRY_PATH else [])
 # Files the tools can read wherever they are, also in a forbidden folder or outside project_dir, but never change,
 # such as the project instructions
-READ_ONLY_FILES = _setting_paths("read_only_files", CONFIG_DIR)
+READ_ONLY_FILES = _setting_paths("read_only_files", PROJECT_DIR)
 IGNORED_DIRS = _setting_ignored_dirs()
-# One default backup folder per project, named after it and its path, so that projects with the same name do not share one
-_PROJECT_KEY = hashlib.sha256(str(PROJECT_DIR).lower().encode("utf-8")).hexdigest()[:12]
-BACKUP_DIR = _setting_path("backup_folder", CONFIG_DIR) or DEFAULT_BACKUP_ROOT / f"{PROJECT_DIR.name}-{_PROJECT_KEY}"
+BACKUP_DIR = _setting_path("backup_folder", PROJECT_DIR) or default_backup_folder(PROJECT_DIR)
 if PROJECT_DIR.is_relative_to(BACKUP_DIR):
     raise ValueError(f"{CONFIG_PATH}: 'backup_folder' must not contain 'project_dir', as the backup folder is hidden from the tools: {BACKUP_DIR}")
 if COMMAND_SUGGESTIONS and (COMMAND_SUGGESTIONS in PROTECTED_PATHS or COMMAND_SUGGESTIONS.name.lower() in PROTECTED_FILE_NAMES
@@ -240,7 +233,7 @@ for allowed in ALLOWED_PATHS:
 for read_only in READ_ONLY_FILES:
     if not read_only.is_file():
         raise FileNotFoundError(f"{CONFIG_PATH}: 'read_only_files' names a file that does not exist: {read_only}."
-                                f" The paths are relative to the folder of the config file, {CONFIG_DIR}.")
+                                f" The paths are relative to 'project_dir', {PROJECT_DIR}.")
     if read_only in PROTECTED_PATHS or read_only.name.lower() in PROTECTED_FILE_NAMES or read_only.is_relative_to(BACKUP_DIR):
         raise ValueError(f"{CONFIG_PATH}: 'read_only_files' cannot contain a protected file or a file in the backup folder: {read_only}")
 # How the outline and search tools treat a path (see visibility)

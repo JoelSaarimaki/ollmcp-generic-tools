@@ -44,7 +44,7 @@ my-project/
         instructions.md          # your instructions for the AI, which it can read but not change
         .gitignore               # leaves out context/ and suggested-commands.json
         context/                 # the AI's plans and notes for the current task
-        suggested-commands.json  # created when the AI suggests a command
+        suggested-commands.json  # the commands the AI suggests, for you to review
 ```
 
 `.mcp.json` contains no paths of the tools, only the tools config file of the project:
@@ -67,7 +67,7 @@ my-project/
 - A relative `MCP_TOOLS_CONFIG` path is resolved against the folder where `ollmcp` is started, so start it in the project's root folder.
 - ollmcp names the tools `<server key>.<tool>`, e.g. `dev.get_outline`, and since version 0.35 sends them to the model with `_` instead of `.`, e.g. `dev_get_outline`, for Ollama too. The instructions template and the system prompt use the `_` names, as the model sees them, so change them if you use another key.
 
-**Why `project_dir` is `".."`:** the paths in the tools config are relative to the config file's own folder, `.ollmcp-tools`, so `".."` is the project folder above it. `init` prints the folder it resolves to, and if `project_dir` points to a folder that does not exist, the error says what it was resolved against.
+**Why `project_dir` is `".."`:** `project_dir` is relative to the config file's own folder, `.ollmcp-tools`, so `".."` is the project folder above it. Every other path in the config is relative to `project_dir`, so it is written as the AI writes it, e.g. `.ollmcp-tools/instructions.md`. `init` prints the folder it resolves to, and if `project_dir` points to a folder that does not exist, the error says what it was resolved against.
 
 After `init`, follow its checklist:
 1. Check `project_dir`, and add the folders and files the AI must never access to `forbidden_paths`.
@@ -84,7 +84,7 @@ Commit `.mcp.json` and the `.ollmcp-tools` folder: the settings, commands and in
 
 If you use the tools alone and do not want to share them, e.g. with colleagues who do not use them, you can instead add `.mcp.json` and `.ollmcp-tools/` to the project's own `.gitignore`. The tools still work, as `.gitignore` only hides files from the outline, search and git tools, and it does not hide the `allowed_paths` and `read_only_files` in the folder, such as the plans and the instructions.
 
-The API key is not in the project at all, but in each person's [user config file](#user-config-file). Someone who clones the project runs `python -m ollmcp_tools init` once: it leaves the committed files as they are and creates the context folder and the user config file.
+The API key is not in the project at all, but in each person's [user config file](#user-config-file). Someone who clones the project runs `python -m ollmcp_tools init` once: it leaves the committed files as they are and creates the context folder, the empty suggestions file, the user config file and the project's backup folder.
 
 #### User config file
 
@@ -111,12 +111,12 @@ The `.ollmcp-tools/tools-config.json` that `init` creates, here with a forbidden
     "project_dir": "..",
     "forbidden_paths": [".ollmcp-tools", "secrets"],
     "allowed_paths": [".ollmcp-tools/context"],
-    "read_only_files": ["instructions.md"],
+    "read_only_files": [".ollmcp-tools/instructions.md"],
     "ignored_dirs": null,
     "gitignore_path": null,
     "max_output_chars": 40000,
-    "command_registry": "commands.json",
-    "command_suggestions": "suggested-commands.json",
+    "command_registry": ".ollmcp-tools/commands.json",
+    "command_suggestions": ".ollmcp-tools/suggested-commands.json",
     "backup_folder": null,
     "disabled_toolsets": ["web"],
     "disabled_tools": ["write_file"]
@@ -125,7 +125,7 @@ The `.ollmcp-tools/tools-config.json` that `init` creates, here with a forbidden
 
 All settings except `project_dir` are optional. An optional setting that is left out or set to `null` uses its default, so `null` can be used to show that a setting exists without using it. Note that an empty list is not the same as `null`: `"ignored_dirs": []` skips no folders at all, while `"ignored_dirs": null` skips the default folders.
 
-Relative paths are resolved against the folder of the config file, except `forbidden_paths` and `allowed_paths`, which are resolved against `project_dir`: `".."` is the project folder, and `".ollmcp-tools"` in `forbidden_paths` is the tools' own folder in it. The server refuses to start if the file is missing, is not valid JSON, lacks `project_dir`, points `project_dir` to a folder that does not exist, has a `backup_folder` that contains `project_dir`, has a `command_suggestions` file that is the config file or the command registry, has an allowed path that is not inside a forbidden folder or a read-only file that does not exist, names an unknown toolset or tool, disables every tool, or contains an unknown setting, so a typo cannot silently weaken the configuration. A setting that was renamed or moved, such as the earlier `commands_config` and `ollama_api_key`, is named in the error with what to do instead. The config file itself is always [protected](#protected-files).
+`project_dir` is resolved against the folder of the config file, and every other relative path against `project_dir`: `".."` is the project folder, and `".ollmcp-tools"` in `forbidden_paths` is the tools' own folder in it. Absolute paths are also accepted. The server refuses to start if the file is missing, is not valid JSON, lacks `project_dir`, points `project_dir` to a folder that does not exist, has a `backup_folder` that contains `project_dir`, has a `command_suggestions` file that is the config file or the command registry, has an allowed path that is not inside a forbidden folder or a read-only file that does not exist, names an unknown toolset or tool, disables every tool, or contains an unknown setting, so a typo cannot silently weaken the configuration. A setting that was renamed or moved, such as the earlier `commands_config` and `ollama_api_key`, is named in the error with what to do instead. The config file itself is always [protected](#protected-files).
 
 | Setting | Description |
 |---|---|
@@ -136,7 +136,7 @@ Relative paths are resolved against the folder of the config file, except `forbi
 | `max_output_chars` | The largest size of a tool response in characters, about 4 characters per token. Lower it for models with small context windows, e.g. `12000` for an 8k-token context. See [Output limits](#output-limits). (Optional, defaults to `40000`, at least `2000`) |
 | `gitignore_path` | The `.gitignore` file used by the outline and search tools. (Optional, defaults to `.gitignore` in `project_dir`) |
 | `command_registry` | The command registry of the `commands` toolset. It is always [protected](#protected-files). See [commands](#commands). (Optional) |
-| `command_suggestions` | The file where `suggest_command` saves the commands the AI suggests, for you to review. It must not be the `command_registry`. See [Suggested commands](#suggested-commands). (Optional, without it suggestions are only shown in the chat) |
+| `command_suggestions` | The file where `suggest_command` saves the commands the AI suggests, for you to review. It must not be the `command_registry`. `init` creates it empty, so that you see where the suggestions go. See [Suggested commands](#suggested-commands). (Optional, without it suggestions are only shown in the chat) |
 | `backup_folder` | The folder where `restore_file`'s backups are kept. It must not contain `project_dir`. See [Backups](#backups). (Optional, defaults to a folder for the project in `~/.ollmcp-tools/backups`) |
 | `ignored_dirs` | List of folder names the outline and search tools skip at any depth. Replaces the defaults completely. See [Ignored directories](#ignored-directories). (Optional, defaults to `node_modules`, `.git`, `build` and other common build and cache folders) |
 | `disabled_toolsets` | List of toolsets that are not loaded, e.g. `["web", "git"]`. See [Choosing the toolsets](#choosing-the-toolsets). (Optional, defaults to none, so every toolset is loaded) |
@@ -362,7 +362,7 @@ The `allowed_paths` setting lists folders and files inside forbidden folders tha
 
 ### Read-only files
 
-The `read_only_files` setting lists files maintained by you, such as the project instructions, relative to the folder of the config file. `init` adds `instructions.md` in `.ollmcp-tools`.
+The `read_only_files` setting lists files maintained by you, such as the project instructions, relative to `project_dir` like the other paths. `init` adds `.ollmcp-tools/instructions.md`.
 
 - The AI can read, outline and search them wherever they are: also in a forbidden folder, in an ignored folder or outside `project_dir`.
 - The tools never change them: `write_file`, `edit_file`, `delete_file` and `restore_file` are refused, and so are moving one, moving a file onto one, and moving or deleting a folder that contains one.
@@ -374,7 +374,7 @@ The `read_only_files` setting lists files maintained by you, such as the project
 
 Before `edit_file`, `write_file`, `move_file` or `delete_file` changes anything, the `filesystem` toolset records the change in a journal in the backup folder, with a copy of a changed file. A deleted file or folder is moved into the backup folder instead of being removed. If the backup fails, the change is not made. `restore_file` undoes the changes one at a time, newest first, and moves what it replaces into the backup folder too, so a restore never loses a version, even one you changed yourself in between. The response says where that version is kept.
 
-- The backup folder is `~/.ollmcp-tools/backups/<project folder name>-<hash of its path>` by default, next to the [user config file](#user-config-file), outside the project, so backups do not show up in git or in the AI's outlines and searches. Set `backup_folder` in the [tools config file](#tools-config-file) to use another folder.
+- The backup folder is `~/.ollmcp-tools/backups/<project folder name>-<hash of its path>` by default, next to the [user config file](#user-config-file), outside the project, so backups do not show up in git or in the AI's outlines and searches. `init` creates it and prints where it is. Set `backup_folder` in the [tools config file](#tools-config-file) to use another folder.
 - The tools cannot access the backup folder, even if it is inside the project: it is hidden and protected like the [protected files](#protected-files). The AI uses it only through `restore_file`.
 - The last 200 changes are kept; the backups of older ones are removed.
 - Only the changes made by the file tools are recorded: not changes by `run_predefined_command` (e.g. a formatter), or by you. Git is not used, so it also works for new and untracked files and in folders without git.
@@ -397,7 +397,7 @@ The protection also covers other spellings of the name that Windows treats as th
 ollmcp --servers-json C:\path\outside\project\.mcp.json
 ```
 
-When the tools config file is outside the project, set `project_dir` in it to the project folder, as an absolute path or relative to the config file, and give `MCP_TOOLS_CONFIG` in `.mcp.json` as an absolute path, or relative to the folder where `ollmcp` is started. `init` does not set this up: move the folder after running it. Keep this repository outside the project folder too.
+When the tools config file is outside the project, set `project_dir` in it to the project folder, as an absolute path or relative to the config file, and give `MCP_TOOLS_CONFIG` in `.mcp.json` as an absolute path, or relative to the folder where `ollmcp` is started. The other paths in the config are relative to `project_dir`, so change `command_registry`, `command_suggestions` and `read_only_files` to the moved folder too, e.g. as absolute paths. A wrong registry or read-only file stops the server, but a wrong `command_suggestions` file is simply created in the new place. `init` does not set this up: move the folder after running it. Keep this repository outside the project folder too.
 
 ### Ignored directories
 

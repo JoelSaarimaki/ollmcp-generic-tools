@@ -2,7 +2,6 @@
 """
 Tests for 'python -m ollmcp_tools init': setting up a project from the templates in the package.
 """
-import importlib
 import json
 import os
 import subprocess
@@ -14,7 +13,7 @@ import pytest
 from conftest import PACKAGE, REPO_DIR, requires_git, start_server
 
 PROJECT_FILES = [".mcp.json", ".ollmcp-tools/tools-config.json", ".ollmcp-tools/commands.json",
-                 ".ollmcp-tools/instructions.md", ".ollmcp-tools/.gitignore"]
+                 ".ollmcp-tools/instructions.md", ".ollmcp-tools/.gitignore", ".ollmcp-tools/suggested-commands.json"]
 
 def init(folder: Path) -> subprocess.CompletedProcess:
     """Runs init in the folder in a separate process, without MCP_TOOLS_CONFIG, as a user would."""
@@ -35,6 +34,7 @@ def test_init_creates_the_project_files(new_project):
     for rel in PROJECT_FILES:
         assert (new_project / rel).is_file() and f"Created: {rel}" in result.stdout
     assert (new_project / ".ollmcp-tools/context").is_dir()
+    assert json.loads((new_project / ".ollmcp-tools/suggested-commands.json").read_text(encoding="utf-8")) == {}
     user_config = Path.home() / ".ollmcp-tools" / "user-config.json"
     assert json.loads(user_config.read_text(encoding="utf-8")) == {"ollama_api_key": None}
 
@@ -51,6 +51,7 @@ def test_the_created_config_points_to_the_project_and_hides_its_own_folder(new_p
     assert common.FORBIDDEN_PATHS == [new_project.resolve() / ".ollmcp-tools"]
     assert common.ALLOWED_PATHS == [new_project.resolve() / ".ollmcp-tools/context"]
     assert common.REGISTRY_PATH == new_project.resolve() / ".ollmcp-tools/commands.json"
+    assert common.COMMAND_SUGGESTIONS == new_project.resolve() / ".ollmcp-tools/suggested-commands.json"
     assert common.READ_ONLY_FILES == [new_project.resolve() / ".ollmcp-tools/instructions.md"]
     mcp = json.loads((new_project / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]["dev"]
     assert mcp["env"]["MCP_TOOLS_CONFIG"] == ".ollmcp-tools/tools-config.json"
@@ -72,6 +73,8 @@ def test_the_ai_can_read_the_instructions_and_write_plans_in_a_created_project(n
     assert "access_denied" in fs.read_file_with_metadata(".ollmcp-tools/commands.json")
     outline = project.load("outline").get_outline(".ollmcp-tools/context")
     assert ".ollmcp-tools/context/plan-login.md" in outline and "## Steps" in outline
+    assert json.loads(project.load("commands").suggest_command("run_e2e", "npm run e2e", "Runs the end-to-end tests."))["success"]
+    assert "run_e2e" in json.loads((new_project / ".ollmcp-tools/suggested-commands.json").read_text(encoding="utf-8"))
 
 def test_init_never_overwrites_files(new_project):
     init(new_project)
@@ -98,7 +101,9 @@ def test_unknown_command_shows_the_usage(new_project):
                             env={**os.environ, "PYTHONPATH": str(REPO_DIR)}, capture_output=True, text=True)
     assert result.returncode == 2 and "Usage: python -m ollmcp_tools [init]" in result.stderr
 
-def test_init_and_common_use_the_same_user_config_file(project):
-    project.configure()
-    init_module = importlib.import_module(f"{PACKAGE}.init")
-    assert init_module.USER_CONFIG_PATH == project.common().USER_CONFIG_PATH
+def test_init_creates_the_backup_folder_the_server_uses(new_project, project):
+    result = init(new_project)
+    project.config_path = new_project / ".ollmcp-tools/tools-config.json"
+    backups = project.common().BACKUP_DIR
+    assert backups.is_dir() and f"Created: {backups} (backup folder)" in result.stdout
+    assert f"Already exists, not changed: {backups} (backup folder)" in init(new_project).stdout

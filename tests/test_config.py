@@ -100,7 +100,7 @@ def test_max_output_chars_has_a_minimum(project):
     project.configure(max_output_chars=100)
     assert project.common().MAX_OUTPUT_CHARS == 2000
 
-def test_paths_are_relative_to_the_config_file_folder(make_project):
+def test_project_dir_is_relative_to_the_config_file_and_every_other_path_to_project_dir(make_project):
     project = make_project("project")
     config_dir = project.root.parent / "config"
     config_dir.mkdir()
@@ -109,16 +109,20 @@ def test_paths_are_relative_to_the_config_file_folder(make_project):
         "project_dir": "../project",
         "forbidden_paths": ["secret"],
         "allowed_paths": ["secret/plans"],
-        "command_registry": "commands.json",
-        "read_only_files": ["instructions.md"],
+        "read_only_files": ["docs/rules.md"],
+        "gitignore_path": "conf/.gitignore",
+        "command_registry": "tools/commands.json",
+        "command_suggestions": "tools/suggested.json",
+        "backup_folder": "../backups",
     }), encoding="utf-8")
-    (config_dir / "instructions.md").write_text("# Instructions\n", encoding="utf-8")
+    project.write("docs/rules.md", "# Rules\n")
     common = project.common()
     root = project.root.resolve()
     assert common.PROJECT_DIR == root
-    assert common.FORBIDDEN_PATHS == [root / "secret"] and common.ALLOWED_PATHS == [root / "secret/plans"]  # relative to project_dir
-    assert common.REGISTRY_PATH == config_dir.resolve() / "commands.json"
-    assert common.READ_ONLY_FILES == [config_dir.resolve() / "instructions.md"]
+    assert common.FORBIDDEN_PATHS == [root / "secret"] and common.ALLOWED_PATHS == [root / "secret/plans"]
+    assert common.READ_ONLY_FILES == [root / "docs/rules.md"] and common.GITIGNORE_PATH == root / "conf/.gitignore"
+    assert common.REGISTRY_PATH == root / "tools/commands.json" and common.COMMAND_SUGGESTIONS == root / "tools/suggested.json"
+    assert common.BACKUP_DIR == root.parent / "backups"
 
 @pytest.mark.parametrize("settings, message", [
     ({"allowed_paths": ["src"]}, "'allowed_paths' must be inside a folder of 'forbidden_paths'"),

@@ -28,7 +28,7 @@ TEMPLATE_FILES = {
     "suggested-commands.json": f"{TOOLS_FOLDER}/suggested-commands.json",
 }
 CONTEXT_FOLDER = f"{TOOLS_FOLDER}/context"
-# Starting the session with a tool call also keeps qwen3-coder's tool calls working (see "Starting a session" in the README).
+# Starting the session with a tool call also keeps the model's tool calls working (see "Starting a session" in the README).
 # The tool name is written as ollmcp sends it to the model.
 SYSTEM_PROMPT = f"At the start of a session, call dev_read_file_with_metadata with path '{TOOLS_FOLDER}/instructions.md' and follow it."
 # The first message of every session: with the system prompt, it got the instructions read in every test (see local_ai_test_results.md)

@@ -1,13 +1,13 @@
 # Methods for local AI models
 
-The methods these tools use to make a small local model, run with Ollama through ollmcp, work well on a software project. Each method states the problem it addresses and what the tools do about it. The details of how each one is built are in [DEVELOPMENT.md](DEVELOPMENT.md), and the measurements with qwen3-coder 30b in [local_ai_test_results.md](local_ai_test_results.md).
+The methods these tools use to make a small local model, run with Ollama through ollmcp, work well on a software project. Each method states the problem it addresses and what the tools do about it. The details of how each one is built are in [DEVELOPMENT.md](DEVELOPMENT.md), and the measurements with qwen3-coder 30b and gemma4 26b, the recommended model, in [local_ai_test_results.md](local_ai_test_results.md).
 
 ## The starting point: what a small local model is like
 
 - **Small context window**, 8k–32k tokens: every tool definition and every response competes for the same space.
 - **Weak at exact copying and escaping**: it copies `\n` and `\"` escapes and line number prefixes literally, drops trailing whitespace, and writes placeholders such as `// ... existing code ...` instead of real code.
 - **Follows the text it is given**: instructions in tool descriptions, responses and errors are acted on fairly well, so they can steer it.
-- **Fragile tool calling**: a call is sometimes written as plain text and never reaches the tools, more often when the tool definitions are large.
+- **Fragile tool calling**: a call is sometimes written as plain text and never reaches the tools, more often when the tool definitions are large, or the answer is only a token of the model's chat template.
 - **Goes straight to the task**: a system prompt that asks for a first step is mostly skipped when the first message is already a task.
 
 ## 1. Fewer and smaller tool definitions
@@ -89,8 +89,10 @@ Every tool definition is sent with every request, so it costs context all the ti
 ## 10. Instructions and the session
 
 - **Choose a mode first**: answering, planning or implementing, said at the start of the reply. With a single implementation workflow, the model started implementing when asked only for a plan.
+- **Give each mode examples of the requests that mean it**, and say what the mode produces: with "fix…", "add…", "change…" as examples, and "such a request is the permission", gemma4 implemented direct requests more often, and with "save a plan in a file with dev_write_file" in the planning mode itself, it saved new plans in 3 of 3 runs instead of 0 of 3.
+- **Do not end a reply by announcing the next step**: a model that writes "First, I'll search for…" and stops leaves the user to type "continue". The instructions say to call the tool instead.
 - **Concrete steps instead of general advice**: outline, read sections, edit with the hash, check the outline, run single tests, review the diff. Small models follow steps better than "understand the project first".
-- **Short instructions**, about 1 700 tokens, as they are in the context all the time.
+- **Short instructions**, about 2 000 tokens, as they are in the context all the time.
 - **Plans in a folder of their own**, checked before planning and implementing, and not committed, so that another person's AI does not take them as its own.
 - **A system prompt that names the first step keeps the tool calls working**: broken calls went from 3 of 24 requests to none.
 - **Ask the AI to read the instructions at the start of every session**, also after `/clear`: when the first message is already a task, the system prompt alone got the instructions read in only 2 of 18 runs. With the system prompt and "Read the project instructions." as the first message, in 20 of 20; with that message alone, in 9 of 20.
@@ -105,3 +107,6 @@ Every tool definition is sent with every request, so it costs context all the ti
 - **More rules are not always better**: five rewrites of the planning instructions all did worse than the original, as the model hesitated and gave the plan in its reply instead of saving it.
 - **Good error messages are part of the design**: a refused action with a clear next step was enough for the model to recover.
 - **The model goes straight to the task**: anything that must happen first has to be asked for, not just written in a system prompt.
+- **Test whole tasks, and check the result**: replaying tasks such as "plan this", "change the plan" and "fix this", and checking afterwards which files changed and whether hidden tests pass, showed what single first calls cannot, e.g. a model that claimed "I updated the plan" without touching the file.
+- **Choose the model by its mistakes, not only by its strengths**: qwen3-coder used the tools better, but its mistakes were silent (code changed in planning mode, work claimed but not done); gemma4's showed in its reply and cost one message to correct.
+- **Instruction changes interact**: in a draft that also said that saving a plan needs no permission, gemma4 planned instead of fixing in every run, so each change was measured in the scenarios it could affect, also the ones it was not meant for.

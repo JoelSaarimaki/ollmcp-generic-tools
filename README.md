@@ -11,9 +11,9 @@ For the design principles behind the tools and the planned improvements, see [DE
 ### Prerequisites
 
 1.  **Install Ollama**:
-    Download and install Ollama from [ollama.com](https://ollama.com/). Once installed, you can run a model (for example qwen3-coder:30b), using:
+    Download and install Ollama from [ollama.com](https://ollama.com/). Once installed, download and try the recommended model, gemma4:26b (see [Choosing the model](#choosing-the-model)), with:
     ```bash
-    ollama run qwen3-coder:30b
+    ollama run gemma4:26b
     ```
 
 2.  **Install ollmcp and the tools**:
@@ -182,20 +182,39 @@ The AI follows your project instructions only after it has read them, and they t
    In ollmcp, type `/model-config` (or `/mc`) and set the system prompt, then type `/save-config` (or `/sc`) and save it as `default`, which ollmcp loads automatically when it starts. The tool name is written as the model sees it, with `_`.
 2. **Start every session with "Read the project instructions."**, also after `/clear`, and give the AI its task after that.
 
-Neither step is enough alone. In tests with qwen3-coder 30b (see [local_ai_test_results.md](local_ai_test_results.md#session-start-and-plans-2026-10-20)), the model's first tool call read the instructions:
+Neither step is enough alone. In tests (see [local_ai_test_results.md](local_ai_test_results.md#session-start-with-gemma4-2026-10-23)), the model's first tool call read the instructions:
 
-| Setup | First call reads the instructions |
-|---|---|
-| System prompt, first message "Read the project instructions." | 20 of 20 |
-| No system prompt, first message "Read the project instructions." | 9 of 20 |
-| System prompt, first message already the task | 2 of 18 |
+| Setup | gemma4 26b | qwen3-coder 30b |
+|---|---|---|
+| System prompt, first message "Read the project instructions." | 10 of 10 | 20 of 20 |
+| No system prompt, first message "Read the project instructions." | 5 of 10 | 9 of 20 |
+| System prompt, first message already the task | 2 of 12 | 2 of 18 |
 
-**The system prompt also keeps the tool calls working.** qwen3-coder 30b sometimes writes a tool call without its opening `<tool_call>` tag, e.g. `<function=dev_read_context_file> </tool_call>` as plain text in its answer. ollmcp then shows the call as an answer, and the tool is never called. Without a system prompt, this happened in 3 of 24 test requests with the 26 tools of the time (0 of 3 for "Read the task in the context files and act accordingly"), and with the session-start prompt of the time in none of the 24. A generic prompt such as "You are a helpful assistant." did not help. With the current prompt, none of the 38 first calls measured on 2026-10-20 was broken. See [local_ai_test_results.md](local_ai_test_results.md#broken-tool-calls-2026-10-19).
+**The system prompt also keeps the tool calls working.** Local models sometimes write a tool call as plain text in their answer, which ollmcp then shows as an answer, so the tool is never called. qwen3-coder 30b wrote calls such as `<function=dev_read_context_file> </tool_call>` without the opening `<tool_call>` tag: without a system prompt in 3 of 24 test requests with the 26 tools of the time, and with the session-start prompt in none (see [local_ai_test_results.md](local_ai_test_results.md#broken-tool-calls-2026-10-19)). With the current prompt, none of the 32 first calls measured with gemma4 26b was broken. In longer tasks, gemma4 sometimes answers with only a token of its chat template, such as `<|tool_response>`, or leaves one such as `<channel|>` in its answer: in 2 of 21 tasks.
 
-If a broken call still appears:
+If a broken call or answer still appears:
 - Type `/clear` before trying again. ollmcp keeps the broken call in the chat history as an ordinary answer, and the model then repeats it.
 - Leave out the tools the project does not need (see [Choosing the toolsets](#choosing-the-toolsets)): the more tool definitions, the more often it happens.
-- Leave `num_ctx` unset in `/model-config`, or keep it large: ollmcp then asks for a 32 000-token context. With Ollama's own default of 4 096 tokens, the tool definitions alone (about 3 350 tokens with every tool, 3 100 without the `web` tools) fill the context, the prompt is cut, and the tool calls break.
+- Leave `num_ctx` unset in `/model-config`, or keep it large: ollmcp then asks for a 32 000-token context. With Ollama's own default of 4 096 tokens, the tool definitions alone (about 2 750 tokens with every tool and 2 550 without the `web` tools for gemma4, about 3 350 and 3 100 for qwen3-coder) take most of the context, the prompt is cut, and the tool calls break.
+
+### Choosing the model
+
+The recommended model is **gemma4:26b**. Both it and qwen3-coder:30b were tested with the same tasks and the tools (see [local_ai_test_results.md](local_ai_test_results.md#qwen3-coder-30b-and-gemma4-26b-compared-2026-10-23)): answering questions, writing and changing a plan, and implementing a plan or a fix. gemma4 keeps answering, planning and implementing apart: it never changed code when asked only for an answer or a plan, and it changed an existing plan correctly in every run. The [instructions template](ollmcp_tools/templates/instructions.md) was then adapted to its mistakes, so that it also saves new plans in `.ollmcp-tools/context` (see [local_ai_test_results.md](local_ai_test_results.md#instructions-for-gemma4-2026-10-23)). If you created your project's `instructions.md` before 2026-10-23, compare it with the template.
+
+What to expect from gemma4:
+- **It often asks before a direct fix.** Asked "Fix the bug where…", it may choose the planning mode, save a plan and ask whether to implement it. Answer "yes": it then implements the plan and runs the tests.
+- **It reads less than it should.** It sometimes answers from one section where several files are needed. Ask it to check the other files if the answer leaves something out.
+- **It sometimes stops after saying what it will do next** ("First, I'll search for…"). Type `continue`.
+- **It rarely answers with only a token of its chat template**, such as `<|tool_response>`. Type `/clear` and ask again (see [Starting a session](#starting-a-session)).
+
+#### Why not qwen3-coder
+
+qwen3-coder:30b was the model the tools were first developed with, and it uses them well: it reads every relevant file before it answers, runs the tests and reviews its changes with the diff. It is not recommended, as it does not respect the modes of the [instructions](ollmcp_tools/templates/instructions.md):
+- **It implements without being asked.** Asked "What should we change?", it wrote a plan and then changed the code in 2 of 3 runs.
+- **It claims work it did not do.** Asked to change a plan, it replied "I updated the plan" without changing the file in 2 of 3 runs, and changed the code in the third.
+- **It guesses and loops when stuck**: it called commands that do not exist before listing them, and once spent 25 steps on a test it had written wrong, leaving a debug file behind.
+
+Its mistakes are silent: unrequested changes and claims of work not done are noticed only by checking. gemma4's mistakes show in its reply and are corrected with one message. If you mostly ask for small direct fixes and review every diff, qwen3-coder works too.
 
 ### Testing
 

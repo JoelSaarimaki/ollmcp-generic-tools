@@ -14,7 +14,7 @@ The methods these tools use to make a small local model, run with Ollama through
 
 Every tool definition is sent with every request, so it costs context all the time, and larger definitions made broken tool calls more frequent.
 
-- **Merge tools with simple arguments, drop duplicates.** `create_file` became `write_file` without a hash, `get_git_status` became `get_git_diff` without arguments, and `list_directory` was covered by the outline and the file name search. 27 tools became 19 over time; the last step took the definitions from 4 109 to 3 327 prompt tokens.
+- **Merge tools with simple arguments, drop duplicates.** `create_file` became `write_file` without a hash, `get_git_status` became `get_git_diff` without arguments, and `list_directory` was covered by the outline and the file name search. 27 tools became 19 over time; the last step took the definitions from 4 109 to 3 327 prompt tokens with qwen3-coder (2 745 with gemma4, whose tokenizer needs fewer tokens).
 - **But do not merge tools that would need either-or arguments.** `web_search` and `web_fetch` stay separate: a small model fills in "either `query` or `url`" less reliably than two clear tools.
 - **Replace a whole toolset with a setting.** The four tools for plan and instruction files were replaced by the file tools and two settings: `allowed_paths` (a plans folder inside a forbidden folder) and `read_only_files`.
 - **Do not offer tools that cannot work.** The web tools are left out while no API key is set, instead of returning an error every time.
@@ -44,7 +44,7 @@ Every tool definition is sent with every request, so it costs context all the ti
 ## 4. Text the model can copy correctly
 
 - **File content as plain text in a code block, not inside JSON**, so quotes, backslashes and line breaks appear exactly as in the file. JSON escaping made models copy `\n` and `\"` into their edits.
-- **Readable non-ASCII characters** (`ä`, not `ä`) in JSON responses.
+- **Readable non-ASCII characters** (`ä`, not `\u00e4`) in JSON responses.
 - **Tolerant editing**: `edit_file` removes copied line number prefixes and code block fences, ignores trailing whitespace, and when nothing matches, shows the lines that match with different indentation so the model can copy them exactly.
 - **Placeholders are refused**: `// ... existing code ...` and similar comments would replace real code, so writes containing them are rejected. A whole-file write that shrinks a file to less than half is warned about.
 - **Hash-checked edits that chain**: every edit needs the SHA-256 from the last read, and the edit response gives the new one, so the model can make the next edit without reading the file again.
@@ -89,13 +89,13 @@ Every tool definition is sent with every request, so it costs context all the ti
 ## 10. Instructions and the session
 
 - **Choose a mode first**: answering, planning or implementing, said at the start of the reply. With a single implementation workflow, the model started implementing when asked only for a plan.
-- **Give each mode examples of the requests that mean it**, and say what the mode produces: with "fix…", "add…", "change…" as examples, and "such a request is the permission", gemma4 implemented direct requests more often, and with "save a plan in a file with dev_write_file" in the planning mode itself, it saved new plans in 3 of 3 runs instead of 0 of 3.
+- **Give each mode examples of the requests that mean it**, and say what the mode produces: with "fix…", "add…", "change…" as examples, and "such a request is the permission", gemma4 implemented a direct "Fix the bug" slightly more often (1 of 3 runs instead of 0 of 3, still its weak point), and with "save a plan in a file with dev_write_file" in the planning mode itself, it saved new plans in 3 of 3 runs instead of 0 of 3.
 - **Do not end a reply by announcing the next step**: a model that writes "First, I'll search for…" and stops leaves the user to type "continue". The instructions say to call the tool instead.
 - **Concrete steps instead of general advice**: outline, read sections, edit with the hash, check the outline, run single tests, review the diff. Small models follow steps better than "understand the project first".
 - **Short instructions**, about 2 000 tokens, as they are in the context all the time.
 - **Plans in a folder of their own**, checked before planning and implementing, and not committed, so that another person's AI does not take them as its own.
-- **A system prompt that names the first step keeps the tool calls working**: broken calls went from 3 of 24 requests to none.
-- **Ask the AI to read the instructions at the start of every session**, also after `/clear`: when the first message is already a task, the system prompt alone got the instructions read in only 2 of 18 runs. With the system prompt and "Read the project instructions." as the first message, in 20 of 20; with that message alone, in 9 of 20.
+- **A system prompt that names the first step keeps the tool calls working**: with qwen3-coder, broken calls went from 3 of 24 requests to none; none of gemma4's 32 first calls with it was broken.
+- **Ask the AI to read the instructions at the start of every session**, also after `/clear`: when the first message is already a task, the system prompt alone got the instructions read in only 2 of 18 runs with qwen3-coder and 2 of 12 with gemma4. With the system prompt and "Read the project instructions." as the first message, in 20 of 20 and 10 of 10; with that message alone, in 9 of 20 and 5 of 10.
 - **A large enough context** (`num_ctx` 32 000): with Ollama's default of 4 096 tokens the tool definitions alone fill it and the calls break.
 - **`/clear` after a broken call**: ollmcp keeps it in the history, and the model repeats it.
 
@@ -104,7 +104,7 @@ Every tool definition is sent with every request, so it costs context all the ti
 - **Measure instead of guessing.** Replaying the same request against Ollama with the real tools, over several seeds, showed effects that single sessions hide. The scripts set up a fresh project, execute the model's tool calls on the real server and count the outcomes of each run.
 - **Size matters**: broken tool calls became more frequent as the tool definitions grew.
 - **A concrete tool call in the instructions is followed**; a rule about how to do something is followed less reliably, and can make things worse.
-- **More rules are not always better**: five rewrites of the planning instructions all did worse than the original, as the model hesitated and gave the plan in its reply instead of saving it.
+- **More rules are not always better**: five rewrites of the planning instructions for qwen3-coder all did worse than the original, as the model hesitated and gave the plan in its reply instead of saving it.
 - **Good error messages are part of the design**: a refused action with a clear next step was enough for the model to recover.
 - **The model goes straight to the task**: anything that must happen first has to be asked for, not just written in a system prompt.
 - **Test whole tasks, and check the result**: replaying tasks such as "plan this", "change the plan" and "fix this", and checking afterwards which files changed and whether hidden tests pass, showed what single first calls cannot, e.g. a model that claimed "I updated the plan" without touching the file.

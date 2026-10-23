@@ -1,15 +1,15 @@
 # Local AI test results
 
-Results of running the tools with local models through Ollama, qwen3-coder 30b until 2026-10-20 and since then also gemma4 26b, which is now the recommended model (see [qwen3-coder 30b and gemma4 26b compared](#qwen3-coder-30b-and-gemma4-26b-compared-2026-10-23)): how the model behaves with the tool definitions, the system prompt and the project instructions. These are not the tests of the toolset itself, which are in `tests/` and described in [DEVELOPMENT.md](DEVELOPMENT.md#how-changes-have-been-verified): those show that the tools behave as designed, these show what a model does with them.
+Results of running the tools with local models through Ollama, qwen3-coder 30b and, since 2026-10-23, also gemma4 26b, which is now the recommended model (see [qwen3-coder 30b and gemma4 26b compared](#qwen3-coder-30b-and-gemma4-26b-compared-2026-10-23)): how the model behaves with the tool definitions, the system prompt and the project instructions. These are not the tests of the toolset itself, which are in `tests/` and described in [DEVELOPMENT.md](DEVELOPMENT.md#how-changes-have-been-verified): those show that the tools behave as designed, these show what a model does with them.
 
 The design decisions that followed from the results are in [DEVELOPMENT.md](DEVELOPMENT.md), and what users should do in the [README](README.md#starting-a-session).
 
 ## Setup
 
-- Model `qwen3-coder:30b`, Ollama 0.34.1, ollmcp 0.35.0, on the developer's Windows machine. From 2026-10-23 also `gemma4:26b`, with Ollama 0.40.9; both models then ran fully on the CPU, as the machine's 8 GB GPU is too small for either.
+- Model `qwen3-coder:30b`, Ollama 0.34.1, ollmcp 0.35.0, on the developer's Windows machine. On 2026-10-23 both `qwen3-coder:30b` and `gemma4:26b` were run with Ollama 0.40.9, fully on the CPU, as the machine's 8 GB GPU is too small for either.
 - The requests were replayed with scripts, not typed in ollmcp, so that the same request could be repeated with other settings. The scripts started the tools' server over stdio, took its tool definitions with `list_tools()` and turned them into the request payload with ollmcp's own `build_tool_payload` (`mcp_client_for_ollama.tools.manager`), which gives the `dev_<tool>` names the model sees in ollmcp.
-- Requests were sent with `ollama.chat(model="qwen3-coder:30b", messages=..., tools=..., options={"num_ctx": 32000, "seed": n})`, or through any-llm's `AnyLLM.create("ollama").acompletion(..., stream=True)`, as ollmcp does. A parsed tool call is in `message.tool_calls`; a broken one shows up as `<function=` in `message.content`.
-- Where the model's tool calls were executed, the scripts called the real server, in a temporary project set up with `python -m ollmcp_tools init`, and gave the model the responses, up to 20 steps per run.
+- Requests were sent with `ollama.chat(model="qwen3-coder:30b", messages=..., tools=..., options={"num_ctx": 32000, "seed": n})`, or through any-llm's `AnyLLM.create("ollama").acompletion(..., stream=True)`, as ollmcp does. Since 2026-10-23 `think=True` is added for models that can think, such as gemma4, as ollmcp turns thinking on for them. A parsed tool call is in `message.tool_calls`; a broken one shows up as `<function=` in `message.content`.
+- Where the model's tool calls were executed, the scripts called the real server, in a temporary project set up with `python -m ollmcp_tools init`, and gave the model the responses, up to 20 steps per run (25 in the comparisons of 2026-10-23).
 - Prompt sizes come from `prompt_eval_count`, with a unique system message per request so that Ollama's prompt cache does not hide tokens. The size of the tool definitions is the difference to the same request without tools.
 - Runs with the same seed repeat exactly when nothing else changes. Tool responses contain timestamps, so runs that execute tools vary even with the same seed; results are therefore given as counts over several seeds.
 - The scripts are in `local_ai_tests/` (see its README), which is gitignored: it is kept in the developer's own copy, not in every clone. The results of 2026-10-19 and the first results of 2026-10-20 were measured with earlier versions of the same scripts; each section names the command that repeats it. Since 2026-10-23 the scripts use gemma4:26b unless `--model` is given, so add `--model qwen3-coder:30b` to repeat the earlier measurements.
@@ -20,7 +20,7 @@ With instructions that were a single implementation workflow, qwen3-coder 30b st
 
 ## Broken tool calls (2026-10-19)
 
-The model sometimes writes a tool call without its opening `<tool_call>` tag: `<function=dev_read_context_file>…</function></tool_call>`. Ollama's parser then passes it on as a plain answer, so the call never reaches the server, and ollmcp's Markdown rendering hides the closing tags, so it looks like they are missing too. [broken_output_example.md](broken_output_example.md) is such a session.
+The model sometimes writes a tool call without its opening `<tool_call>` tag: `<function=dev_read_context_file>…</function></tool_call>`. Ollama's parser then passes it on as a plain answer, so the call never reaches the server, and ollmcp's Markdown rendering hides the closing tags, so it looks like they are missing too. Such a session is kept in the developer's own copy, in `local-only/broken_output_example.md`, which is not committed.
 
 | Setting | Parsed calls |
 |---|---|
@@ -136,7 +136,7 @@ Which of the two models suits the tools better: whether it keeps answering, plan
 | "What should we change?" for the bug (planning or answering) | 3/3 answered, no changes | 1/3 right, **2/3 wrote a plan and then implemented it unasked** |
 | Plan fixed-amount codes (planning) | 3/3 no changes, **0/3 saved the plan**: it was given only in the reply | 3/3 saved the plan, no changes |
 | Change the plan made earlier (planning) | **3/3 updated the plan** with `edit_file`, no changes, but no "Mode:" line | 0/3 right: 1 changed code, **2 replied "I updated the plan" without any tool call** |
-| Implement the approved plan (implementing) | 2/3 pass the hidden tests; 1 run generated 25 800 tokens of empty output for 78 minutes | 2/3 pass; 1 run spent 25 steps with a wrong test, left `temp_debug.py` |
+| Implement the approved plan (implementing) | 2/3 pass the hidden tests; 1 run, told "Continue." after a stall, generated 25 800 tokens of empty output for 78 minutes | 2/3 pass; 1 run spent 25 steps with a wrong test, left `temp_debug.py` |
 | "Fix the bug…" (implementing) | **0/3 implemented**: wrote a plan and asked for permission each time | 3/3 fixed, tested and reviewed the diff |
 
 Over all 21 runs each:
@@ -147,7 +147,7 @@ Over all 21 runs each:
 | Tool calls per run | 3.1 | 9.1 |
 | Tool errors per run | 0.0 | 1.1 (mostly a guessed `run_python_tests` before listing the commands) |
 | Ran the tests / reviewed the diff (of 6 implementing runs) | 2 / 1 | 6 / 3 |
-| Stalls ("Continue." needed) | 4 | 0 |
+| Stalls ("Continue." needed) | 5 | 0 |
 | Broken output | `<\|tool_response>` as the whole answer once, `<channel\|>` leaked once | a trailing `<tool_call>` after a finished answer twice |
 
 Findings:

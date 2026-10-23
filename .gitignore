@@ -44,5 +44,8 @@ Thumbs.db
 # Scripts that test the tools with a local model, kept only in the developer's own copy (see local_ai_test_results.md)
 local_ai_tests
 
+# The developer's own files that are not part of the project, such as presentation material
+local-only
+
 # Claude Code local settings
 .claude/settings.local.json

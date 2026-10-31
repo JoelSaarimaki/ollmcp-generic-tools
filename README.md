@@ -204,7 +204,7 @@ The recommended model is **gemma4:26b**. Both it and qwen3-coder:30b were tested
 Both models take about 18 GB. On a GPU with less memory, Ollama runs them on the CPU, which needs about 20 GB of free RAM per model and makes an answer take minutes: in the tests, on a laptop with an 8 GB GPU, a question took about 2 minutes and a small implementation 5 to 20. Keep only one model loaded at a time.
 
 What to expect from gemma4:
-- **It often asks before a direct fix.** Asked "Fix the bug where…", it may choose the planning mode, save a plan and ask whether to implement it. Answer "yes": it then implements the plan and runs the tests.
+- **It sometimes asks before a direct fix.** Asked "Fix the bug where…", it may choose the planning mode, save a plan and ask whether to implement it. Answer "yes": it then implements the plan and runs the tests.
 - **It reads less than it should.** It sometimes answers from one section where several files are needed. Ask it to check the other files if the answer leaves something out.
 - **It sometimes stops after saying what it will do next** ("First, I'll search for…"). Type `continue`.
 - **It rarely answers with only a token of its chat template**, such as `<|tool_response>`. Type `/clear` and ask again (see [Starting a session](#starting-a-session)).
@@ -217,6 +217,10 @@ qwen3-coder:30b was the model the tools were first developed with, and it uses t
 - **It guesses and loops when stuck**: it called commands that do not exist before listing them, and once spent 25 steps on a test it had written wrong, leaving a debug file behind.
 
 Its mistakes are silent: unrequested changes and claims of work not done are noticed only by checking. gemma4's mistakes show in its reply and are corrected with one message. If you mostly ask for small direct fixes and review every diff, qwen3-coder works too.
+
+#### Larger models: gpt-oss:120b
+
+gpt-oss:120b was tested in the same way (see [local_ai_test_results.md](local_ai_test_results.md#gpt-oss-120b-compared-with-gemma4-2026-10-31)). It is not better enough to recommend over gemma4: it reads more of the code when answering and fixed every bug directly, but it reviewed none of its changes with the diff and changed code once when asked only what to change. It takes about 65 GB, so on a machine with 64 GB of RAM it runs partly from the page file, a run took 1.3 to 3.7 times as long as with gemma4, and other applications had to be closed.
 
 ### Testing
 

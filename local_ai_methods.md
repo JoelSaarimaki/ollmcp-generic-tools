@@ -88,7 +88,7 @@ Every tool definition is sent with every request, so it costs context all the ti
 
 ## 10. Instructions and the session
 
-- **Choose a mode first**: answering, planning or implementing, said at the start of the reply. With a single implementation workflow, the model started implementing when asked only for a plan.
+- **Choose a mode first**: answering, planning or implementing. With a single implementation workflow, the model started implementing when asked only for a plan. The model does not have to say the mode: gemma4 kept the modes apart just as well without a `Mode: …` line, and without it, it stalled less and fixed more direct requests.
 - **Give each mode examples of the requests that mean it**, and say what the mode produces: with "fix…", "add…", "change…" as examples, and "such a request is the permission", gemma4 implemented a direct "Fix the bug" slightly more often (1 of 3 runs instead of 0 of 3, still its weak point), and with "save a plan in a file with dev_write_file" in the planning mode itself, it saved new plans in 3 of 3 runs instead of 0 of 3.
 - **Do not end a reply by announcing the next step**: a model that writes "First, I'll search for…" and stops leaves the user to type "continue". The instructions say to call the tool instead.
 - **Concrete steps instead of general advice**: outline, read sections, edit with the hash, check the outline, run single tests, review the diff. Small models follow steps better than "understand the project first".
@@ -108,5 +108,6 @@ Every tool definition is sent with every request, so it costs context all the ti
 - **Good error messages are part of the design**: a refused action with a clear next step was enough for the model to recover.
 - **The model goes straight to the task**: anything that must happen first has to be asked for, not just written in a system prompt.
 - **Test whole tasks, and check the result**: replaying tasks such as "plan this", "change the plan" and "fix this", and checking afterwards which files changed and whether hidden tests pass, showed what single first calls cannot, e.g. a model that claimed "I updated the plan" without touching the file.
+- **Check what the model does, not what it says**: a model that said "Mode: planning" then fixed the code. The tests check the mode from the files changed.
 - **Choose the model by its mistakes, not only by its strengths**: qwen3-coder used the tools better, but its mistakes were silent (code changed in planning mode, work claimed but not done); gemma4's showed in its reply and cost one message to correct.
 - **Instruction changes interact**: in a draft that also said that saving a plan needs no permission, gemma4 planned instead of fixing in every run, so each change was measured in the scenarios it could affect, also the ones it was not meant for.

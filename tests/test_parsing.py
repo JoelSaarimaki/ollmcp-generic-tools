@@ -253,6 +253,20 @@ def test_headings_are_found_by_name(query):
     matches = find_sections(outline_text(MARKDOWN, ".md"), query)
     assert [(s.start, s.end) for _, s in matches] == [(7, 12)]
 
+@pytest.mark.parametrize("query", ["CODES", "codes", "LIMIT", "docstring", "imports", "docstring, assignments", "docstring, assignments: CODES"])
+def test_blocks_are_found_by_assigned_names_and_parts(query):
+    text = '"""Codes."""\nimport os\n\nCODES = {}\nA, B = 1, 2\nC = D = 3\nLIMIT = 4\n\ndef f():\n    pass\n'
+    matches = find_sections(outline_text(text, ".py"), query)
+    assert [(s.start, s.end) for _, s in matches] == [(1, 7)]
+
+def test_names_assigned_in_a_function_do_not_find_a_block():
+    _, error, _ = locate_section(outline_text("X = 1\n\ndef f():\n    y = 2\n", ".py"), "y")
+    assert error == "section_not_found"
+
+def test_a_section_name_comes_before_an_assigned_name():
+    text = "run = None\n\ndef run():\n    pass\n"
+    assert [(s.start, s.end) for _, s in find_sections(outline_text(text, ".py"), "run")] == [(3, 4)]
+
 def test_heading_with_parentheses_is_found_as_written():
     assert len(find_sections(outline_text("# Use foo() here\ntext\n", ".md"), "Use foo() here")) == 1
 

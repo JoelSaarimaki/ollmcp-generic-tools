@@ -51,6 +51,7 @@ class Section:
     children: list["Section"] = field(default_factory=list)
     calls: list[str] = field(default_factory=list)
     instantiates: list[str] = field(default_factory=list)
+    parts: list[str] = field(default_factory=list)  # A block's parts and the names it assigns, e.g. ['docstring', 'assignments', 'CODES']
 
     @property
     def label(self) -> str:
@@ -206,10 +207,11 @@ def _python_block(nodes: list) -> Section:
             part = "statements"
         if part not in parts:
             parts.append(part)
+    found = parts + names
     if names:
         listed = ", ".join(names[:3]) + (f", +{len(names) - 3} more" if len(names) > 3 else "")
         parts[parts.index("assignments")] = f"assignments: {listed}"
-    return Section("block", ", ".join(parts), nodes[0].lineno, nodes[-1].end_lineno)
+    return Section("block", ", ".join(parts), nodes[0].lineno, nodes[-1].end_lineno, parts=found)
 
 def _outline_python(text: str, known: dict | None) -> Outline:
     """
@@ -736,10 +738,13 @@ def _query_variants(query: str) -> list[set[str]]:
 def find_sections(outline: Outline, query: str) -> list[tuple[str, Section]]:
     """
     Returns (full name, section) for the sections matching query: first by full name (e.g. 'App.run'),
-    then by name alone (e.g. 'run'), each first with the exact letter case and then ignoring it.
+    then by name alone (e.g. 'run'), each first with the exact letter case and then ignoring it. If nothing
+    matches, a block of top-level statements is found by a name it assigns (e.g. 'CODES') or by one of its
+    parts (e.g. 'docstring', or 'docstring, assignments' without the names that follow in the outline).
     """
     entries = [(qualified_name(path), section) for path, section in iter_sections(outline.sections)]
-    for variants in _query_variants(query):
+    variant_sets = _query_variants(query)
+    for variants in variant_sets:
         for fold in (False, True):
             # '()' is removed from both sides, so that 'run()' finds 'run' and a heading such as 'Use foo() here' is found as given
             norm = (lambda value: value.replace("()", "").casefold()) if fold else (lambda value: value.replace("()", ""))
@@ -750,6 +755,14 @@ def find_sections(outline: Outline, query: str) -> list[tuple[str, Section]]:
             by_name = [(name, section) for name, section in entries if norm(section.name) in wanted]
             if by_name:
                 return by_name
+    for variants in variant_sets:
+        for fold in (False, True):
+            norm = (lambda value: value.casefold()) if fold else (lambda value: value)
+            wanted = [{norm(item.strip()) for item in v.split(",")} for v in variants]
+            by_part = [(name, section) for name, section in entries
+                       if section.kind == "block" and any(items <= {norm(p) for p in section.parts} for items in wanted)]
+            if by_part:
+                return by_part
     return []
 
 def locate_section(outline: Outline | None, query: str) -> tuple[Section | None, str, str]:

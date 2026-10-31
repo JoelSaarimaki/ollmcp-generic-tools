@@ -68,7 +68,7 @@ def test_the_ai_can_read_the_instructions_and_write_plans_in_a_created_project(n
     (new_project / ".gitignore").write_text(".ollmcp-tools\n.mcp.json\n", encoding="utf-8")
     project.config_path = new_project / ".ollmcp-tools/tools-config.json"
     fs = project.load("filesystem")
-    assert "Mode: planning" in fs.read_file_with_metadata(".ollmcp-tools/instructions.md")
+    assert "## Planning mode" in fs.read_file_with_metadata(".ollmcp-tools/instructions.md")
     assert json.loads(fs.write_file(".ollmcp-tools/context/plan-login.md", "# Plan\n## Steps\n"))["success"]
     assert "read-only" in json.loads(fs.write_file(".ollmcp-tools/instructions.md", "x", "0"))["message"]
     assert "access_denied" in fs.read_file_with_metadata(".ollmcp-tools/commands.json")

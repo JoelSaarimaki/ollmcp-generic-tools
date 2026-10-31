@@ -2,7 +2,7 @@
 
 ## First, choose the mode
 
-Every task is done in one of three modes. Choose the mode from the user's request before you call any other tool, and start your reply with `Mode: answering`, `Mode: planning` or `Mode: implementing`.
+Every task is done in one of three modes. Choose the mode from the user's request before you call any other tool.
 
 - **Answering**: the user asks a question, or asks for an explanation or a review ("how does…", "why does…", "what is wrong with…", "where is…"). You examine the code and answer in your reply. You write no files.
 - **Planning**: the user asks for a plan, a design, a proposal or an evaluation of a change ("plan…", "how would you…", "what should we change…"). You examine the code and save a plan in a file in `.ollmcp-tools/context` with **dev_write_file**, but you change no project files.

@@ -1,12 +1,12 @@
 # Local AI test results
 
-Results of running the tools with local models through Ollama, qwen3-coder 30b and, since 2026-10-23, also gemma4 26b, which is now the recommended model (see [qwen3-coder 30b and gemma4 26b compared](#qwen3-coder-30b-and-gemma4-26b-compared-2026-10-23)): how the model behaves with the tool definitions, the system prompt and the project instructions. These are not the tests of the toolset itself, which are in `tests/` and described in [DEVELOPMENT.md](DEVELOPMENT.md#how-changes-have-been-verified): those show that the tools behave as designed, these show what a model does with them.
+Results of running the tools with local models through Ollama, qwen3-coder 30b and, since 2026-10-23, also gemma4 26b, which is now the recommended model (see [qwen3-coder 30b and gemma4 26b compared](#qwen3-coder-30b-and-gemma4-26b-compared-2026-10-23)), and on 2026-10-31 gpt-oss 120b (see [gpt-oss 120b compared with gemma4](#gpt-oss-120b-compared-with-gemma4-2026-10-31)): how the model behaves with the tool definitions, the system prompt and the project instructions. These are not the tests of the toolset itself, which are in `tests/` and described in [DEVELOPMENT.md](DEVELOPMENT.md#how-changes-have-been-verified): those show that the tools behave as designed, these show what a model does with them.
 
 The design decisions that followed from the results are in [DEVELOPMENT.md](DEVELOPMENT.md), and what users should do in the [README](README.md#starting-a-session).
 
 ## Setup
 
-- Model `qwen3-coder:30b`, Ollama 0.34.1, ollmcp 0.35.0, on the developer's Windows machine. On 2026-10-23 both `qwen3-coder:30b` and `gemma4:26b` were run with Ollama 0.40.9, fully on the CPU, as the machine's 8 GB GPU is too small for either.
+- Model `qwen3-coder:30b`, Ollama 0.34.1, ollmcp 0.35.0, on the developer's Windows machine. On 2026-10-23 both `qwen3-coder:30b` and `gemma4:26b` were run with Ollama 0.40.9, fully on the CPU, as the machine's 8 GB GPU is too small for either. On 2026-10-31 `gpt-oss:120b` ran the same way, partly from the page file, as the machine has 64 GB of RAM.
 - The requests were replayed with scripts, not typed in ollmcp, so that the same request could be repeated with other settings. The scripts started the tools' server over stdio, took its tool definitions with `list_tools()` and turned them into the request payload with ollmcp's own `build_tool_payload` (`mcp_client_for_ollama.tools.manager`), which gives the `dev_<tool>` names the model sees in ollmcp.
 - Requests were sent with `ollama.chat(model="qwen3-coder:30b", messages=..., tools=..., options={"num_ctx": 32000, "seed": n})`, or through any-llm's `AnyLLM.create("ollama").acompletion(..., stream=True)`, as ollmcp does. Since 2026-10-23 `think=True` is added for models that can think, such as gemma4, as ollmcp turns thinking on for them. A parsed tool call is in `message.tool_calls`; a broken one shows up as `<function=` in `message.content`.
 - Where the model's tool calls were executed, the scripts called the real server, in a temporary project set up with `python -m ollmcp_tools init`, and gave the model the responses, up to 20 steps per run (25 in the comparisons of 2026-10-23).
@@ -16,7 +16,7 @@ The design decisions that followed from the results are in [DEVELOPMENT.md](DEVE
 
 ## Choosing a mode (2026-10)
 
-With instructions that were a single implementation workflow, qwen3-coder 30b started implementing when asked only for a plan. The instructions template therefore starts by making the model choose a mode, answering, planning or implementing, and say it (`Mode: planning`). This was observed in use, not counted.
+With instructions that were a single implementation workflow, qwen3-coder 30b started implementing when asked only for a plan. The instructions template therefore starts by making the model choose a mode, answering, planning or implementing, and say it (`Mode: planning`). This was observed in use, not counted. Saying the mode was dropped on 2026-10-27, as gemma4 keeps the modes apart without it (see [Choosing the mode without saying it](#choosing-the-mode-without-saying-it-2026-10-27)).
 
 ## Broken tool calls (2026-10-19)
 
@@ -190,3 +190,71 @@ Findings:
 - Leaked template tokens: with draft 3, `<channel|>` appeared in 3 of 21 runs, each time in an answer whose tool call still worked, and no answer was only a template token.
 
 Draft 3 is the template since 2026-10-23, at about 2 000 prompt tokens with gemma4 (1 800 before). Repeat with `python local_ai_tests/compare_models.py --models gemma4:26b --seeds 1,2,3`, giving a draft with `--instructions`.
+
+## Choosing the mode without saying it (2026-10-27)
+
+Whether gemma4 needs to start its reply with `Mode: …` to keep the modes apart, or whether choosing the mode is enough. The suspicion was that saying the mode satisfies the model more than acting in it does: in the comparison above, gemma4 updated the plan correctly without any "Mode:" line, and asked "Fix the bug where…" it mostly said "Mode: planning" and then stayed there.
+
+**Setup.** As in [Instructions for gemma4](#instructions-for-gemma4-2026-10-23), with gemma4 26b on the CPU, comparing the template (draft 3) with **draft 5**: the same template with "and start your reply with `Mode: answering`, `Mode: planning` or `Mode: implementing`" removed, so it only says "Choose the mode from the user's request before you call any other tool." In draft 5's runs, the scenarios' earlier assistant replies were given without their "Mode: planning" line, so that the history did not teach the line. Draft 3's runs are those of the previous section. Seeds 1 to 3 for every scenario, and 4 and 5 for "What should we change?" and "Fix the bug…" with draft 5.
+
+The mode is now checked from what the model did, not from what it said: code changed is implementing, only a plan written is planning, nothing written is answering. Counts of runs:
+
+| Scenario: what is counted | Draft 3 (template before) | Draft 5 (no "Mode:" line) |
+|---|---|---|
+| Why is SAVE10 not applied: acted in the answering mode, correct answer | 3/3, 3/3 | 3/3, 3/3 |
+| How is the total calculated: acted in the answering mode / all 3 files read | 3/3 / 0/3 | 3/3 / 0/3 |
+| "What should we change?": no code changed | 3/3 | **5/5** |
+| Plan fixed-amount codes: plan saved in a file, no code changed | 3/3 | 3/3 |
+| Change the plan: plan updated, no code changed | 3/3 | 3/3 |
+| Implement the approved plan: hidden tests pass | 3/3 | 3/3 |
+| "Fix the bug…": fixed, hidden tests pass | 1/3 | **3/4** |
+| All: acted in the right mode | 19/21 | 23/24 |
+| All: code changed when the mode forbade it | 0 | **0** |
+| All: stalls ("Continue." needed) | 3 | **0** |
+| All: leaked template tokens (`<channel\|>`) | 3 | 0 |
+
+Findings:
+- **gemma4 keeps the modes apart without saying the mode.** It never changed code when asked a question or for a plan, saved and updated plans as before, and implemented approved plans correctly.
+- **What gemma4 said and what it did differed.** Rescored by its actions, one of draft 3's "Fix the bug…" runs had said "Mode: planning" and then fixed the bug. The line is therefore not a reliable sign of the mode, and the checks no longer count it.
+- **Direct fixes did not get worse, and probably better**: fixed in 3 of 4 runs, against 1 of 3. The one miss was the familiar one: a plan in the reply and a question whether to implement it, with no file changed. Four runs are too few to call it a real improvement.
+- **No stalls and no leaked tokens without the line.** With it, a reply began with prose ("Mode: planning\n\nI will now examine…"), the pattern of a reply that ends after announcing a step; without it, the replies started with the tool call. This fits, but three stalls against none is a small count.
+- The runs were interrupted twice when the machine ran low on memory, and continued from the saved runs; the extra seeds 4 and 5 were not run with draft 3.
+
+Draft 5 is the template since 2026-10-27. `compare_models.py` reports both the mode the model acted in ("acted in the right mode") and, if the instructions ask for it, the mode it said; it leaves the "Mode:" line out of the scenarios' earlier replies when the instructions do not ask for it. Repeat with `python local_ai_tests/compare_models.py --models gemma4:26b --seeds 1,2,3`, with `--instructions` for a draft.
+
+## gpt-oss 120b compared with gemma4 (2026-10-31)
+
+Whether a larger model avoids the mistakes of gemma4 26b and qwen3-coder 30b: gpt-oss 120b, a mixture-of-experts model with 5.1B active parameters, about 65 GB in Ollama.
+
+**Setup.** As in [qwen3-coder 30b and gemma4 26b compared](#qwen3-coder-30b-and-gemma4-26b-compared-2026-10-23), with the instructions template of 2026-10-27 (draft 5), Ollama 0.40.9 and thinking on. The model ran fully on the CPU: Ollama put none of it on the 8 GB GPU, and it did not fit in the machine's 64 GB of RAM next to the other applications, so about 15 GB of it was in the page file throughout. The 7 scenarios ran with seeds 1 to 3, and "What should we change?" and "Plan fixed-amount codes" also with seeds 4 and 5, for both models. gemma4's seeds 1 to 3 (and 4 and 5 of "What should we change?") are the draft 5 runs of [Choosing the mode without saying it](#choosing-the-mode-without-saying-it-2026-10-27).
+
+Two things were fixed during the comparison:
+- **The script sent "Continue." to a reply that asked for approval.** gpt-oss ended a plan given in its reply with "If you approve this plan, I will proceed to implement the changes.", which the stall check took for an announced step, as it did not end with "?". The model took "Continue." as the approval and implemented the plan. The check now treats such a reply ("if you approve", "if you'd like", …) as asking the user, and the run was repeated. None of the 14 other "Continue." messages in the saved runs of all models was such a reply.
+- **gpt-oss asked for top-level variables as sections** (`section="CODES"`, `"VAT_PERCENT"`, `"docstring"`), which were not section names: the outline names such a block `docstring, assignments: CODES`. 11 of its 13 tool errors in the first 21 runs were these; it always recovered with `get_outline`. A block of top-level Python statements is now also found by a name it assigns or by one of its parts. The seeds 4 and 5 and the repeated run were made with this change, and gpt-oss read `section="CODES"` successfully in two of them.
+
+| Scenario: what is counted | gpt-oss 120b | gemma4 26b |
+|---|---|---|
+| Why is SAVE10 not applied: acted in the answering mode, correct answer | 3/3, 3/3 | 3/3, 3/3 |
+| How is the total calculated: acted in the answering mode / all 3 files read | 3/3 / **3/3** | 3/3 / 0/3 |
+| "What should we change?": no code changed | 4/5 | **7/7** |
+| Plan fixed-amount codes: plan saved in a file, no code changed | 5/5 | 5/5 |
+| Change the plan: plan updated, no code changed | 3/3 | 3/3 |
+| Implement the approved plan: hidden tests pass / plan read first | 3/3 / 2/3 | 3/3 / **3/3** |
+| "Fix the bug…": fixed, hidden tests pass | **3/3** | 3/4 |
+| Implementing runs that ran the tests | 6/6 | 6/6 |
+| Implementing runs that reviewed the diff | 0/6 | **5/6** |
+| Claims of work not done | 0 | 0 |
+| Stalls / broken output | 0 / 0 | 0 / 0 |
+| Seconds per run, all scenarios with seeds 1 to 3 | 505 | 397 |
+
+Findings:
+- **gpt-oss reads more widely when answering.** It read all three files for the question about the total in every run, which gemma4 never did, and fixed the bug directly in every run. When implementing, both models ran the tests every time, but only gemma4 reviewed the diff, and gemma4 read the approved plan first in every run, gpt-oss in 2 of 3.
+- **It changed code once when asked only "What should we change?"**: it read the code, changed `>` to `>=`, and said so in its reply. This is qwen3-coder's mistake, in 1 of 5 runs instead of 2 of 3, and it is visible in the reply. gemma4 never changed code when the mode forbade it.
+- **It never claimed work it had not done**, unlike qwen3-coder, and it had no stalls, leaked template tokens or broken calls.
+- **Like gemma4, it never marked the steps of an implemented plan done.**
+- **It was about 30 % slower than gemma4 over seeds 1 to 3, with 15 GB of it in the page file**, and 1.5 to 3.7 times slower in the extra seeds (250 to 870 s per run against 170 to 240 s). The paging also made the machine hard to use for other work: other applications had to be closed. With llama.cpp's `llama-server` mapping the model file (mmap) and the attention layers on the GPU, it would page less, but that was not measured.
+- 3 to 5 seeds per scenario is a small sample: the one run with an unrequested change is the only difference in the modes.
+
+**Conclusion:** gpt-oss 120b is a credible alternative to gemma4, not an improvement: it reads more widely when answering, but reviews its changes less, needs about 65 GB of memory instead of 18 GB, and once changed code unasked. gemma4 26b stays the recommended model.
+
+Repeat with `python local_ai_tests/compare_models.py --models gpt-oss:120b --seeds 1,2,3`, and `--scenarios ambiguous_change,plan_new --seeds 4,5` for the extra seeds.

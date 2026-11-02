@@ -11,9 +11,9 @@ For the design principles behind the tools and the planned improvements, see [DE
 ### Prerequisites
 
 1.  **Install Ollama**:
-    Download and install Ollama from [ollama.com](https://ollama.com/). Once installed, download and try the recommended model, gemma4:26b (see [Choosing the model](#choosing-the-model)), with:
+    Download and install Ollama from [ollama.com](https://ollama.com/). Once installed, download and try the recommended model, flint:40b (see [Choosing the model](#choosing-the-model)), with:
     ```bash
-    ollama run gemma4:26b
+    ollama run flint:40b
     ```
 
 2.  **Install ollmcp and the tools**:
@@ -125,7 +125,7 @@ The `.ollmcp-tools/tools-config.json` that `init` creates, here with a forbidden
 
 All settings except `project_dir` are optional. An optional setting that is left out or set to `null` uses its default, so `null` can be used to show that a setting exists without using it. Note that an empty list is not the same as `null`: `"ignored_dirs": []` skips no folders at all, while `"ignored_dirs": null` skips the default folders.
 
-`project_dir` is resolved against the folder of the config file, and every other relative path against `project_dir`: `".."` is the project folder, and `".ollmcp-tools"` in `forbidden_paths` is the tools' own folder in it. Absolute paths are also accepted. The server refuses to start if the file is missing, is not valid JSON, lacks `project_dir`, points `project_dir` to a folder that does not exist, has a `backup_folder` that contains `project_dir`, has a `command_suggestions` file that is the config file or the command registry, has an allowed path that is not inside a forbidden folder or a read-only file that does not exist, names an unknown toolset or tool, disables every tool, or contains an unknown setting, so a typo cannot silently weaken the configuration. A setting that was renamed or moved, such as the earlier `commands_config` and `ollama_api_key`, is named in the error with what to do instead. The config file itself is always [protected](#protected-files).
+`project_dir` is resolved against the folder of the config file, and every other relative path against `project_dir`: `".."` is the project folder, and `".ollmcp-tools"` in `forbidden_paths` is the tools' own folder in it. Absolute paths are also accepted. The server refuses to start if the file is missing, is not valid JSON, lacks `project_dir`, points `project_dir` to a folder that does not exist, has a `backup_folder` that contains `project_dir`, has a `command_suggestions` file that is the config file or the command registry, has an allowed path that is not inside a forbidden folder or a read-only file that does not exist, names an unknown toolset or tool, disables every tool, or contains an unknown setting, so a typo cannot silently weaken the configuration. A setting that has been renamed or moved, such as `commands_config` and `ollama_api_key`, is named in the error with what to do instead. The config file itself is always [protected](#protected-files).
 
 | Setting | Description |
 |---|---|
@@ -182,45 +182,60 @@ The AI follows your project instructions only after it has read them, and they t
    In ollmcp, type `/model-config` (or `/mc`) and set the system prompt, then type `/save-config` (or `/sc`) and save it as `default`, which ollmcp loads automatically when it starts. The tool name is written as the model sees it, with `_`.
 2. **Start every session with "Read the project instructions."**, also after `/clear`, and give the AI its task after that.
 
-Neither step is enough alone. In tests (see [local_ai_test_results.md](local_ai_test_results.md#session-start-with-gemma4-2026-10-23)), the model's first tool call read the instructions:
+Neither step is enough alone. In tests (see [local_ai_test_results.md](local_ai_test_results.md#session-start-and-tool-definitions-with-flint)), the model's first tool call read the instructions:
 
-| Setup | gemma4 26b | qwen3-coder 30b |
-|---|---|---|
-| System prompt, first message "Read the project instructions." | 10 of 10 | 20 of 20 |
-| No system prompt, first message "Read the project instructions." | 5 of 10 | 9 of 20 |
-| System prompt, first message already the task | 2 of 12 | 2 of 18 |
+| Setup | flint 40b | gemma4 26b | qwen3-coder 30b |
+|---|---|---|---|
+| System prompt, first message "Read the project instructions." | 10 of 10 | 10 of 10 | 20 of 20 |
+| No system prompt, first message "Read the project instructions." | 5 of 10 | 5 of 10 | 9 of 20 |
+| System prompt, first message already the task | 4 of 12 | 2 of 12 | 2 of 18 |
 
-**The system prompt also keeps the tool calls working.** Local models sometimes write a tool call as plain text in their answer, which ollmcp then shows as an answer, so the tool is never called. qwen3-coder 30b wrote calls such as `<function=dev_read_context_file> </tool_call>` without the opening `<tool_call>` tag: without a system prompt in 3 of 24 test requests with the 26 tools of the time, and with the session-start prompt in none (see [local_ai_test_results.md](local_ai_test_results.md#broken-tool-calls-2026-10-19)). With the current prompt, none of the 32 first calls measured with gemma4 26b was broken. In longer tasks, gemma4 sometimes answers with only a token of its chat template, such as `<|tool_response>` (in 1 of 21 test tasks), or leaves one such as `<channel|>` in an answer whose tool call still works (in 1 to 3 of 21).
+**The system prompt also keeps the tool calls working.** Local models sometimes write a tool call as plain text in their answer, which ollmcp then shows as an answer, so the tool is never called. qwen3-coder 30b writes calls such as `<function=dev_read_context_file> </tool_call>` without the opening `<tool_call>` tag: in tests, without a system prompt in 3 of 24 requests, and with the session-start prompt in none (see [local_ai_test_results.md](local_ai_test_results.md#broken-tool-calls-2026-10-19)). With the current prompt, none of the 32 first calls measured with flint 40b, nor of the 32 with gemma4 26b, was broken. In longer tasks, gemma4 sometimes answers with only a token of its chat template, such as `<|tool_response>` (in 1 of 21 test tasks), or leaves one such as `<channel|>` in an answer whose tool call still works (in 1 to 3 of 21).
 
 If a broken call or answer still appears:
 - Type `/clear` before trying again. ollmcp keeps the broken call in the chat history as an ordinary answer, and the model then repeats it.
 - Leave out the tools the project does not need (see [Choosing the toolsets](#choosing-the-toolsets)): the more tool definitions, the more often it happens.
-- Leave `num_ctx` unset in `/model-config`, or keep it large: ollmcp then asks for a 32 000-token context. With Ollama's own default of 4 096 tokens, the tool definitions alone (about 2 750 tokens with every tool and 2 550 without the `web` tools for gemma4, about 3 350 and 3 100 for qwen3-coder) take most of the context, the prompt is cut, and the tool calls break.
+- Leave `num_ctx` unset in `/model-config`, or keep it large: ollmcp then asks for a 32 000-token context. With Ollama's own default of 4 096 tokens, the tool definitions alone (about 2 750 tokens with every tool and 2 550 without the `web` tools for flint and gemma4, about 3 350 and 3 100 for qwen3-coder) take most of the context, the prompt is cut, and the tool calls break.
 
 ### Choosing the model
 
-The recommended model is **gemma4:26b**. Both it and qwen3-coder:30b were tested with the same tasks and the tools (see [local_ai_test_results.md](local_ai_test_results.md#qwen3-coder-30b-and-gemma4-26b-compared-2026-10-23)): answering questions, writing and changing a plan, and implementing a plan or a fix. gemma4 keeps answering, planning and implementing apart: it never changed code when asked only for an answer or a plan, and it changed an existing plan correctly in every run. The [instructions template](ollmcp_tools/templates/instructions.md) was then adapted to its mistakes, so that it also saves new plans in `.ollmcp-tools/context` (see [local_ai_test_results.md](local_ai_test_results.md#instructions-for-gemma4-2026-10-23)). If you created your project's `instructions.md` before 2026-10-23, compare it with the template.
+The recommended model is **flint:40b**. In tests with the tools (see [local_ai_test_results.md](local_ai_test_results.md#flint-40b-glm-47-flash-and-qwen38-compared-with-gemma4-on-the-gpu-2026-11-02)), answering questions, writing and changing a plan, and implementing a plan or a fix, it made none of the mistakes that were counted: it kept answering, planning and implementing apart, fixed a bug directly when asked to, read the files and plans it needed before acting, ran the tests and reviewed its changes with the diff whenever it implemented, and its code passed every hidden test. It is a mixture-of-experts model with 40B parameters, of which 2.5B are active per token, so it runs at a usable speed also partly on the CPU.
 
-Both models take about 18 GB. On a GPU with less memory, Ollama runs them on the CPU, which needs about 20 GB of free RAM per model and makes an answer take minutes: in the tests, on a laptop with an 8 GB GPU, a question took about 2 minutes and a small implementation 5 to 20. Keep only one model loaded at a time.
+flint takes about 22 GB. On a GPU with less memory, Ollama puts the rest on the CPU, which needs that much free RAM: on a laptop with an 8 GB GPU, a question takes about 1 minute and a small implementation 1.5 to 3.5. Keep only one model loaded at a time, and check with `ollama ps` that the GPU is used.
 
-What to expect from gemma4:
+What to expect from flint:
+- **It reads a lot before it acts**, so it is slower than gemma4: about 2 minutes per task against 1.
+- **It runs the project's other checks too**, such as lint and type checks, and says in its reply when one could not run. Register only commands that work in the project (see [Commands](#commands)).
+- **It cannot see images**: `read_image` needs a vision model, such as gemma4:26b.
+
+#### Alternatives
+
+| | flint:40b | gemma4:26b | qwen3-coder:30b | gpt-oss:120b |
+|---|---|---|---|---|
+| Size | 22 GB | 18 GB | 18 GB | 65 GB |
+| Time per task, 8 GB GPU | about 2 minutes | about 1 minute | not measured | not measured |
+| Keeps the modes apart | yes | yes | no: implements unasked | mostly: changed code once when asked what to change |
+| Fixes directly when asked | yes | often asks first | yes | yes |
+| Reads what it needs | yes | sometimes too little | yes | yes |
+| Tests and reviews its changes | yes | mostly | yes | tests, no diff review |
+| Images | no | yes | no | no |
+
+**gemma4:26b** is the faster alternative, and the one with image input. It never changes code when asked only for an answer or a plan, and follows the same [instructions](ollmcp_tools/templates/instructions.md). What to expect from it:
 - **It sometimes asks before a direct fix.** Asked "Fix the bug where…", it may choose the planning mode, save a plan and ask whether to implement it. Answer "yes": it then implements the plan and runs the tests.
 - **It reads less than it should.** It sometimes answers from one section where several files are needed. Ask it to check the other files if the answer leaves something out.
 - **It sometimes stops after saying what it will do next** ("First, I'll search for…"). Type `continue`.
 - **It rarely answers with only a token of its chat template**, such as `<|tool_response>`. Type `/clear` and ask again (see [Starting a session](#starting-a-session)).
 
-#### Why not qwen3-coder
-
-qwen3-coder:30b was the model the tools were first developed with, and it uses them well: it reads every relevant file before it answers, runs the tests and reviews its changes with the diff. It is not recommended, as it does not respect the modes of the [instructions](ollmcp_tools/templates/instructions.md):
+**qwen3-coder:30b** uses the tools well: it reads every relevant file before it answers, runs the tests and reviews its changes with the diff. But it does not respect the modes of the instructions, and its mistakes are silent, noticed only by checking:
 - **It implements without being asked.** Asked "What should we change?", it wrote a plan and then changed the code in 2 of 3 runs.
 - **It claims work it did not do.** Asked to change a plan, it replied "I updated the plan" without changing the file in 2 of 3 runs, and changed the code in the third.
 - **It guesses and loops when stuck**: it called commands that do not exist before listing them, and once spent 25 steps on a test it had written wrong, leaving a debug file behind.
 
-Its mistakes are silent: unrequested changes and claims of work not done are noticed only by checking. gemma4's mistakes show in its reply and are corrected with one message. If you mostly ask for small direct fixes and review every diff, qwen3-coder works too.
+If you mostly ask for small direct fixes and review every diff, qwen3-coder works too.
 
-#### Larger models: gpt-oss:120b
+**gpt-oss:120b** reads more of the code than gemma4 when answering and fixes bugs directly, but it does not review its changes with the diff and once changed code when asked only what to change. At 65 GB it runs partly from the page file on a machine with 64 GB of RAM, so other applications have to be closed while it runs.
 
-gpt-oss:120b was tested in the same way (see [local_ai_test_results.md](local_ai_test_results.md#gpt-oss-120b-compared-with-gemma4-2026-10-31)). It is not better enough to recommend over gemma4: it reads more of the code when answering and fixed every bug directly, but it reviewed none of its changes with the diff and changed code once when asked only what to change. It takes about 65 GB, so on a machine with 64 GB of RAM it runs partly from the page file, a run took 1.3 to 3.7 times as long as with gemma4, and other applications had to be closed.
+Not recommended: **glm-4.7-flash** keeps the modes apart, but its implementations failed the hidden tests in 2 of 3 runs, once after changing its own failing test to match wrong code and replying that the work was done. **qwen3.8:27b** is accurate but too slow on a laptop: it is a dense model, and a planning or implementing task takes 3 to 17 minutes.
 
 ### Testing
 
@@ -242,7 +257,7 @@ Provides safe and robust file system operations, including metadata retrieval, a
 - **write_file** Creates a new file, and any missing folders, with the line endings of the files next to it, or safely replaces the whole content of an existing file with hash validation. Replacing needs the file's SHA-256 (`expected_sha256`), and creating needs it empty, so a mistyped path is not created as a new file and an existing file is not overwritten by accident. Rejects placeholder comments such as `// ... existing code ...` and warns if the file shrinks to less than half.
 - **edit_file** Changes part of an existing file by replacing an exact piece of text, with hash validation. Keeps the file's line endings and BOM, and shows the changed lines, the new SHA-256 and the file's outline after the edit.
 - **read_file_with_metadata** Reads a text file and returns its exact content along with metadata (sha256, line count, encoding, etc.). Can read a class, function or Markdown heading by its name (`section`, e.g. `App.run` or `Install`) or a range of lines (`start_line`, `end_line`) with optional line numbers, and reads long files in parts of up to 1000 lines.
-- **read_image** Reads a PNG, JPEG, GIF or WebP image (up to 10 MB) and returns it as an image the AI can see, along with its metadata. Requires a vision-capable model, such as gemma4:26b; with other models, such as qwen3-coder:30b, ollmcp skips the image and shows a warning.
+- **read_image** Reads a PNG, JPEG, GIF or WebP image (up to 10 MB) and returns it as an image the AI can see, along with its metadata. Requires a vision-capable model, such as gemma4:26b; with other models, such as flint:40b, ollmcp skips the image and shows a warning.
 - **move_file** Moves or renames a file or directory, creating missing destination folders. There is no separate tool for creating folders: `write_file` and `move_file` create the folders they need. There is no directory listing either: `get_outline` and `search_files_by_pattern` list the files of a folder.
 - **delete_file** Deletes a file or a directory. It is moved into the backup folder, so `restore_file` can bring it back.
 - **restore_file** Undoes the last change that `edit_file`, `write_file`, `move_file` or `delete_file` made to a file or folder, e.g. when an edit broke a file; calling it again undoes earlier changes. A restored edit gets back its exact bytes (line endings and BOM), a created file is removed, a moved file is moved back (by its old or new path), and a deleted file or folder comes back. The response shows the new SHA-256 and outline of a restored file. See [Backups](#backups).

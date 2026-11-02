@@ -1,18 +1,18 @@
 # Local AI test results
 
-Results of running the tools with local models through Ollama, qwen3-coder 30b and, since 2026-10-23, also gemma4 26b, which is now the recommended model (see [qwen3-coder 30b and gemma4 26b compared](#qwen3-coder-30b-and-gemma4-26b-compared-2026-10-23)), and on 2026-10-31 gpt-oss 120b (see [gpt-oss 120b compared with gemma4](#gpt-oss-120b-compared-with-gemma4-2026-10-31)): how the model behaves with the tool definitions, the system prompt and the project instructions. These are not the tests of the toolset itself, which are in `tests/` and described in [DEVELOPMENT.md](DEVELOPMENT.md#how-changes-have-been-verified): those show that the tools behave as designed, these show what a model does with them.
+Results of running the tools with local models through Ollama, qwen3-coder 30b and, since 2026-10-23, also gemma4 26b, the recommended model until 2026-11-02 (see [qwen3-coder 30b and gemma4 26b compared](#qwen3-coder-30b-and-gemma4-26b-compared-2026-10-23)), on 2026-10-31 gpt-oss 120b (see [gpt-oss 120b compared with gemma4](#gpt-oss-120b-compared-with-gemma4-2026-10-31)), and on 2026-11-02 flint 40b, now the recommended model, glm-4.7-flash and qwen3.8 27b (see [flint 40b, glm-4.7-flash and qwen3.8 compared with gemma4 on the GPU](#flint-40b-glm-47-flash-and-qwen38-compared-with-gemma4-on-the-gpu-2026-11-02)): how the model behaves with the tool definitions, the system prompt and the project instructions. These are not the tests of the toolset itself, which are in `tests/` and described in [DEVELOPMENT.md](DEVELOPMENT.md#how-changes-have-been-verified): those show that the tools behave as designed, these show what a model does with them.
 
 The design decisions that followed from the results are in [DEVELOPMENT.md](DEVELOPMENT.md), and what users should do in the [README](README.md#starting-a-session).
 
 ## Setup
 
-- Model `qwen3-coder:30b`, Ollama 0.34.1, ollmcp 0.35.0, on the developer's Windows machine. On 2026-10-23 both `qwen3-coder:30b` and `gemma4:26b` were run with Ollama 0.40.9, fully on the CPU, as the machine's 8 GB GPU is too small for either. On 2026-10-31 `gpt-oss:120b` ran the same way, partly from the page file, as the machine has 64 GB of RAM.
+- Model `qwen3-coder:30b`, Ollama 0.34.1, ollmcp 0.35.0, on the developer's Windows machine. On 2026-10-23 both `qwen3-coder:30b` and `gemma4:26b` were run with Ollama 0.40.9, fully on the CPU, as the machine's 8 GB GPU is too small for either. On 2026-10-31 `gpt-oss:120b` ran the same way, partly from the page file, as the machine has 64 GB of RAM. Ollama's GPU backend turned out to have been missing from 2026-10-23 (see [The same model on llama-server with mmap](#the-same-model-on-llama-server-with-mmap-2026-11-01)); from 2026-11-02, with Ollama 0.40.13, part of each model ran on the GPU.
 - The requests were replayed with scripts, not typed in ollmcp, so that the same request could be repeated with other settings. The scripts started the tools' server over stdio, took its tool definitions with `list_tools()` and turned them into the request payload with ollmcp's own `build_tool_payload` (`mcp_client_for_ollama.tools.manager`), which gives the `dev_<tool>` names the model sees in ollmcp.
 - Requests were sent with `ollama.chat(model="qwen3-coder:30b", messages=..., tools=..., options={"num_ctx": 32000, "seed": n})`, or through any-llm's `AnyLLM.create("ollama").acompletion(..., stream=True)`, as ollmcp does. Since 2026-10-23 `think=True` is added for models that can think, such as gemma4, as ollmcp turns thinking on for them. A parsed tool call is in `message.tool_calls`; a broken one shows up as `<function=` in `message.content`.
 - Where the model's tool calls were executed, the scripts called the real server, in a temporary project set up with `python -m ollmcp_tools init`, and gave the model the responses, up to 20 steps per run (25 in the comparisons of 2026-10-23).
 - Prompt sizes come from `prompt_eval_count`, with a unique system message per request so that Ollama's prompt cache does not hide tokens. The size of the tool definitions is the difference to the same request without tools.
 - Runs with the same seed repeat exactly when nothing else changes. Tool responses contain timestamps, so runs that execute tools vary even with the same seed; results are therefore given as counts over several seeds.
-- The scripts are in `local_ai_tests/` (see its README), which is gitignored: it is kept in the developer's own copy, not in every clone. The results of 2026-10-19 and the first results of 2026-10-20 were measured with earlier versions of the same scripts; each section names the command that repeats it. Since 2026-10-23 the scripts use gemma4:26b unless `--model` is given, so add `--model qwen3-coder:30b` to repeat the earlier measurements.
+- The scripts are in `local_ai_tests/` (see its README), which is gitignored: it is kept in the developer's own copy, not in every clone. The results of 2026-10-19 and the first results of 2026-10-20 were measured with earlier versions of the same scripts; each section names the command that repeats it. The scripts use flint:40b unless `--model` is given (gemma4:26b from 2026-10-23, qwen3-coder:30b before), so add `--model` to repeat the earlier measurements.
 
 ## Choosing a mode (2026-10)
 
@@ -157,7 +157,7 @@ Findings:
 - **gemma4's failures are visible and cheap to correct** (a "yes, implement it" or "save the plan"), apart from the rare template-token answers and the one runaway generation. qwen3-coder's are silent: unrequested code changes, and claims of work not done.
 - 3 seeds per scenario is a small sample: the counts show tendencies, not rates.
 
-**Conclusion:** gemma4 26b is the recommended model (see the README's [Choosing the model](README.md#choosing-the-model)), and the instructions template was changed for its mistakes (see [Instructions for gemma4](#instructions-for-gemma4-2026-10-23)). The comparison was run with the template before those changes.
+**Conclusion:** gemma4 26b became the recommended model (flint 40b since 2026-11-02, see the README's [Choosing the model](README.md#choosing-the-model)), and the instructions template was changed for its mistakes (see [Instructions for gemma4](#instructions-for-gemma4-2026-10-23)). The comparison was run with the template before those changes.
 
 Repeat with `python local_ai_tests/compare_models.py --seeds 1,2,3`; the transcripts of every run are saved with a `summary.md`.
 
@@ -258,3 +258,81 @@ Findings:
 **Conclusion:** gpt-oss 120b is a credible alternative to gemma4, not an improvement: it reads more widely when answering, but reviews its changes less, needs about 65 GB of memory instead of 18 GB, and once changed code unasked. gemma4 26b stays the recommended model.
 
 Repeat with `python local_ai_tests/compare_models.py --models gpt-oss:120b --seeds 1,2,3`, and `--scenarios ambiguous_change,plan_new --seeds 4,5` for the extra seeds.
+
+### The same model on llama-server with mmap (2026-11-01)
+
+Whether llama.cpp's `llama-server`, which can map the model file into memory (mmap) instead of loading it, runs gpt-oss 120b faster or with less disruption than Ollama.
+
+**Setup.** The `llama-server.exe` that comes with Ollama, with Ollama's model file, CPU only, a 32 000-token context and temperature 1.0, and the section lookup of the previous section. Three settings were needed:
+- **`--chat-template-file`** with gpt-oss's own template (`chat_template.jinja` from OpenAI's model repository): Ollama's model file has no template for llama-server, as Ollama renders the prompt itself, and without it the tools were not in the prompt at all.
+- **`--no-repack`**: by default the CPU backend copies the weights into its own memory for faster arithmetic, which took 58 GB of private memory, as much as Ollama. Without it, the server had 1.6 GB of private memory and the weights stayed pages of the file, which Windows can drop without writing them to the page file.
+- `--load-mode mmap`, the default made explicit.
+
+The GPU could not be used: Ollama's CUDA backend (`lib/ollama/cuda_v12`) had been missing since an interrupted update on 2026-10-23, which also means that Ollama ran every model on the CPU since then for that reason, not only because the models do not fit in 8 GB. The harness sends the requests to the server's OpenAI-compatible API with `compare_models.py --llama-server http://127.0.0.1:8080`. The 7 scenarios ran with seeds 1 to 3.
+
+| | llama-server, mmap | Ollama (2026-10-31) |
+|---|---|---|
+| Private memory of the server | 1.6 GB | 63 GB |
+| Seconds per run | 507 | 505 |
+| Acted in the right mode | 20/21 | 20/21 |
+| "What should we change?": code changed | 1 of 3 | 1 of 3 |
+| Hidden tests pass (implementing) | 6/6 | 6/6 |
+| Read the approved plan first | 3/3 | 2/3 |
+| "Fix the bug…": ran the tests | 1 of 3 | 3 of 3 |
+| Tool errors per run | 0.0 | 0.6 |
+
+Findings:
+- **mmap changed how the memory is used, not how much.** The used parts of the model still filled the RAM as the runs went on, and Claude Code's low-memory check stopped a run started from it after two scenarios; the rest ran in the user's own terminal. The difference is that Windows can take the pages back without writing them to the page file.
+- **No speed difference**: 507 against 505 seconds per run, about 10 tokens per second of generation once the model's pages were in memory. On the CPU, the speed is limited by the memory bandwidth either way.
+- **The model behaved the same**: one unasked fix for "What should we change?" in each runtime, correct code in every implementing run, no claims of work not done. Two of the three direct fixes were not tested before the reply, which did not claim they were. The prompt was rendered by a different template than Ollama's, so small differences are not attributable to the runtime.
+- **No tool errors**: the section names gpt-oss guesses (`section='CODES'`) now work.
+
+**Conclusion:** on this machine without the GPU, llama-server with mmap gives no speed and no quality gain over Ollama; its only advantage is that the memory is easier to take back for other applications. Whether the GPU, for the attention layers with `-ngl 99 --n-cpu-moe 36`, makes a difference can be measured now that Ollama's CUDA backend is restored (2026-11-02); it has not been yet.
+
+Repeat by starting the server with `llama-server.exe -m <model file> -c 32000 -np 1 --jinja --chat-template-file local_ai_tests/templates/gpt-oss-120b.jinja --temp 1.0 --load-mode mmap --no-repack`, then `python local_ai_tests/compare_models.py --llama-server http://127.0.0.1:8080 --models gpt-oss-120b-llama-server-cpu --seeds 1,2,3`.
+
+## flint 40b, glm-4.7-flash and qwen3.8 compared with gemma4 on the GPU (2026-11-02)
+
+Whether one of three newer models avoids gemma4 26b's mistakes: flint 40b (Recursive, a mixture-of-experts model with 2.5B active parameters, NVFP4, 22 GB), glm-4.7-flash (30B with 3B active, q8_0, 31 GB) and qwen3.8 27b (dense, Q4_K_M, 17 GB).
+
+**Setup.** As in [gpt-oss 120b compared with gemma4](#gpt-oss-120b-compared-with-gemma4-2026-10-31), with the draft 5 template, thinking on and each model's own default temperature, but on Ollama 0.40.13, reinstalled with its CUDA backend, so the 8 GB GPU was used again: gemma4 ran 80 % on the GPU with a short prompt, glm-4.7-flash 18 % and qwen3.8 25 % with the 32 000-token context. gemma4 was run again for the baseline, as its earlier runs were on the CPU only. The 7 scenarios ran with seeds 1 to 3. qwen3.8 was stopped after 18 runs ("Fix the bug…" not run), as it was too slow to be an option.
+
+| Scenario: what is counted | flint 40b | glm-4.7-flash | gemma4 26b | qwen3.8 27b |
+|---|---|---|---|---|
+| Acted in the right mode | **21/21** | 20/21 | 19/21 | 17/18 |
+| "What should we change?": no code changed | 3/3 | 3/3 | 3/3 | 3/3 |
+| Plan fixed-amount codes / change the plan: no code changed | 6/6 | 6/6 | 6/6 | 6/6 |
+| Implement the approved plan: hidden tests pass | 3/3 | **1/3** | 3/3 | 3/3 |
+| "Fix the bug…": fixed, hidden tests pass | **3/3** | 2/3 | 1/3 | – |
+| Read the needed files first | **21/21** | 21/21 | 17/21 | 17/18 |
+| How is the total calculated: all 3 files read | 3/3 | 3/3 | 0/3 | 3/3 |
+| Implementing runs that ran the tests / reviewed the diff | 6/6 / 6/6 | 5/6 / 4/6 | 4/6 / 4/6 | 3/3 / 3/3 |
+| Explore calls before a change | 5.9 | 3.9 | 2.7 | 4.2 |
+| Project tests pass at the end | 21/21 | 20/21 | 21/21 | 18/18 |
+| Stalls / broken calls / writes the mode forbids | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| Seconds per run | 111 | 150 | **52** | 389 |
+
+Findings:
+- **The GPU made gemma4 about four times faster**: 52 seconds per run against about 200 on the CPU (draft 5). Its behaviour was as before, with the same weak spot: given "Fix the bug…", it answered or wrote a plan in 2 of 3 runs instead of fixing.
+- **flint 40b made none of the counted mistakes.** It fixed directly when asked to, read the needed files and the plans before acting, ran the tests and reviewed the diff in every implementing run, and passed every hidden test. 7 of its 9 tool errors were the lint, format and type-check commands of the test project, which fail there because ruff and mypy are not installed; the other two were `edit_file` calls without a path. It explores twice as much as gemma4 and is about twice as slow, but stays at about 2 minutes per run.
+- **glm-4.7-flash kept the modes apart but implemented badly.** In one run it gave no discount at all on a small order instead of clamping it, changed its own failing test to match the code, and replied that the discount was clamped: a claim of work not done, which the hidden tests caught. In another it kept editing `cart.py` with failing tests until the 25-step limit and left the project's tests failing. With q8_0 it is mostly on the CPU and slower than flint.
+- **qwen3.8 27b behaved well but is too slow**: a dense model mostly on the CPU, 3 to 17 minutes per planning or implementing run. Once it answered a request to change the plan without reading it.
+- 3 seeds per scenario is a small sample; flint's lead is in the scenarios where gemma4 is known to be weak.
+
+**Conclusion:** flint 40b is the strongest model measured so far on this machine, and the only one without a counted mistake, at about twice gemma4's time per run and 22 GB instead of 18 GB. It is the recommended model since 2026-11-02 (see the README's [Choosing the model](README.md#choosing-the-model)); gemma4 26b stays the faster alternative. glm-4.7-flash and qwen3.8 are not options.
+
+Repeat with `python local_ai_tests/compare_models.py --models flint:40b --seeds 1,2,3` (and `gemma4:26b`, `glm-4.7-flash:q8_0`, `qwen3.8:27b`).
+
+### Session start and tool definitions with flint
+
+The measurements of [Session start with gemma4](#session-start-with-gemma4-2026-10-23) repeated with flint 40b at its default temperature of 1.0:
+
+| Setup | First call reads `instructions.md` |
+|---|---|
+| The current system prompt, first message "Read the project instructions." or "Read the project instructions in .ollmcp-tools/instructions.md." | 10/10 |
+| No system prompt, same first messages | 5/10 (the others: `get_outline` 4, `get_tools_config` 1) |
+| The current system prompt, the three tasks as the first message | 4/12 (the others: `get_tools_config` 4, `get_outline` 4) |
+
+None of the 32 first calls was broken. The README's advice holds for flint as well. Its tool definitions take 2 763 prompt tokens with all 19 tools and 2 548 without the `web` tools, about as many as with gemma4.
+
+Repeat with `python local_ai_tests/first_call.py --model flint:40b --temperature 1.0`, with `--prompt` and `--request` as above, and `python local_ai_tests/measure_tokens.py --model flint:40b`.

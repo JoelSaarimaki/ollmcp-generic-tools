@@ -19,7 +19,7 @@ from .locations import USER_CONFIG_PATH, default_backup_folder
 # --- Constants & Config ---
 
 CONFIG_ENV_VAR = "MCP_TOOLS_CONFIG"
-CONFIG_KEYS = {"project_dir", "forbidden_paths", "max_output_chars", "gitignore_path", "command_registry", "command_suggestions", "allowed_paths", "read_only_files", "ignored_dirs", "backup_folder", "disabled_toolsets", "disabled_tools"}
+CONFIG_KEYS = {"project_dir", "forbidden_paths", "max_output_chars", "gitignore_path", "command_registry", "command_suggestions", "allowed_paths", "read_only_files", "ignored_dirs", "backup_folder", "disabled_toolsets", "disabled_tools", "instructions_file"}
 USER_CONFIG_KEYS = {"ollama_api_key"}
 # Settings that were renamed or moved, with what to do instead, shown when an old config uses them
 MOVED_SETTINGS = {
@@ -206,6 +206,9 @@ ALLOWED_PATHS = _setting_paths("allowed_paths", PROJECT_DIR)
 # Largest response size in characters (about 4 characters per token). Lower it for models with small context windows.
 MAX_OUTPUT_CHARS = _setting_max_output_chars()
 GITIGNORE_PATH = _setting_path("gitignore_path", PROJECT_DIR) or PROJECT_DIR / ".gitignore"
+# The project instructions, for clients that give them to the model themselves (such as Local Fox). The tools only
+# check that it is a path: they do not read it, and it is made read-only with 'read_only_files' like any other file.
+_setting_path("instructions_file", PROJECT_DIR)
 REGISTRY_PATH = _setting_path("command_registry", PROJECT_DIR)
 # The file where suggest_command writes suggested commands for the user to review. It is never read as a registry.
 COMMAND_SUGGESTIONS = _setting_path("command_suggestions", PROJECT_DIR)

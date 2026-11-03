@@ -19,6 +19,7 @@ from conftest import start_server
     ('{"project_dir": ".", "forbidden_paths": "secret"}', "must be a list of path strings"),
     ('{"project_dir": ".", "max_output_chars": "4000"}', "must be a whole number"),
     ('{"project_dir": ".", "gitignore_path": 5}', "must be a path string"),
+    ('{"project_dir": ".", "instructions_file": ["a.md"]}', "'instructions_file' must be a path string"),
     ('{"project_dir": ".", "ignored_dirs": "node_modules"}', "must be a list of folder names"),
     ('{"project_dir": ".", "ignored_dirs": ["node_modules", " "]}', "must be a list of folder names"),
     ('{"project_dir": ".", "ignored_dirs": ["docs/build"]}', "not paths"),
@@ -158,3 +159,7 @@ def test_get_config_reports_custom_ignored_dirs(project):
     config = json.loads(project.load("filesystem").get_tools_config())
     assert config["outline_and_search"]["ignored_dirs"] == ["coverage"]
     assert config["outline_and_search"]["ignored_dirs_source"] == "tools config"
+
+def test_instructions_file_is_accepted(project):
+    result = start_server(project.configure(instructions_file="docs/instructions.md"))
+    assert result.returncode == 0, result.stderr

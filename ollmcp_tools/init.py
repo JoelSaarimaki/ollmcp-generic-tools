@@ -22,6 +22,8 @@ TEMPLATE_FILES = {
     "mcp.json": ".mcp.json",
     "tools-config.json": CONFIG_FILE,
     "commands.json": f"{TOOLS_FOLDER}/commands.json",
+    # Commands for common Python and npm projects, to copy into commands.json; nothing reads this file
+    "commands-examples.json": f"{TOOLS_FOLDER}/commands-examples.json",
     "instructions.md": f"{TOOLS_FOLDER}/instructions.md",
     "gitignore": f"{TOOLS_FOLDER}/.gitignore",
     # Created empty, so that the user sees where the AI's suggestions will be
@@ -124,7 +126,8 @@ def _checklist(project: Path) -> list[str]:
     """
     return [
         _project_dir_line(project),
-        f"{TOOLS_FOLDER}/commands.json: keep the commands that fit this project, and change or delete the rest."
+        f"{TOOLS_FOLDER}/commands.json is empty, so the AI can run no commands yet: copy the commands that fit this project"
+        f" from {TOOLS_FOLDER}/commands-examples.json (which nothing reads) and change them as needed."
         f" The AI can suggest missing commands with suggest_command, into {TOOLS_FOLDER}/suggested-commands.json, for you to copy here.",
         f"{TOOLS_FOLDER}/instructions.md: adapt the instructions to the project, and remove the tools you disable.",
         f"Web search: add your Ollama API key to {USER_CONFIG_PATH} (one key for all your projects)."

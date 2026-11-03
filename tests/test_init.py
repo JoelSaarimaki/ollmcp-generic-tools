@@ -12,7 +12,7 @@ import pytest
 
 from conftest import PACKAGE, REPO_DIR, requires_git, start_server
 
-PROJECT_FILES = [".mcp.json", ".ollmcp-tools/tools-config.json", ".ollmcp-tools/commands.json",
+PROJECT_FILES = [".mcp.json", ".ollmcp-tools/tools-config.json", ".ollmcp-tools/commands.json", ".ollmcp-tools/commands-examples.json",
                  ".ollmcp-tools/instructions.md", ".ollmcp-tools/.gitignore", ".ollmcp-tools/suggested-commands.json"]
 
 def init(folder: Path) -> subprocess.CompletedProcess:
@@ -108,3 +108,10 @@ def test_init_creates_the_backup_folder_the_server_uses(new_project, project):
     backups = project.common().BACKUP_DIR
     assert backups.is_dir() and f"Created: {backups} (backup folder)" in result.stdout
     assert f"Already exists, not changed: {backups} (backup folder)" in init(new_project).stdout
+
+def test_commands_start_empty_with_examples_beside(new_project):
+    result = init(new_project)
+    assert result.returncode == 0, result.stderr
+    assert json.loads((new_project / ".ollmcp-tools/commands.json").read_text(encoding="utf-8")) == {}
+    examples = json.loads((new_project / ".ollmcp-tools/commands-examples.json").read_text(encoding="utf-8"))
+    assert "run_tests" in examples  # The commands that commands.json had before

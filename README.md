@@ -40,7 +40,8 @@ my-project/
     .mcp.json                    # tells ollmcp to start the tools, the same in every project
     .ollmcp-tools/
         tools-config.json        # all settings of the tools for this project
-        commands.json            # the commands the AI can run
+        commands.json            # the commands the AI can run, empty at first
+        commands-examples.json   # commands for common projects, to copy into commands.json; nothing reads it
         instructions.md          # your instructions for the AI, which it can read but not change
         .gitignore               # leaves out context/ and suggested-commands.json
         context/                 # the AI's plans and notes for the current task
@@ -71,7 +72,7 @@ my-project/
 
 After `init`, follow its checklist:
 1. Check `project_dir`, and add the folders and files the AI must never access to `forbidden_paths`.
-2. Keep the commands in `commands.json` that fit the project, and change or delete the rest. The template has commands for Python projects that use pip and a `requirements.txt`, and for npm projects.
+2. `commands.json` is empty, so the AI can run no commands until you add them: copy the ones that fit the project from `commands-examples.json`, and change them as needed. The examples are commands for Python projects that use pip and a `requirements.txt`, and for npm projects. Nothing reads `commands-examples.json`.
 3. Adapt `instructions.md` to the project, and remove the tools you disable (see [Choosing the toolsets](#choosing-the-toolsets)).
 4. Add your Ollama API key to the [user config file](#user-config-file) if you want web search. Without a key the `web` tools are not offered.
 5. Set the system prompt in ollmcp, and start each session by asking the AI to read the project instructions (see [Starting a session](#starting-a-session)).
@@ -331,7 +332,7 @@ Commands are defined in the JSON file set as `command_registry` in the tools con
 - `description`: Tells the AI when to use the command.
 - `timeout`: Seconds before the command is stopped. (Optional, defaults to 120)
 
-The [template](ollmcp_tools/templates/commands.json) that `init` copies is a fuller example covering dependencies (pip with a `requirements.txt`), tests (pytest), linting and formatting (ruff), type checking (mypy) and npm scripts. The Python tools are run as `python -m <tool>`, so they are found in the same Python environment as the packages. Change the commands for a project that uses another tool, such as poetry (`poetry run pytest`) or uv (`uv run pytest`). The template also includes commands that make small models work better:
+`init` creates `commands.json` empty, and copies [`commands-examples.json`](ollmcp_tools/templates/commands-examples.json) next to it to copy commands from; nothing reads the examples file. It is a fuller example covering dependencies (pip with a `requirements.txt`), tests (pytest), linting and formatting (ruff), type checking (mypy) and npm scripts. The Python tools are run as `python -m <tool>`, so they are found in the same Python environment as the packages. Change the commands for a project that uses another tool, such as poetry (`poetry run pytest`) or uv (`uv run pytest`). The template also includes commands that make small models work better:
 - Running one test file, one test or the tests matching a name (`run_test_file`, `run_tests_matching`, `npm_test_file`, `npm_test_name`) and the tests that failed last time (`run_failed_tests`), which is faster and gives shorter output than the whole suite.
 - Looking up the real API of an installed library (`python_doc`, which runs `pydoc`) or an npm package's details (`npm_package_info`), as the tools cannot read installed packages and small models often guess function signatures.
 

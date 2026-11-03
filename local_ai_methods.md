@@ -1,6 +1,6 @@
 # Methods for local AI models
 
-The methods these tools use to make a small local model, run with Ollama through ollmcp, work well on a software project. Each method states the problem it addresses and what the tools do about it. The details of how each one is built are in [DEVELOPMENT.md](DEVELOPMENT.md), and the measurements with qwen3-coder 30b, gemma4 26b and flint 40b, the recommended model since 2026-11-02, in [local_ai_test_results.md](local_ai_test_results.md).
+The methods these tools use to make a small local model, run with Ollama through ollmcp, work well on a software project. Each method states the problem it addresses and what the tools do about it. The details of how each one is built are in [DEVELOPMENT.md](DEVELOPMENT.md), and the measurements with qwen3-coder 30b, gemma4 26b, the recommended model, and flint 40b in [local_ai_test_results.md](local_ai_test_results.md).
 
 ## The starting point: what a small local model is like
 
@@ -96,7 +96,7 @@ Every tool definition is sent with every request, so it costs context all the ti
 - **Plans in a folder of their own**, checked before planning and implementing, and not committed, so that another person's AI does not take them as its own.
 - **A system prompt that names the first step keeps the tool calls working**: with qwen3-coder, broken calls went from 3 of 24 requests to none; none of gemma4's or flint's 32 first calls with it was broken.
 - **Ask the AI to read the instructions at the start of every session**, also after `/clear`: when the first message is already a task, the system prompt alone got the instructions read in only 2 of 18 runs with qwen3-coder, 2 of 12 with gemma4 and 4 of 12 with flint. With the system prompt and "Read the project instructions." as the first message, in 20 of 20, 10 of 10 and 10 of 10; with that message alone, in 9 of 20, 5 of 10 and 5 of 10.
-- **A large enough context** (`num_ctx` 32 000): with Ollama's default of 4 096 tokens the tool definitions alone fill it and the calls break.
+- **A large enough context** (`num_ctx` 32 000, set in ollmcp's `/model-config`, as ollmcp sends none by default): with Ollama's default of 4 096 tokens the tool definitions alone fill most of it, the calls break and replies are cut off.
 - **`/clear` after a broken call**: ollmcp keeps it in the history, and the model repeats it.
 
 ## Lessons from testing with a local model
@@ -109,5 +109,5 @@ Every tool definition is sent with every request, so it costs context all the ti
 - **The model goes straight to the task**: anything that must happen first has to be asked for, not just written in a system prompt.
 - **Test whole tasks, and check the result**: replaying tasks such as "plan this", "change the plan" and "fix this", and checking afterwards which files changed and whether hidden tests pass, showed what single first calls cannot, e.g. a model that claimed "I updated the plan" without touching the file.
 - **Check what the model does, not what it says**: a model that said "Mode: planning" then fixed the code. The tests check the mode from the files changed.
-- **Choose the model by its mistakes, not only by its strengths**: qwen3-coder used the tools better, but its mistakes were silent (code changed in planning mode, work claimed but not done); gemma4's showed in its reply and cost one message to correct. Newer models change the choice: flint 40b made none of the counted mistakes, at twice gemma4's time per task, while glm-4.7-flash, which kept the modes apart just as well, changed its own failing test to fit wrong code and said the work was done, a silent mistake again.
+- **Choose the model by its mistakes, not only by its strengths**: qwen3-coder used the tools better, but its mistakes were silent (code changed in planning mode, work claimed but not done); gemma4's showed in its reply and cost one message to correct. The client counts too: flint 40b made none of the counted mistakes in the tasks, but sometimes called a tool by its bare name, which ollmcp skips without telling the model, so a run could stall; so gemma4 stayed recommended. glm-4.7-flash kept the modes apart just as well, but changed its own failing test to fit wrong code and said the work was done, a silent mistake again.
 - **Instruction changes interact**: in a draft that also said that saving a plan needs no permission, gemma4 planned instead of fixing in every run, so each change was measured in the scenarios it could affect, also the ones it was not meant for.

@@ -131,6 +131,8 @@ def _checklist(project: Path) -> list[str]:
         " Without a key the web tools are not offered to the AI.",
         f"Set ollmcp's system prompt with /model-config and save it with /save-config as 'default': \"{SYSTEM_PROMPT}\""
         " It also keeps the tool calls working.",
+        "Set num_ctx to 32000 in the same /model-config and save it: ollmcp sends no context size unless it is set, and"
+        " Ollama's default of 4096 tokens is too small for the tool definitions, so the model's replies are cut off.",
         f"Start every session, also after /clear, with \"{FIRST_MESSAGE}\" and give the AI its task after that:"
         " the AI often skips the system prompt when the first message is already a task.",
         f"Commit .mcp.json and {TOOLS_FOLDER}. {TOOLS_FOLDER}/.gitignore leaves out the context folder and the"

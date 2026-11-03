@@ -11,9 +11,9 @@ For the design principles behind the tools and the planned improvements, see [DE
 ### Prerequisites
 
 1.  **Install Ollama**:
-    Download and install Ollama from [ollama.com](https://ollama.com/). Once installed, download and try the recommended model, flint:40b (see [Choosing the model](#choosing-the-model)), with:
+    Download and install Ollama from [ollama.com](https://ollama.com/). Once installed, download and try the recommended model, gemma4:26b (see [Choosing the model](#choosing-the-model)), with:
     ```bash
-    ollama run flint:40b
+    ollama run gemma4:26b
     ```
 
 2.  **Install ollmcp and the tools**:
@@ -171,6 +171,8 @@ Once set up, start `ollmcp` in the project's root folder:
 ollmcp
 ```
 
+**Set the context size before the first session.** ollmcp sends no context size to Ollama unless `num_ctx` is set, so Ollama uses its own default: 4 096 tokens on a machine with a small GPU, of which the 19 tool definitions alone take about 2 750. The model's reply is then cut off when the context is full, often in the middle of its thinking, and ollmcp shows "The model produced no response or tool calls." In ollmcp, type `/model-config` (or `/mc`), set `num_ctx` to `32000`, then type `/save-config` (or `/sc`) and save it as `default`. Check the setting again after updating ollmcp, and check the `CONTEXT` column of `ollama ps` while a model is loaded.
+
 #### Starting a session
 
 The AI follows your project instructions only after it has read them, and they tell it, among other things, to choose a mode before it changes anything and to check its earlier plans in `.ollmcp-tools/context`. Two steps make sure it reads them:
@@ -182,49 +184,47 @@ The AI follows your project instructions only after it has read them, and they t
    In ollmcp, type `/model-config` (or `/mc`) and set the system prompt, then type `/save-config` (or `/sc`) and save it as `default`, which ollmcp loads automatically when it starts. The tool name is written as the model sees it, with `_`.
 2. **Start every session with "Read the project instructions."**, also after `/clear`, and give the AI its task after that.
 
-Neither step is enough alone. In tests (see [local_ai_test_results.md](local_ai_test_results.md#session-start-and-tool-definitions-with-flint)), the model's first tool call read the instructions:
+Neither step is enough alone. In tests (see [local_ai_test_results.md](local_ai_test_results.md#session-start-with-gemma4-2026-10-23)), the model's first tool call read the instructions:
 
-| Setup | flint 40b | gemma4 26b | qwen3-coder 30b |
+| Setup | gemma4 26b | flint 40b | qwen3-coder 30b |
 |---|---|---|---|
 | System prompt, first message "Read the project instructions." | 10 of 10 | 10 of 10 | 20 of 20 |
 | No system prompt, first message "Read the project instructions." | 5 of 10 | 5 of 10 | 9 of 20 |
-| System prompt, first message already the task | 4 of 12 | 2 of 12 | 2 of 18 |
+| System prompt, first message already the task | 2 of 12 | 4 of 12 | 2 of 18 |
 
 **The system prompt also keeps the tool calls working.** Local models sometimes write a tool call as plain text in their answer, which ollmcp then shows as an answer, so the tool is never called. qwen3-coder 30b writes calls such as `<function=dev_read_context_file> </tool_call>` without the opening `<tool_call>` tag: in tests, without a system prompt in 3 of 24 requests, and with the session-start prompt in none (see [local_ai_test_results.md](local_ai_test_results.md#broken-tool-calls-2026-10-19)). With the current prompt, none of the 32 first calls measured with flint 40b, nor of the 32 with gemma4 26b, was broken. In longer tasks, gemma4 sometimes answers with only a token of its chat template, such as `<|tool_response>` (in 1 of 21 test tasks), or leaves one such as `<channel|>` in an answer whose tool call still works (in 1 to 3 of 21).
 
 If a broken call or answer still appears:
 - Type `/clear` before trying again. ollmcp keeps the broken call in the chat history as an ordinary answer, and the model then repeats it.
 - Leave out the tools the project does not need (see [Choosing the toolsets](#choosing-the-toolsets)): the more tool definitions, the more often it happens.
-- Leave `num_ctx` unset in `/model-config`, or keep it large: ollmcp then asks for a 32 000-token context. With Ollama's own default of 4 096 tokens, the tool definitions alone (about 2 750 tokens with every tool and 2 550 without the `web` tools for flint and gemma4, about 3 350 and 3 100 for qwen3-coder) take most of the context, the prompt is cut, and the tool calls break.
+- Check that `num_ctx` is set to 32000 in `/model-config` (see [Running](#running)). With Ollama's own default of 4 096 tokens, the tool definitions alone (about 2 750 tokens with every tool and 2 550 without the `web` tools for flint and gemma4, about 3 350 and 3 100 for qwen3-coder) take most of the context, the prompt is cut, and the tool calls break.
 
 ### Choosing the model
 
-The recommended model is **flint:40b**. In tests with the tools (see [local_ai_test_results.md](local_ai_test_results.md#flint-40b-glm-47-flash-and-qwen38-compared-with-gemma4-on-the-gpu-2026-11-02)), answering questions, writing and changing a plan, and implementing a plan or a fix, it made none of the mistakes that were counted: it kept answering, planning and implementing apart, fixed a bug directly when asked to, read the files and plans it needed before acting, ran the tests and reviewed its changes with the diff whenever it implemented, and its code passed every hidden test. It is a mixture-of-experts model with 40B parameters, of which 2.5B are active per token, so it runs at a usable speed also partly on the CPU.
+The recommended model is **gemma4:26b**. In tests with the tools (see [local_ai_test_results.md](local_ai_test_results.md#flint-40b-glm-47-flash-and-qwen38-compared-with-gemma4-on-the-gpu-2026-11-02)), answering questions, writing and changing a plan, and implementing a plan or a fix, it kept answering, planning and implementing apart: it never changed code when asked only for an answer or a plan, and the [instructions template](ollmcp_tools/templates/instructions.md) is adapted to its mistakes. It always calls the tools by the names ollmcp gives them, and it is the fastest of the tested models and the only one with image input.
 
-flint takes about 22 GB. On a GPU with less memory, Ollama puts the rest on the CPU, which needs that much free RAM: on a laptop with an 8 GB GPU, a question takes about 1 minute and a small implementation 1.5 to 3.5. Keep only one model loaded at a time, and check with `ollama ps` that the GPU is used.
+gemma4 takes about 18 GB. On a GPU with less memory, Ollama puts the rest on the CPU, which needs that much free RAM: on a laptop with an 8 GB GPU, a task takes about a minute. Keep only one model loaded at a time, and check with `ollama ps` that the GPU is used.
 
-What to expect from flint:
-- **It reads a lot before it acts**, so it is slower than gemma4: about 2 minutes per task against 1.
-- **It runs the project's other checks too**, such as lint and type checks, and says in its reply when one could not run. Register only commands that work in the project (see [Commands](#commands)).
-- **It cannot see images**: `read_image` needs a vision model, such as gemma4:26b.
-
-#### Alternatives
-
-| | flint:40b | gemma4:26b | qwen3-coder:30b | gpt-oss:120b |
-|---|---|---|---|---|
-| Size | 22 GB | 18 GB | 18 GB | 65 GB |
-| Time per task, 8 GB GPU | about 2 minutes | about 1 minute | not measured | not measured |
-| Keeps the modes apart | yes | yes | no: implements unasked | mostly: changed code once when asked what to change |
-| Fixes directly when asked | yes | often asks first | yes | yes |
-| Reads what it needs | yes | sometimes too little | yes | yes |
-| Tests and reviews its changes | yes | mostly | yes | tests, no diff review |
-| Images | no | yes | no | no |
-
-**gemma4:26b** is the faster alternative, and the one with image input. It never changes code when asked only for an answer or a plan, and follows the same [instructions](ollmcp_tools/templates/instructions.md). What to expect from it:
+What to expect from gemma4:
 - **It sometimes asks before a direct fix.** Asked "Fix the bug where…", it may choose the planning mode, save a plan and ask whether to implement it. Answer "yes": it then implements the plan and runs the tests.
 - **It reads less than it should.** It sometimes answers from one section where several files are needed. Ask it to check the other files if the answer leaves something out.
 - **It sometimes stops after saying what it will do next** ("First, I'll search for…"). Type `continue`.
 - **It rarely answers with only a token of its chat template**, such as `<|tool_response>`. Type `/clear` and ask again (see [Starting a session](#starting-a-session)).
+
+#### Alternatives
+
+| | gemma4:26b | flint:40b | qwen3-coder:30b | gpt-oss:120b |
+|---|---|---|---|---|
+| Size | 18 GB | 22 GB | 18 GB | 65 GB |
+| Time per task, 8 GB GPU | about 1 minute | about 2 minutes | not measured | not measured |
+| Keeps the modes apart | yes | yes | no: implements unasked | mostly: changed code once when asked what to change |
+| Fixes directly when asked | often asks first | yes | yes | yes |
+| Reads what it needs | sometimes too little | yes | yes | yes |
+| Tests and reviews its changes | mostly | yes | yes | tests, no diff review |
+| Calls the tools by their full names | yes | not always: a run in ollmcp can stall | yes | yes |
+| Images | yes | no | no | no |
+
+**flint:40b** behaves best in the tests: it kept the modes apart, fixed bugs directly when asked to, read the files and plans it needed, ran the tests and reviewed its changes with the diff whenever it implemented, and its code passed every hidden test. But it sometimes calls a tool by its bare name, `read_file_with_metadata` instead of `dev_read_file_with_metadata`, mostly after reading a tool response that mentions the bare name. ollmcp finds no server for such a call and skips it without telling the model, so the model repeats the call and the run stalls (see [local_ai_test_results.md](local_ai_test_results.md#calls-by-a-tools-bare-name-2026-11-03)). If that happens, tell it "Call the tools by their full names, such as dev_read_file_with_metadata", or type `/clear` and start again. It also reads a lot before it acts, so it is about twice as slow as gemma4, and it cannot see images.
 
 **qwen3-coder:30b** uses the tools well: it reads every relevant file before it answers, runs the tests and reviews its changes with the diff. But it does not respect the modes of the instructions, and its mistakes are silent, noticed only by checking:
 - **It implements without being asked.** Asked "What should we change?", it wrote a plan and then changed the code in 2 of 3 runs.

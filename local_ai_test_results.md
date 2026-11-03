@@ -1,6 +1,6 @@
 # Local AI test results
 
-Results of running the tools with local models through Ollama, qwen3-coder 30b and, since 2026-10-23, also gemma4 26b, the recommended model until 2026-11-02 (see [qwen3-coder 30b and gemma4 26b compared](#qwen3-coder-30b-and-gemma4-26b-compared-2026-10-23)), on 2026-10-31 gpt-oss 120b (see [gpt-oss 120b compared with gemma4](#gpt-oss-120b-compared-with-gemma4-2026-10-31)), and on 2026-11-02 flint 40b, now the recommended model, glm-4.7-flash and qwen3.8 27b (see [flint 40b, glm-4.7-flash and qwen3.8 compared with gemma4 on the GPU](#flint-40b-glm-47-flash-and-qwen38-compared-with-gemma4-on-the-gpu-2026-11-02)): how the model behaves with the tool definitions, the system prompt and the project instructions. These are not the tests of the toolset itself, which are in `tests/` and described in [DEVELOPMENT.md](DEVELOPMENT.md#how-changes-have-been-verified): those show that the tools behave as designed, these show what a model does with them.
+Results of running the tools with local models through Ollama, qwen3-coder 30b and, since 2026-10-23, also gemma4 26b, the recommended model (see [qwen3-coder 30b and gemma4 26b compared](#qwen3-coder-30b-and-gemma4-26b-compared-2026-10-23)), on 2026-10-31 gpt-oss 120b (see [gpt-oss 120b compared with gemma4](#gpt-oss-120b-compared-with-gemma4-2026-10-31)), and on 2026-11-02 flint 40b, glm-4.7-flash and qwen3.8 27b (see [flint 40b, glm-4.7-flash and qwen3.8 compared with gemma4 on the GPU](#flint-40b-glm-47-flash-and-qwen38-compared-with-gemma4-on-the-gpu-2026-11-02)): how the model behaves with the tool definitions, the system prompt and the project instructions. These are not the tests of the toolset itself, which are in `tests/` and described in [DEVELOPMENT.md](DEVELOPMENT.md#how-changes-have-been-verified): those show that the tools behave as designed, these show what a model does with them.
 
 The design decisions that followed from the results are in [DEVELOPMENT.md](DEVELOPMENT.md), and what users should do in the [README](README.md#starting-a-session).
 
@@ -12,7 +12,7 @@ The design decisions that followed from the results are in [DEVELOPMENT.md](DEVE
 - Where the model's tool calls were executed, the scripts called the real server, in a temporary project set up with `python -m ollmcp_tools init`, and gave the model the responses, up to 20 steps per run (25 in the comparisons of 2026-10-23).
 - Prompt sizes come from `prompt_eval_count`, with a unique system message per request so that Ollama's prompt cache does not hide tokens. The size of the tool definitions is the difference to the same request without tools.
 - Runs with the same seed repeat exactly when nothing else changes. Tool responses contain timestamps, so runs that execute tools vary even with the same seed; results are therefore given as counts over several seeds.
-- The scripts are in `local_ai_tests/` (see its README), which is gitignored: it is kept in the developer's own copy, not in every clone. The results of 2026-10-19 and the first results of 2026-10-20 were measured with earlier versions of the same scripts; each section names the command that repeats it. The scripts use flint:40b unless `--model` is given (gemma4:26b from 2026-10-23, qwen3-coder:30b before), so add `--model` to repeat the earlier measurements.
+- The scripts are in `local_ai_tests/` (see its README), which is gitignored: it is kept in the developer's own copy, not in every clone. The results of 2026-10-19 and the first results of 2026-10-20 were measured with earlier versions of the same scripts; each section names the command that repeats it. The scripts use gemma4:26b unless `--model` is given (flint:40b on 2026-11-02 and 2026-11-03, qwen3-coder:30b before 2026-10-23), so add `--model` to repeat the earlier measurements.
 
 ## Choosing a mode (2026-10)
 
@@ -157,7 +157,7 @@ Findings:
 - **gemma4's failures are visible and cheap to correct** (a "yes, implement it" or "save the plan"), apart from the rare template-token answers and the one runaway generation. qwen3-coder's are silent: unrequested code changes, and claims of work not done.
 - 3 seeds per scenario is a small sample: the counts show tendencies, not rates.
 
-**Conclusion:** gemma4 26b became the recommended model (flint 40b since 2026-11-02, see the README's [Choosing the model](README.md#choosing-the-model)), and the instructions template was changed for its mistakes (see [Instructions for gemma4](#instructions-for-gemma4-2026-10-23)). The comparison was run with the template before those changes.
+**Conclusion:** gemma4 26b became the recommended model (and again since 2026-11-03, see the README's [Choosing the model](README.md#choosing-the-model)), and the instructions template was changed for its mistakes (see [Instructions for gemma4](#instructions-for-gemma4-2026-10-23)). The comparison was run with the template before those changes.
 
 Repeat with `python local_ai_tests/compare_models.py --seeds 1,2,3`; the transcripts of every run are saved with a `summary.md`.
 
@@ -319,7 +319,7 @@ Findings:
 - **qwen3.8 27b behaved well but is too slow**: a dense model mostly on the CPU, 3 to 17 minutes per planning or implementing run. Once it answered a request to change the plan without reading it.
 - 3 seeds per scenario is a small sample; flint's lead is in the scenarios where gemma4 is known to be weak.
 
-**Conclusion:** flint 40b is the strongest model measured so far on this machine, and the only one without a counted mistake, at about twice gemma4's time per run and 22 GB instead of 18 GB. It is the recommended model since 2026-11-02 (see the README's [Choosing the model](README.md#choosing-the-model)); gemma4 26b stays the faster alternative. glm-4.7-flash and qwen3.8 are not options.
+**Conclusion:** flint 40b is the strongest model measured so far on this machine, and the only one without a counted mistake, at about twice gemma4's time per run and 22 GB instead of 18 GB. It was the recommended model on 2026-11-02 and 2026-11-03, until its bare tool names stalled runs in ollmcp (see [Calls by a tool's bare name](#calls-by-a-tools-bare-name-2026-11-03)); gemma4 26b is the recommended model again. glm-4.7-flash and qwen3.8 are not options.
 
 Repeat with `python local_ai_tests/compare_models.py --models flint:40b --seeds 1,2,3` (and `gemma4:26b`, `glm-4.7-flash:q8_0`, `qwen3.8:27b`).
 
@@ -336,3 +336,33 @@ The measurements of [Session start with gemma4](#session-start-with-gemma4-2026-
 None of the 32 first calls was broken. The README's advice holds for flint as well. Its tool definitions take 2 763 prompt tokens with all 19 tools and 2 548 without the `web` tools, about as many as with gemma4.
 
 Repeat with `python local_ai_tests/first_call.py --model flint:40b --temperature 1.0`, with `--prompt` and `--request` as above, and `python local_ai_tests/measure_tokens.py --model flint:40b`.
+
+## Calls by a tool's bare name (2026-11-03)
+
+In ollmcp, flint 40b called `read_file_with_metadata` instead of `dev_read_file_with_metadata`, and ollmcp answered "Error: Unknown server for tool read_file_with_metadata". ollmcp splits the name at the server key to find the server; for a bare name it finds none, prints the error and skips the call without a response to the model, so the model is not told that the call failed.
+
+**The comparison did not count these calls.** Until this date the harness mapped a bare name to the tool and ran it, so such a call worked in the tests. Counted afterwards in the saved runs of 2026-11-02, flint made 14 of its 181 calls by a bare name, in 3 of its 21 runs, mostly `read_file_with_metadata` and once `edit_file`, and once it had dropped the prefix it mostly went on without it. gemma4 26b (99 calls) and glm-4.7-flash (150) always used the full names. The harness now skips such a call as ollmcp does and counts it as "calls by an unknown name (skipped)"; `--tolerate-bare-names` runs it, as a client that forgives the name would.
+
+**The three runs repeated, skipping such calls** (seed 2 of the three scenarios in which flint had dropped the prefix):
+
+| Scenario | Calls by a bare name | Result |
+|---|---|---|
+| "What should we change?" | 70 | Did not finish: after two `get_outline` calls with the full name, every call was `read_file_with_metadata`, until the step limit |
+| Change the plan | 0 | Plan updated, no code changed |
+| Implement the approved plan | 0 | Hidden tests pass, tests run, diff reviewed |
+
+The slip in the first run came right after `get_outline`, whose response says "Read a section with read_file_with_metadata(path, section=...)": the tool responses name the tools without the prefix, and flint copies the name. Whether a run slips varies from run to run.
+
+**A system prompt that names the rule did not help.** With "Always call the tools by their full names, which start with dev_, such as dev_read_file_with_metadata and dev_get_outline." added to the system prompt, eight seeds each of "Read the project instructions." and a task with long Windows paths as the first message:
+
+| First call | Current system prompt | With the sentence |
+|---|---|---|
+| By a bare name | 0/16 | 0/16 |
+| Reads the instructions, when asked to | 8/8 | 8/8 |
+| Reads the file the task names | 8/8 | 5/8 (2 answered without a call) |
+
+No first call used a bare name with either prompt, so the slip seen in ollmcp at the start of a session was not reproduced, and the sentence was not adopted.
+
+**Conclusion:** flint's behaviour is the best measured, but in ollmcp a slip in a tool name can stall a run, and fixing it needs a change in the client: ollmcp sending an error the model can act on, or accepting a bare name that matches one tool. A local patch of ollmcp would have to be repeated by every user and after every update, so gemma4 26b is the recommended model again, and flint is an alternative (see the README's [Alternatives](README.md#alternatives)).
+
+Repeat with `python local_ai_tests/compare_models.py --models flint:40b --seeds 2 --scenarios ambiguous_change,plan_iterate,implement_plan --verbose`, adding `--tolerate-bare-names` for a forgiving client, and `python local_ai_tests/first_call.py --model flint:40b --temperature 1.0 --seeds 1,2,3,4,5,6,7,8` with `--prompt` and `--request` as above.

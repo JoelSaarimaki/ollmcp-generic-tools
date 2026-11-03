@@ -30,7 +30,7 @@ Every tool definition is sent with every request, so it costs context all the ti
 
 - **A budget for every response** (`max_output_chars`, 40 000 characters by default) and tool-specific limits on top, e.g. 1000 lines per read and 100 search matches.
 - **A limited response always says so and gives the exact next call**: `Output limited:` with the `start_line` to read next, the subfolders to outline with their file counts, or the folder with the most search matches. The model is never left guessing whether it saw everything.
-- **Reduce detail instead of cutting.** An outline that does not fit drops summaries, then nested sections, then all sections, and finally lists only subfolders with file counts: every level still covers the whole folder.
+- **Reduce detail instead of cutting.** An outline that does not fit drops the summaries of functions first, then those of classes and other sections, then those of the files, then nested sections, then all sections, and finally lists only subfolders with file counts: every level still covers the whole folder.
 - **Keep the useful end of long output.** Command output keeps the start and the end, where errors usually are.
 
 ## 3. Outline first, then read only what is needed

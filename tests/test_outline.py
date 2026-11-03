@@ -1,7 +1,7 @@
 # --- test_outline.py ---
 """
 Tests for the outline toolset: get_outline for folders and files, its detail levels and limits.
-The parsers themselves are tested in test_outline.py.
+The parsers themselves are tested in test_parsing.py.
 """
 import pytest
 
@@ -189,6 +189,41 @@ def test_folders_level_lists_subfolders_with_file_counts(project):
     project.configure(max_output_chars=2500)
     lines = project.load("outline").get_outline().split("\n")
     assert "src/api/ (40 files)" in lines and "src/ui/ (25 files)" in lines
+
+def make_documented_project(project, files=20):
+    for i in range(files):
+        project.write(f"src/svc_{i}.py", f'"""Service module {i}."""\n\nclass Service{i}:\n    """Serves requests of kind {i}."""\n'
+                      '    def start(self):\n        """Starts the service and opens its connections to the database."""\n\n'
+                      '    def stop(self):\n        """Stops the service and closes every open connection cleanly."""\n')
+
+@pytest.mark.parametrize("max_chars, note, kept, left_out", [
+    (9000, None, ["src/svc_0.py (9 lines): Service module 0.", "  3-9 class Service0: Serves requests of kind 0.",
+                  "    5-6 start(): Starts the service and opens its connections to the database."], []),
+    (7000, "the summaries of functions and methods are left out", ["src/svc_0.py (9 lines): Service module 0.",
+                  "  3-9 class Service0: Serves requests of kind 0.", "    5-6 start()"], ["Starts the service"]),
+    (3250, "summaries are left out, except those of the files", ["src/svc_0.py (9 lines): Service module 0.", "  3-9 class Service0"],
+     ["Serves requests"]),
+    (2600, "summaries are left out, as", ["src/svc_0.py (9 lines)", "  3-9 class Service0", "    5-6 start()"], ["Service module"]),
+])
+def test_summaries_are_left_out_step_by_step(project, max_chars, note, kept, left_out):
+    make_documented_project(project)
+    project.configure(max_output_chars=max_chars)
+    outline = project.load("outline").get_outline()
+    assert len(outline) <= max_chars
+    assert (f"Output limited: {note}" in outline) if note else "Output limited" not in outline
+    lines = outline.split("\n")
+    for line in kept:
+        assert line in lines, line
+    for text in left_out:
+        assert text not in outline, text
+
+def test_file_outline_leaves_out_function_summaries_first(project):
+    project.write("big.py", '"""A big module."""\n\nclass Big:\n    """Holds the functions."""\n'
+                  + "".join(f'    def function_{i}(self):\n        """Does thing number {i} in a rather long summary line."""\n\n' for i in range(60)))
+    project.configure(max_output_chars=4000)
+    outline = project.load("outline").get_outline("big.py")
+    assert "Output limited: the summaries of functions and methods are left out" in outline
+    assert "3-183 class Big: Holds the functions." in outline.split("\n") and "Does thing number" not in outline
 
 def test_long_file_outline_is_limited(project):
     project.write("big.py", "".join(f'def function_{i}():\n    """Does thing number {i} in a rather long summary line."""\n\n' for i in range(400)))

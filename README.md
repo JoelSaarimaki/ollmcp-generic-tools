@@ -289,7 +289,7 @@ docs/guide.md (80 lines)
     13-40 ## Install
 ```
 
-The AI then reads a section by its name, e.g. `read_file_with_metadata(path, section="App.run")`, or by its line span. An outline that does not fit in `max_output_chars` is not cut short: its detail is reduced step by step until it fits, first leaving out the summaries, then showing only top-level sections, then only the files with their section counts, and finally only the files in the folder and its subfolders with their file counts. The response says what was left out and suggests subfolders to outline with `path`.
+The AI then reads a section by its name, e.g. `read_file_with_metadata(path, section="App.run")`, or by its line span. An outline that does not fit in `max_output_chars` is not cut short: its detail is reduced step by step until it fits, first leaving out the summaries of functions and methods, then those of classes and other sections, then those of the files, then showing only top-level sections, then only the files with their section counts, and finally only the files in the folder and its subfolders with their file counts. The response says what was left out and suggests subfolders to outline with `path`.
 
 ### search
 

@@ -31,10 +31,13 @@ MAX_LISTED_SECTIONS = 30  # Section names listed at most when a section is not f
 INDENT = "  "
 
 # Detail levels of a rendered outline, from the most to the least detailed
-FULL = 0         # Summaries, calls, imports and exports
-SUMMARIES = 1    # All sections with their summaries
-NAMES = 2        # All sections without summaries
-TOP_LEVEL = 3    # Top-level sections only (the children of a single top-level section are still shown)
+FULL = 0             # Summaries, calls, imports and exports
+SUMMARIES = 1        # All sections with their summaries
+CLASS_SUMMARIES = 2  # All sections, with the summaries of all but functions and methods, e.g. of classes and types
+FILE_SUMMARIES = 3   # All sections without summaries; a folder outline keeps the summaries of the files
+NAMES = 4            # All sections without summaries
+TOP_LEVEL = 5        # Top-level sections only (the children of a single top-level section are still shown)
+FUNCTION_KINDS = {"function", "method", "component", "hook"}  # Sections whose summaries are left out first
 
 @dataclass
 class Section:
@@ -802,7 +805,7 @@ def render(outline: Outline, detail: int, depth: int = 0) -> list[str]:
             line = f"{INDENT * level}{section.start}-{section.end} {section.label}"
             if section.extra:
                 line += f" {section.extra}"
-            if section.summary and detail <= SUMMARIES:
+            if section.summary and (detail <= SUMMARIES or detail == CLASS_SUMMARIES and section.kind not in FUNCTION_KINDS):
                 line += f": {section.summary}"
             lines.append(line)
             if detail == FULL:

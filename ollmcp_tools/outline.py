@@ -21,6 +21,8 @@ from .common import (
     walk
 )
 from .parsing import (
+    CLASS_SUMMARIES,
+    FILE_SUMMARIES,
     FULL,
     MAX_PARSE_CHARS,
     NAMES,
@@ -46,6 +48,8 @@ MAX_OUTLINED_FILES = 1000  # Folders with more files are listed with FOLDERS det
 MAX_FOLDER_SUGGESTIONS = 10  # Folders suggested for outlining separately when the output is limited
 READ_HINT = "Line spans are first-last line numbers. Read a section with read_file_with_metadata(path, section=...) or with start_line and end_line."
 LEVEL_NOTES = {
+    CLASS_SUMMARIES: "the summaries of functions and methods are left out",
+    FILE_SUMMARIES: "summaries are left out, except those of the files",
     NAMES: "summaries are left out",
     TOP_LEVEL: "only top-level sections are shown",
     FILES: "only the files are listed, without their sections",
@@ -110,7 +114,7 @@ def _file_line(entry: _FileEntry, detail: int, depth: int = 0) -> str:
         count = section_count(entry.outline)
         info.append(f"{count} {'section' if count == 1 else 'sections'}")
     line = f"{'  ' * depth}{entry.rel} ({', '.join(info)})"
-    if entry.outline and entry.outline.summary and detail <= SUMMARIES:
+    if entry.outline and entry.outline.summary and detail <= FILE_SUMMARIES:
         line += f": {entry.outline.summary}"
     return line
 
@@ -205,7 +209,7 @@ def _outline_folder(scope_dir: Path, gitignore_patterns: list[str]) -> str:
         levels = [FOLDERS]
     else:
         entries = [_read_entry(p) for p in files]
-        levels = [SUMMARIES, NAMES, TOP_LEVEL, FILES, FOLDERS]
+        levels = [SUMMARIES, CLASS_SUMMARIES, FILE_SUMMARIES, NAMES, TOP_LEVEL, FILES, FOLDERS]
     outside_entries = [_read_entry(p) for p in outside]
 
     budget = MAX_OUTPUT_CHARS - min(2500, MAX_OUTPUT_CHARS // 4)
@@ -258,7 +262,7 @@ def _outline_file(path: Path, gitignore_patterns: list[str]) -> str:
         return text_response([title, f"No sections found. Read the file with {read})."])
 
     budget = MAX_OUTPUT_CHARS - min(1500, MAX_OUTPUT_CHARS // 4)
-    for detail in (FULL, SUMMARIES, NAMES, TOP_LEVEL):
+    for detail in (FULL, SUMMARIES, CLASS_SUMMARIES, NAMES, TOP_LEVEL):
         lines = render(entry.outline, detail)
         if sum(len(line) + 1 for line in lines) <= budget:
             break

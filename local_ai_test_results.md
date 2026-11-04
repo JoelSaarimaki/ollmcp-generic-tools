@@ -387,3 +387,24 @@ The short version also had one write the mode forbids, counted in a planning run
 **Conclusion:** the modes held with either version, but the short one read less before acting, gemma4's known weak spot, which flint had not shown before, and its saving of about 1 100 tokens is under 2 % of the 64 000-token context Local Fox now uses. The current instructions stay. The detail that made them long (which tool to use when, the concrete examples, the plans folder named in each mode) is what keeps flint reading.
 
 Repeat in the Local Fox repository with `python tools/compare.py --models flint:40b --seeds 1,2 --instructions <instructions.md>` for each version; the short draft is kept locally, not in either repository.
+
+## Reading until the context is full (2026-11-04)
+
+A planning task in a real project of about 50 files, through Local Fox with flint:40b and a 64 000-token context (57 344 tokens of room for the request, the rest kept for the reply). gemma4 did the same task in about five minutes, reading fewer files. flint never finished: it read until the context was full and then read back what Local Fox removed to make room. Measured from Local Fox's session log (tool names, paths, arguments, sizes and times only):
+
+| | Run 1 | Run 2 |
+|---|---|---|
+| Changes in place | none of the below; the project's `max_output_chars` still the default 40 000 | outline with names (below), room made down to three quarters, a note that does not invite re-reading, a question to the user after three re-reads; `max_output_chars` 16 000 |
+| Outlines, then reads | 2 outlines; 27 reads, all of whole files, up to 37 000 characters each | 5 outlines first; 43 reads, 20 of whole files, 23 of a section or line range |
+| The context full | after 6 minutes of reading | after 6 minutes of reading |
+| Room made | 5 times in 19 minutes | 2 times in 6 minutes |
+| Removed responses read again | 7, each exactly a file whose response had just been removed | 3, after which Local Fox asked and the user stopped |
+| Seconds per reply | median 35, up to 358 | median 17, up to 105 |
+| Result | stopped by the user after 29 minutes, no plan | stopped after 13 minutes, no plan |
+
+- **Making room is slow, not only the full context.** Every removal changes an early message, so Ollama processes the whole prompt again instead of only the new part: the first reply after making room took 105 to 358 seconds at about 55 000 tokens on the CPU, against 10 to 40 seconds before. Making room a little before every step (run 1) made every step that slow.
+- **The note invited the re-reading.** "To see it again, call read_file_with_metadata(...)" was followed: in run 1 every re-read was of a response just removed.
+- **flint is not satisfied with what it has read.** In run 2 it read one 15 000-character file ten times, once whole, then in seven overlapping line ranges and two sections, about 58 000 characters in all. With outlines and section reads it read less per call, but it did not stop reading.
+- **The folder outline gave only file names.** At a quarter of `max_output_chars` a folder of about 50 files fell to file names only, so the model read whole files; the outline now takes half, at most 8 000 characters, with the top-level sections of as many files as fit (run 2).
+
+Countermeasures in Local Fox, for any model rather than tuned for flint (instructions that bound the reading or ask for notes while reading were not adopted, as they would be tuned for one model and the recommended model may change): making room down to three quarters of the room, so seldom; a note on removed responses that asks to read again only if the exact text is needed, and only the needed section; the user asked after three re-reads of removed responses; and a note to the model at 85 % of the room, and whenever room is made, to write down what it has found before reading more. The last one is not measured yet.

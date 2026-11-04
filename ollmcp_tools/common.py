@@ -181,7 +181,10 @@ CONFIG_PATH, CONFIG = _load_config()
 CONFIG_DIR = CONFIG_PATH.parent
 USER_CONFIG = _load_user_config()
 # API key for Ollama's hosted web search and fetch (the web toolset). Never shown to the AI: the user config file is protected.
-OLLAMA_API_KEY = _user_secret("ollama_api_key")
+# A client that keeps the key in its own settings (Local Fox) gives it in API_KEY_ENV_VAR instead, which wins. A name of
+# the tools' own, not the ollama library's OLLAMA_API_KEY, so that a key set for other programs is never used unasked.
+API_KEY_ENV_VAR = "MCP_TOOLS_OLLAMA_API_KEY"
+OLLAMA_API_KEY = (os.environ.get(API_KEY_ENV_VAR) or "").strip() or _user_secret("ollama_api_key")
 DISABLED_TOOLSETS = _setting_names("disabled_toolsets", list(TOOLSETS))
 DISABLED_TOOLS = _setting_names("disabled_tools", [tool for tools in TOOLSETS.values() for tool in tools])
 # A toolset whose tools are all disabled is not loaded either, so its settings are not checked
@@ -191,10 +194,11 @@ if not ENABLED_TOOLSETS:
     raise ValueError(f"{CONFIG_PATH}: 'disabled_toolsets' and 'disabled_tools' disable every tool.")
 # Enabled toolsets that are not served, with the reason, shown by get_tools_config. Without an API key the web tools
 # could only return an error, and every tool definition costs the model context on every request.
-UNAVAILABLE_TOOLSETS = {"web": "'ollama_api_key' is not set in the user config file"} if "web" in ENABLED_TOOLSETS and not OLLAMA_API_KEY else {}
+UNAVAILABLE_TOOLSETS = {"web": "'ollama_api_key' is not set in the user config file, nor given by the client"} if "web" in ENABLED_TOOLSETS and not OLLAMA_API_KEY else {}
 ENABLED_TOOLSETS = [name for name in ENABLED_TOOLSETS if name not in UNAVAILABLE_TOOLSETS]
 if not ENABLED_TOOLSETS:
-    raise ValueError(f"{CONFIG_PATH}: the only enabled toolset is 'web', and 'ollama_api_key' is not set in the user config file {USER_CONFIG_PATH}.")
+    raise ValueError(f"{CONFIG_PATH}: the only enabled toolset is 'web', and 'ollama_api_key' is not set in the user config file {USER_CONFIG_PATH} "
+                     f"nor given by the client in {API_KEY_ENV_VAR}.")
 PROJECT_DIR = _setting_path("project_dir", CONFIG_DIR)
 if not PROJECT_DIR.is_dir():
     raise NotADirectoryError(f"{CONFIG_PATH}: 'project_dir' is not an existing folder: {PROJECT_DIR}."

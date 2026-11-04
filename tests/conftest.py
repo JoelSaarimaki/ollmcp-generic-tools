@@ -91,6 +91,7 @@ class Project:
 def _use_temporary_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Points the home folder to the temporary folder, so that the user config file and the default backup folder of restore_file are there."""
     home = tmp_path / "home"
+    monkeypatch.delenv("MCP_TOOLS_OLLAMA_API_KEY", raising=False)  # Only the user config file, unless a test gives it
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setenv("HOME", str(home))
 

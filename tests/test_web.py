@@ -54,6 +54,20 @@ def test_api_key_is_not_read_from_the_environment(project, monkeypatch):
     assert json.loads(server.web_search("python"))["error"] == "not_configured"
     assert server.web_fetch("https://example.com").startswith("Error (not_configured):")
 
+def test_api_key_given_by_the_client_wins(project, monkeypatch):
+    project.user_config(ollama_api_key="file-key")
+    monkeypatch.setenv("MCP_TOOLS_OLLAMA_API_KEY", "  client-key  ")
+    project.configure()
+    server = project.load("web")
+    assert server.OLLAMA_API_KEY == "client-key"
+    assert server.CLIENT._client.headers["authorization"] == "Bearer client-key"
+
+def test_empty_api_key_from_the_client_leaves_the_user_config(project, monkeypatch):
+    project.user_config(ollama_api_key="file-key")
+    monkeypatch.setenv("MCP_TOOLS_OLLAMA_API_KEY", " ")
+    project.configure()
+    assert project.common().OLLAMA_API_KEY == "file-key"
+
 @pytest.mark.parametrize("value", [None, "", "   "])
 def test_empty_api_key_is_not_set(project, value):
     project.user_config(ollama_api_key=value)
@@ -85,7 +99,7 @@ def test_get_config_reports_why_the_web_tools_are_not_served(project):
     project.configure()
     data = json.loads(project.load("filesystem").get_tools_config())
     assert "web" not in data["toolsets"]["enabled"]
-    assert data["toolsets"]["not_served"] == {"web": "'ollama_api_key' is not set in the user config file"}
+    assert data["toolsets"]["not_served"] == {"web": "'ollama_api_key' is not set in the user config file, nor given by the client"}
     assert data["web_search"]["ollama_api_key_set"] is False
 
 def test_disabled_web_toolset_is_not_reported_as_not_served(project):

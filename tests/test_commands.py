@@ -26,6 +26,7 @@ def commands(project):
         where={"template": f'{PYTHON} -c "import os; print(os.getcwd())"'},
         missing={"template": "no-such-program-xyz"},
         braces={"template": f'{PYTHON} -c "print({{1: 2}}, {{}})"'},  # braces that are not placeholders are kept
+        environment={"template": f'{PYTHON} -c "import os; print(sorted(k for k in os.environ if \'API_KEY\' in k))"'},
     ))
     project.configure(command_registry="commands.json", max_output_chars=4000)
     return project.load("commands")
@@ -59,6 +60,15 @@ def test_exit_code_decides_success(commands):
 def test_timeout_stops_the_command_and_keeps_partial_output(commands):
     result = run(commands, "slow")
     assert result["error"] == "timeout" and result["stdout"].strip() == "1"
+
+def test_commands_do_not_get_the_api_key_given_by_the_client(project, monkeypatch):
+    monkeypatch.setenv("MCP_TOOLS_OLLAMA_API_KEY", "client-key")
+    monkeypatch.setenv("OTHER_API_KEY", "kept")
+    project.write("commands.json", registry(
+        environment={"template": f'{PYTHON} -c "import os; print(sorted(k for k in os.environ if \'API_KEY\' in k))"'}))
+    project.configure(command_registry="commands.json")
+    result = run(project.load("commands"), "environment")
+    assert "MCP_TOOLS_OLLAMA_API_KEY" not in result["stdout"] and "OTHER_API_KEY" in result["stdout"]
 
 def test_commands_get_no_input(commands):
     assert run(commands, "prompt")["returncode"] == 1  # input() gets end-of-file instead of hanging

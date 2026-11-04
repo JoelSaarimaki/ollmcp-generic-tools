@@ -12,6 +12,7 @@ from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 from .common import (
+    API_KEY_ENV_VAR,
     PROJECT_DIR,
     COMMAND_SUGGESTIONS,
     REGISTRY_PATH,
@@ -285,7 +286,10 @@ def _execute_command_logic(command_key: str, argument: str | None = None) -> dic
             args,
             cwd=PROJECT_DIR,  # Commands such as tests and linters work on the project, like the other toolsets
             # Python programs (e.g. pytest, pip) write their output as UTF-8, as it is read, instead of the Windows code page
-            env={**os.environ, "PYTHONIOENCODING": os.environ.get("PYTHONIOENCODING", "utf-8")},
+            # Without the API key a client may have given the server: a command that prints its environment would
+            # otherwise hand the key to the AI as its output
+            env={**{k: v for k, v in os.environ.items() if k != API_KEY_ENV_VAR},
+                 "PYTHONIOENCODING": os.environ.get("PYTHONIOENCODING", "utf-8")},
             capture_output=True,
             stdin=subprocess.DEVNULL,  # Interactive prompts get end-of-input instead of hanging
             encoding="utf-8",

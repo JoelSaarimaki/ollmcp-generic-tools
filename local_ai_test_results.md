@@ -366,3 +366,24 @@ No first call used a bare name with either prompt, so the slip seen in ollmcp at
 **Conclusion:** flint's behaviour is the best measured, but in ollmcp a slip in a tool name can stall a run, and fixing it needs a change in the client: ollmcp sending an error the model can act on, or accepting a bare name that matches one tool. A local patch of ollmcp would have to be repeated by every user and after every update, so gemma4 26b is the recommended model again, and flint is an alternative (see the README's [Alternatives](README.md#alternatives)).
 
 Repeat with `python local_ai_tests/compare_models.py --models flint:40b --seeds 2 --scenarios ambiguous_change,plan_iterate,implement_plan --verbose`, adding `--tolerate-bare-names` for a forgiving client, and `python local_ai_tests/first_call.py --model flint:40b --temperature 1.0 --seeds 1,2,3,4,5,6,7,8` with `--prompt` and `--request` as above.
+
+## Shorter instructions in Local Fox (2026-11-03)
+
+Local Fox, a desktop harness for these tools, gives the model the project instructions at the start of every conversation; its template is the tools' template with the tools named without the `dev_` prefix (about 2 030 tokens). A draft of about 930 tokens said the same things once each: the modes in one list with their steps, the reading guidance in three points, the implementing steps in four, and the rules in seven lines. Both ran the seven scenarios through Local Fox's core (`tools/compare.py` in the Local Fox repository, which uses this folder's scenarios, harness and checks), with flint:40b, a 32 000-token context, seeds 1 and 2:
+
+| 14 runs each | Current, about 2 030 tokens | Short, about 930 tokens |
+|---|---|---|
+| Acted in the right mode | 14/14 | 14/14 |
+| Read the needed files before answering or changing | 11/14 | 6/14 |
+| Checked the existing plans | 8/14 | 4/14 |
+| Implementing: hidden tests pass / ran tests / reviewed the diff | 4 / 4 / 4 of 4 | 4 / 4 / 3 of 4 |
+| Calls by an unknown name | 0 | 2 (`run_tests`, a command name, as a tool) |
+| Paths given as absolute paths | 21 of 118 | 50 of 110 |
+| Tool errors | 16 | 11 |
+| Seconds per run | 101 | 124 |
+
+The short version also had one write the mode forbids, counted in a planning run, but it was the plan itself, written with an absolute path that the check does not recognize as the plans folder; it is a counting artifact, not a broken mode. The two `run_tests` calls got "Unknown tool" with the tool list, and the model went on with `run_predefined_command` correctly.
+
+**Conclusion:** the modes held with either version, but the short one read less before acting, gemma4's known weak spot, which flint had not shown before, and its saving of about 1 100 tokens is under 2 % of the 64 000-token context Local Fox now uses. The current instructions stay. The detail that made them long (which tool to use when, the concrete examples, the plans folder named in each mode) is what keeps flint reading.
+
+Repeat in the Local Fox repository with `python tools/compare.py --models flint:40b --seeds 1,2 --instructions <instructions.md>` for each version; the short draft is kept locally, not in either repository.

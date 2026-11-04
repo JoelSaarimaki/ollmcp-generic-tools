@@ -45,6 +45,10 @@ mcp = MCPServer("outline")  # Holds the tools of this toolset; __main__.py serve
 FILES = TOP_LEVEL + 1  # Detail level listing files without their sections
 FOLDERS = TOP_LEVEL + 2  # Detail level listing the files directly in the folder and its subfolders with file counts
 MAX_OUTLINED_FILES = 1000  # Folders with more files are listed with FOLDERS detail, without reading the files
+# A folder outline is for finding the files to look at, so it takes a quarter of a tool response, at least 2500
+# characters: filling the whole limit with every function's summary used much of a small model's context on one call.
+# An outline of one file keeps the whole limit.
+FOLDER_OUTLINE_CHARS = min(MAX_OUTPUT_CHARS, max(2500, MAX_OUTPUT_CHARS // 4))
 MAX_FOLDER_SUGGESTIONS = 10  # Folders suggested for outlining separately when the output is limited
 READ_HINT = "Line spans are first-last line numbers. Read a section with read_file_with_metadata(path, section=...) or with start_line and end_line."
 LEVEL_NOTES = {
@@ -193,7 +197,7 @@ def _resolve_target(path: str, gitignore_patterns: list[str]) -> tuple[Path, str
 
 def _outline_folder(scope_dir: Path, gitignore_patterns: list[str]) -> str:
     """
-    Returns the outline of all files in the folder, with the most detail that fits in MAX_OUTPUT_CHARS.
+    Returns the outline of all files in the folder, with the most detail that fits in FOLDER_OUTLINE_CHARS.
     """
     files = [path for path, is_dir in walk(PROJECT_DIR, gitignore_patterns, scope_dir) if not is_dir]
     # Read-only files outside the project are listed last in the outline of the whole project, so that the AI can find them
@@ -212,7 +216,7 @@ def _outline_folder(scope_dir: Path, gitignore_patterns: list[str]) -> str:
         levels = [SUMMARIES, CLASS_SUMMARIES, FILE_SUMMARIES, NAMES, TOP_LEVEL, FILES, FOLDERS]
     outside_entries = [_read_entry(p) for p in outside]
 
-    budget = MAX_OUTPUT_CHARS - min(2500, MAX_OUTPUT_CHARS // 4)
+    budget = FOLDER_OUTLINE_CHARS - min(1000, FOLDER_OUTLINE_CHARS // 4)
     for detail in levels:
         lines = _render_entries(entries, detail, scope_dir) if entries else []
         lines += _render_entries(outside_entries, min(detail, FILES), scope_dir)
@@ -225,7 +229,7 @@ def _outline_folder(scope_dir: Path, gitignore_patterns: list[str]) -> str:
     if outside:
         header.append("The read-only files outside the project folder are listed last, with their full paths.")
     if detail != SUMMARIES or lines[-1].startswith("... ("):
-        reason = f"the folder has more than {MAX_OUTLINED_FILES} files" if len(files) > MAX_OUTLINED_FILES else f"the full outline is longer than {MAX_OUTPUT_CHARS} characters"
+        reason = f"the folder has more than {MAX_OUTLINED_FILES} files" if len(files) > MAX_OUTLINED_FILES else f"a folder's outline is limited to {FOLDER_OUTLINE_CHARS} characters"
         header.append(f"Output limited: {LEVEL_NOTES.get(detail, 'the list is cut short')}, as {reason}. {_folder_suggestions(scope_dir, files)}")
     return text_response(header, code_block("\n".join(lines)))
 

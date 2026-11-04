@@ -203,7 +203,11 @@ If a broken call or answer still appears:
 
 ### Choosing the model
 
-The recommended model is **gemma4:26b**. In tests with the tools (see [local_ai_test_results.md](local_ai_test_results.md#flint-40b-glm-47-flash-and-qwen38-compared-with-gemma4-on-the-gpu-2026-11-02)), answering questions, writing and changing a plan, and implementing a plan or a fix, it kept answering, planning and implementing apart: it never changed code when asked only for an answer or a plan, and the [instructions template](ollmcp_tools/templates/instructions.md) is adapted to its mistakes. It always calls the tools by the names ollmcp gives them, and it is the fastest of the tested models and the only one with image input.
+With ollmcp, the recommended model is **gemma4:26b**; with a client that runs a tool called by its bare name, such as
+[Local Fox](https://github.com/JoelSaarimaki/local-fox), it is **flint:40b**, which did every task of the comparison
+right (see [Model choice in DEVELOPMENT.md](DEVELOPMENT.md#model-choice)).
+
+The recommended model for ollmcp is **gemma4:26b**. In tests with the tools (see [local_ai_test_results.md](local_ai_test_results.md#flint-40b-glm-47-flash-and-qwen38-compared-with-gemma4-on-the-gpu-2026-11-02)), answering questions, writing and changing a plan, and implementing a plan or a fix, it kept answering, planning and implementing apart: it never changed code when asked only for an answer or a plan, and the [instructions template](ollmcp_tools/templates/instructions.md) is adapted to its mistakes. It always calls the tools by the names ollmcp gives them, and it is the fastest of the tested models and the only one with image input.
 
 gemma4 takes about 18 GB. On a GPU with less memory, Ollama puts the rest on the CPU, which needs that much free RAM: on a laptop with an 8 GB GPU, a task takes about a minute. Keep only one model loaded at a time, and check with `ollama ps` that the GPU is used.
 
@@ -277,7 +281,7 @@ The file reading and editing tools are designed to let local AI models read and 
 Gives the AI an outline of the project, so that it can find the code it needs and then read only that part, instead of reading whole files or a map that is cut off at the output limit. The parsers are in `ollmcp_tools/parsing.py`: Python via `ast`, JS/TS via [tree-sitter](https://tree-sitter.github.io/), and Markdown by its headings. Both parsers give exact line spans, and a JS/TS file with a syntax error is still outlined, with the error reported.
 
 - **get_outline** Returns an outline with the line span (`first-last`) of each section.
-  - For a folder (by default the whole project folder): every file that is not ignored, with its line count, and for Python, JS/TS and Markdown files their sections: classes and methods, functions, React components and hooks, interfaces, types, enums, exported constants, blocks of top-level statements, and headings, with docstring and JSDoc summaries. [Read-only files](#read-only-files) are marked `read-only`, and the outline of the whole project lists those outside the project folder last, with their full paths.
+  - For a folder (by default the whole project folder): every file that is not ignored, with its line count, and for Python, JS/TS and Markdown files their sections: classes and methods, functions, React components and hooks, interfaces, types, enums, exported constants, blocks of top-level statements, and headings, with docstring and JSDoc summaries. A folder's outline may take a quarter of `max_output_chars` (at least 2 500 characters), as it is for finding the files to look at: a larger folder is shown with less detail, and the outline suggests the subfolders and files to outline next. [Read-only files](#read-only-files) are marked `read-only`, and the outline of the whole project lists those outside the project folder last, with their full paths.
   - For a file (`path='src/app.py'`): all its sections with their summaries, and for Python the calls to the project's own functions and classes, and for JS/TS the local imports, exports and re-exports.
 
 ```
@@ -486,7 +490,7 @@ Local models have small context windows, so every tool response is limited to `m
 | `read_file_with_metadata` | 1000 lines or `max_output_chars` per read; lines over 2000 characters are shortened; files over 50 MB are not read | Next part with `start_line`; long lines can still be edited using a unique part of the shown text |
 | `edit_file` | Shows up to 40 changed lines after the edit, within `max_output_chars` | `read_file_with_metadata` from the given line |
 | `edit_file`, `write_file`, `restore_file` | The outline after a write is limited to 2500 characters, or `max_output_chars / 8` if smaller: then only top-level sections are shown, or the list is cut short | `get_outline` for the file |
-| `get_outline` | `max_output_chars`: the detail is reduced step by step instead of cutting the outline; files over 1 MB are not outlined; folders with over 1000 files are listed by subfolder only | Suggested subfolders to outline with `path`, with their file counts, or one file with `path` |
+| `get_outline` | `max_output_chars` for a file, a quarter of it (at least 2500 characters) for a folder, as a folder's outline is for finding the files to look at: the detail is reduced step by step instead of cutting the outline; files over 1 MB are not outlined; folders with over 1000 files are listed by subfolder only | Suggested subfolders to outline with `path`, with their file counts, or one file with `path` |
 | `search_text_in_files` | 100 matches or `max_output_chars`; lines over 300 characters are shortened | A suggested `path` with the most matches, `file_pattern`, fewer `context_lines` |
 | `search_files_by_pattern` | 100 matches | A more specific pattern |
 | `search_relevant_files` | `max_results` files (up to 30) or `max_output_chars`; 3 lines per file | A lower `max_results`, `path` or `file_pattern` |

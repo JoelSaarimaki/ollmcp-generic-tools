@@ -165,11 +165,12 @@ def make_large_project(project, handlers=40, widgets=25):
     for i in range(widgets):
         project.write(f"src/ui/Widget{i}.tsx", f"export default function Widget{i}() {{ return null; }}\n")
 
+# A folder's outline takes a quarter of max_output_chars (FOLDER_OUTLINE_CHARS), so the limits are four times its size
 @pytest.mark.parametrize("max_chars, note", [
-    (8200, "summaries are left out"),
-    (7000, "only top-level sections are shown"),
-    (5000, "only the files are listed, without their sections"),
-    (2500, "only the files directly in the folder and the subfolders with their file counts are listed"),
+    (28600, "summaries are left out"),
+    (25000, "only top-level sections are shown"),
+    (19000, "only the files are listed, without their sections"),
+    (10000, "only the files directly in the folder and the subfolders with their file counts are listed"),
 ])
 def test_large_folders_are_shown_with_less_detail(project, max_chars, note):
     make_large_project(project)
@@ -181,12 +182,12 @@ def test_large_folders_are_shown_with_less_detail(project, max_chars, note):
 
 def test_files_level_lists_section_counts(project):
     make_large_project(project)
-    project.configure(max_output_chars=5000)
+    project.configure(max_output_chars=19000)
     assert "src/api/handler_0.py (10 lines, 4 sections)" in project.load("outline").get_outline()
 
 def test_folders_level_lists_subfolders_with_file_counts(project):
     make_large_project(project)
-    project.configure(max_output_chars=2500)
+    project.configure(max_output_chars=10000)
     lines = project.load("outline").get_outline().split("\n")
     assert "src/api/ (40 files)" in lines and "src/ui/ (25 files)" in lines
 
@@ -197,13 +198,13 @@ def make_documented_project(project, files=20):
                       '    def stop(self):\n        """Stops the service and closes every open connection cleanly."""\n')
 
 @pytest.mark.parametrize("max_chars, note, kept, left_out", [
-    (9000, None, ["src/svc_0.py (9 lines): Service module 0.", "  3-9 class Service0: Serves requests of kind 0.",
+    (31000, None, ["src/svc_0.py (9 lines): Service module 0.", "  3-9 class Service0: Serves requests of kind 0.",
                   "    5-6 start(): Starts the service and opens its connections to the database."], []),
-    (7000, "the summaries of functions and methods are left out", ["src/svc_0.py (9 lines): Service module 0.",
+    (25000, "the summaries of functions and methods are left out", ["src/svc_0.py (9 lines): Service module 0.",
                   "  3-9 class Service0: Serves requests of kind 0.", "    5-6 start()"], ["Starts the service"]),
-    (3250, "summaries are left out, except those of the files", ["src/svc_0.py (9 lines): Service module 0.", "  3-9 class Service0"],
+    (13000, "summaries are left out, except those of the files", ["src/svc_0.py (9 lines): Service module 0.", "  3-9 class Service0"],
      ["Serves requests"]),
-    (2600, "summaries are left out, as", ["src/svc_0.py (9 lines)", "  3-9 class Service0", "    5-6 start()"], ["Service module"]),
+    (10400, "summaries are left out, as", ["src/svc_0.py (9 lines)", "  3-9 class Service0", "    5-6 start()"], ["Service module"]),
 ])
 def test_summaries_are_left_out_step_by_step(project, max_chars, note, kept, left_out):
     make_documented_project(project)

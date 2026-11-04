@@ -10,6 +10,7 @@ from .common import (
     PROJECT_DIR,
     FORBIDDEN_PATHS,
     MAX_OUTPUT_CHARS,
+    NO_WINDOW,
     PROTECTED_FILE_NAMES,
     PROTECTED_PATHS,
     access_denied_message,
@@ -52,7 +53,8 @@ def _run_git_command(args: list[str], cwd: str | Path | None = None) -> dict[str
             capture_output=True,
             encoding="utf-8",
             errors="replace",
-            check=False
+            check=False,
+            creationflags=NO_WINDOW
         )
 
         response = {
@@ -173,7 +175,7 @@ def _diff_args(mode: str, repo_root: Path) -> list[str]:
     """
     if mode == "head" and not _run_git_command(["rev-parse", "--verify", "--quiet", "HEAD"], cwd=repo_root)["success"]:
         empty_tree = subprocess.run(["git", "hash-object", "-t", "tree", "--stdin"], cwd=repo_root, input="",
-                                    capture_output=True, encoding="utf-8", check=True).stdout.strip()
+                                    capture_output=True, encoding="utf-8", check=True, creationflags=NO_WINDOW).stdout.strip()
         return ["diff", empty_tree]
     return DIFF_MODES[mode]
 

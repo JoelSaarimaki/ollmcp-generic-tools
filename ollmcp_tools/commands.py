@@ -16,7 +16,8 @@ from .common import (
     PROJECT_DIR,
     COMMAND_SUGGESTIONS,
     REGISTRY_PATH,
-    MAX_OUTPUT_CHARS
+    MAX_OUTPUT_CHARS,
+    NO_WINDOW
 )
 
 # --- Constants & Config ---
@@ -295,7 +296,8 @@ def _execute_command_logic(command_key: str, argument: str | None = None) -> dic
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
-            check=False
+            check=False,
+            creationflags=NO_WINDOW
         )
 
         return {

@@ -4,6 +4,7 @@ Tests for the commands toolset: running registered commands safely.
 """
 import json
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -181,3 +182,13 @@ def test_batch_file_arguments_cannot_contain_cmd_characters(project):
     assert run(commands, "batch", "hello")["stdout"].strip() == "got: hello"
     result = run(commands, "batch", "x & echo INJECTED")
     assert result["error"] == "invalid_argument" and "batch file" in result["message"]
+
+def test_every_program_the_tools_run_gets_no_console_window():
+    # A server started by a windowed client opened a console window on top for every command and git call
+    import ast
+    package = Path(__file__).resolve().parent.parent / "ollmcp_tools"
+    for source in package.glob("*.py"):
+        for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in ("run", "Popen") \
+                    and getattr(node.func.value, "id", "") == "subprocess":
+                assert any(k.arg == "creationflags" for k in node.keywords), f"{source.name}:{node.lineno}"

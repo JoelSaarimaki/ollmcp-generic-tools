@@ -18,6 +18,11 @@ from .locations import USER_CONFIG_PATH, default_backup_folder
 
 # --- Constants & Config ---
 
+# On Windows, every program the tools run gets no console window: a server started by a windowed client (one without
+# a console) otherwise opened a new console window on top for each command, test run and git call. The output is
+# captured either way. Zero elsewhere, where the flag does not exist.
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 CONFIG_ENV_VAR = "MCP_TOOLS_CONFIG"
 CONFIG_KEYS = {"project_dir", "forbidden_paths", "max_output_chars", "gitignore_path", "command_registry", "command_suggestions", "allowed_paths", "read_only_files", "ignored_dirs", "backup_folder", "disabled_toolsets", "disabled_tools", "instructions_file"}
 USER_CONFIG_KEYS = {"ollama_api_key"}
@@ -491,7 +496,7 @@ def get_repo_root(directory: Path) -> Path | None:
     try:
         result = subprocess.run(
             ["git", "-c", "core.quotePath=false", "rev-parse", "--show-toplevel"],
-            cwd=directory, capture_output=True, encoding="utf-8", errors="replace", check=False
+            cwd=directory, capture_output=True, encoding="utf-8", errors="replace", check=False, creationflags=NO_WINDOW
         )
     except Exception:
         return None

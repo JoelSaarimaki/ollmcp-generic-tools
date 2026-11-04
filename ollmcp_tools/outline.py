@@ -43,12 +43,14 @@ from .parsing import (
 mcp = MCPServer("outline")  # Holds the tools of this toolset; __main__.py serves the enabled toolsets in one server
 
 FILES = TOP_LEVEL + 1  # Detail level listing files without their sections
+PARTLY_TOP_LEVEL = -1  # Not a level of its own: TOP_LEVEL for the files that fit, FILES for the rest
 FOLDERS = TOP_LEVEL + 2  # Detail level listing the files directly in the folder and its subfolders with file counts
 MAX_OUTLINED_FILES = 1000  # Folders with more files are listed with FOLDERS detail, without reading the files
-# A folder outline is for finding the files to look at, so it takes a quarter of a tool response, at least 2500
-# characters: filling the whole limit with every function's summary used much of a small model's context on one call.
-# An outline of one file keeps the whole limit.
-FOLDER_OUTLINE_CHARS = min(MAX_OUTPUT_CHARS, max(2500, MAX_OUTPUT_CHARS // 4))
+# A folder outline is for finding the files to look at, so it takes half of a tool response, at most 8000 characters
+# (about 2000 tokens) and at least 2500: filling the whole limit with every function's summary used much of a small
+# model's context on one call, and a quarter left only the file names of a project of 50 files, so the model read
+# whole files instead of sections. An outline of one file keeps the whole limit.
+FOLDER_OUTLINE_CHARS = min(MAX_OUTPUT_CHARS, max(2500, min(8000, MAX_OUTPUT_CHARS // 2)))
 MAX_FOLDER_SUGGESTIONS = 10  # Folders suggested for outlining separately when the output is limited
 READ_HINT = "Line spans are first-last line numbers. Read a section with read_file_with_metadata(path, section=...) or with start_line and end_line."
 LEVEL_NOTES = {
@@ -57,6 +59,7 @@ LEVEL_NOTES = {
     NAMES: "summaries are left out",
     TOP_LEVEL: "only top-level sections are shown",
     FILES: "only the files are listed, without their sections",
+    PARTLY_TOP_LEVEL: "only top-level sections are shown, and only for the files that fit; the others are listed with their section counts",
     FOLDERS: "only the files directly in the folder and the subfolders with their file counts are listed",
 }
 
@@ -224,6 +227,12 @@ def _outline_folder(scope_dir: Path, gitignore_patterns: list[str]) -> str:
             break
     else:
         lines = fit_lines(lines, budget)
+    if detail == FILES:
+        # The top-level sections did not fit for all files: they are given for the files they fit for, as names to
+        # read by are what the outline is for, and only the file names left the model reading whole files
+        lines, partly = _partly_top_level(entries, outside_entries, scope_dir, budget)
+        if partly:
+            detail = PARTLY_TOP_LEVEL
 
     header = [title, READ_HINT]
     if outside:
@@ -232,6 +241,31 @@ def _outline_folder(scope_dir: Path, gitignore_patterns: list[str]) -> str:
         reason = f"the folder has more than {MAX_OUTLINED_FILES} files" if len(files) > MAX_OUTLINED_FILES else f"a folder's outline is limited to {FOLDER_OUTLINE_CHARS} characters"
         header.append(f"Output limited: {LEVEL_NOTES.get(detail, 'the list is cut short')}, as {reason}. {_folder_suggestions(scope_dir, files)}")
     return text_response(header, code_block("\n".join(lines)))
+
+def _partly_top_level(entries: list[_FileEntry], outside_entries: list[_FileEntry], scope_dir: Path,
+                      budget: int) -> tuple[list[str], bool]:
+    """
+    Returns the lines of a folder outline that lists every file and, within the budget, the top-level sections of
+    the files in order, skipping a file whose sections do not fit, and whether any file got its sections.
+    """
+    def sections(entry: _FileEntry) -> list[str]:
+        return render(entry.outline, TOP_LEVEL, depth=1) if entry.outline and not entry.outline.error else []
+
+    plain = _render_entries(entries, FILES, scope_dir) + _render_entries(outside_entries, FILES, scope_dir)
+    room = budget - sum(len(line) + 1 for line in plain)
+    lines, partly = [], False
+    for entry in entries:
+        shown = sections(entry)
+        cost = sum(len(line) + 1 for line in shown) + len(_file_line(entry, TOP_LEVEL)) - len(_file_line(entry, FILES))
+        if shown and cost <= room:
+            room -= cost
+            lines.append(_file_line(entry, TOP_LEVEL))
+            lines.extend(shown)
+            partly = True
+        else:
+            lines.append(_file_line(entry, FILES))
+    lines += _render_entries(outside_entries, FILES, scope_dir)
+    return lines, partly
 
 def _outline_file(path: Path, gitignore_patterns: list[str]) -> str:
     """

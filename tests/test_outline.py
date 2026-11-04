@@ -165,12 +165,13 @@ def make_large_project(project, handlers=40, widgets=25):
     for i in range(widgets):
         project.write(f"src/ui/Widget{i}.tsx", f"export default function Widget{i}() {{ return null; }}\n")
 
-# A folder's outline takes a quarter of max_output_chars (FOLDER_OUTLINE_CHARS), so the limits are four times its size
+# A folder's outline takes half of max_output_chars up to 8000 characters (FOLDER_OUTLINE_CHARS), so the limits are
+# twice its size
 @pytest.mark.parametrize("max_chars, note", [
-    (28600, "summaries are left out"),
-    (25000, "only top-level sections are shown"),
-    (19000, "only the files are listed, without their sections"),
-    (10000, "only the files directly in the folder and the subfolders with their file counts are listed"),
+    (14300, "summaries are left out"),
+    (12500, "only top-level sections are shown"),
+    (9500, "only top-level sections are shown, and only for the files that fit"),
+    (5000, "only the files directly in the folder and the subfolders with their file counts are listed"),
 ])
 def test_large_folders_are_shown_with_less_detail(project, max_chars, note):
     make_large_project(project)
@@ -180,14 +181,27 @@ def test_large_folders_are_shown_with_less_detail(project, max_chars, note):
     assert f"Output limited: {note}" in outline
     assert "path='src/api'" in outline and "path='src/ui'" in outline  # descends past 'src', which holds everything
 
-def test_files_level_lists_section_counts(project):
+def test_sections_are_given_for_the_files_that_fit(project):
+    # When the top-level sections do not fit for every file, the first files get them and the rest their section counts
     make_large_project(project)
-    project.configure(max_output_chars=19000)
-    assert "src/api/handler_0.py (10 lines, 4 sections)" in project.load("outline").get_outline()
+    project.configure(max_output_chars=9500)
+    lines = project.load("outline").get_outline().split("\n")
+    assert "src/api/handler_0.py (10 lines)" in lines and "  1-7 class Handler0" in lines
+    assert any(line.endswith("(10 lines, 4 sections)") for line in lines)
+    assert sum(len(line) + 1 for line in lines if not line.startswith("- ")) <= 4750
+
+def test_files_level_lists_section_counts(project):
+    # No room for any file's sections, as each file has many: every file is listed with its section count
+    for i in range(30):
+        project.write(f"src/module_{i}.py", "".join(f"def function_{n}():\n    pass\n\n" for n in range(40)))
+    project.configure(max_output_chars=5000)
+    outline = project.load("outline").get_outline()
+    assert "Output limited: only the files are listed, without their sections" in outline
+    assert "src/module_0.py (120 lines, 40 sections)" in outline.split("\n")
 
 def test_folders_level_lists_subfolders_with_file_counts(project):
     make_large_project(project)
-    project.configure(max_output_chars=10000)
+    project.configure(max_output_chars=5000)
     lines = project.load("outline").get_outline().split("\n")
     assert "src/api/ (40 files)" in lines and "src/ui/ (25 files)" in lines
 
@@ -198,13 +212,13 @@ def make_documented_project(project, files=20):
                       '    def stop(self):\n        """Stops the service and closes every open connection cleanly."""\n')
 
 @pytest.mark.parametrize("max_chars, note, kept, left_out", [
-    (31000, None, ["src/svc_0.py (9 lines): Service module 0.", "  3-9 class Service0: Serves requests of kind 0.",
+    (15500, None, ["src/svc_0.py (9 lines): Service module 0.", "  3-9 class Service0: Serves requests of kind 0.",
                   "    5-6 start(): Starts the service and opens its connections to the database."], []),
-    (25000, "the summaries of functions and methods are left out", ["src/svc_0.py (9 lines): Service module 0.",
+    (12500, "the summaries of functions and methods are left out", ["src/svc_0.py (9 lines): Service module 0.",
                   "  3-9 class Service0: Serves requests of kind 0.", "    5-6 start()"], ["Starts the service"]),
-    (13000, "summaries are left out, except those of the files", ["src/svc_0.py (9 lines): Service module 0.", "  3-9 class Service0"],
+    (6500, "summaries are left out, except those of the files", ["src/svc_0.py (9 lines): Service module 0.", "  3-9 class Service0"],
      ["Serves requests"]),
-    (10400, "summaries are left out, as", ["src/svc_0.py (9 lines)", "  3-9 class Service0", "    5-6 start()"], ["Service module"]),
+    (5200, "summaries are left out, as", ["src/svc_0.py (9 lines)", "  3-9 class Service0", "    5-6 start()"], ["Service module"]),
 ])
 def test_summaries_are_left_out_step_by_step(project, max_chars, note, kept, left_out):
     make_documented_project(project)

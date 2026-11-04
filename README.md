@@ -101,7 +101,7 @@ The API key is not in the project at all, but in each person's [user config file
 |---|---|
 | `ollama_api_key` | The Ollama API key used by the `web` toolset. Create one at [ollama.com/settings/keys](https://ollama.com/settings/keys). The key is never shown to the AI, as the file is [protected](#protected-files). (Optional, without it the `web` tools are not offered to the AI) |
 
-A client that keeps the key in its own settings can give it to the server in the `MCP_TOOLS_OLLAMA_API_KEY` environment variable instead; it then wins over the file. The registered commands do not get that variable, so a command cannot show the key to the AI. The `ollama` library's own `OLLAMA_API_KEY` variable is not used, so that a key set for other programs is not sent unasked.
+A client that keeps the key in its own settings can give it to the server in the `MCP_TOOLS_OLLAMA_API_KEY` environment variable instead. Set at all, even empty, the variable decides and this file is not used, so the client's setting is the only place of the key. The registered commands do not get that variable, so a command cannot show the key to the AI. The `ollama` library's own `OLLAMA_API_KEY` variable is not used, so that a key set for other programs is not sent unasked.
 
 The server refuses to start if the file is not valid JSON or contains an unknown setting. An `ollama_api_key` in a project's tools config stops the server with an error saying to move it here, so that it is not committed with the project.
 

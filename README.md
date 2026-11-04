@@ -319,7 +319,7 @@ Inspects the git history and changes of the files in a repository.
 Gives the AI access to very specific console commands, and tells it when it could or should use them.
 
 - **list_available_commands** Returns a list of all allowed console commands and their descriptions.
-- **run_predefined_command** Executes a specific console command from the allowed registry. A command that could not be started says `The command was not run.`; a command that failed gives its exit code and reminds the AI that a command that changes files may have changed some of them.
+- **run_predefined_command** Executes a specific console command from the allowed registry. A command that could not be started says `The command was not run.`; a command that failed gives its exit code and reminds the AI that a command that changes files may have changed some of them. The output is captured and returned; on Windows the command (and every git call) starts without a console window of its own, so a client without a console, such as a windowed application, does not get a window for each.
 - **suggest_command** Suggests a missing command for you to review and add to the registry. It never changes the registry itself.
 
 Commands are defined in the JSON file set as `command_registry` in the tools config, `.ollmcp-tools/commands.json` after `init`:

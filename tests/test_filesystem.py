@@ -190,6 +190,29 @@ def test_write_without_a_hash_creates_a_file_with_the_line_endings_of_neighbouri
     assert result["error"] == "file_exists" and result["message"].startswith("Nothing was changed.")
     assert file_bytes(project, "src/new.py") == b"x\r\ny\r\n"
 
+@pytest.mark.parametrize("sha", ["", "0" * 64])
+def test_an_empty_file_is_written_without_a_hash(project, sha):
+    # There is nothing in an empty file to overwrite, and small models often skip reading it first
+    project.write("empty.py", "")
+    result = json.loads(project.load("filesystem").write_file("empty.py", "x = 1\n", sha))
+    assert result["success"] and file_bytes(project, "empty.py") == b"x = 1\n"
+
+@pytest.mark.parametrize("sha", ["", "0" * 64])
+def test_an_empty_file_is_filled_by_an_edit_without_a_hash(project, sha):
+    project.write("empty.py", "")
+    fs = project.load("filesystem")
+    assert fs.edit_file("empty.py", "", "x = 1\n", sha).startswith("- Edited")
+    assert file_bytes(project, "empty.py") == b"x = 1\n"
+    project.write("empty.py", "")
+    assert fs.edit_file("empty.py", "y = 2", "x = 1", sha).startswith("Error (no_match)")
+    assert fs.edit_file("empty.py", "", "", sha).startswith("Error (no_change)")
+
+def test_a_file_with_text_still_needs_its_hash(project):
+    project.write("one.py", "\n")
+    fs = project.load("filesystem")
+    assert json.loads(fs.write_file("one.py", "x"))["error"] == "file_exists"
+    assert fs.edit_file("one.py", "", "x").startswith("Error (hash_mismatch)")
+
 def test_failed_moves_deletes_and_restores_say_that_nothing_was_changed(project):
     project.write("a.txt", "a")
     project.write("b.txt", "b")

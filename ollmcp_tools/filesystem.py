@@ -184,6 +184,13 @@ def _get_file_info(path: Path) -> FileMetadata:
         modified_at=modified_at
     )
 
+def _is_empty(info: FileMetadata) -> bool:
+    """
+    Returns whether the file has no text (no bytes, or only a BOM). Such a file needs no expected_sha256 to be
+    written or edited: there is nothing in it that a change could overwrite, and small models often skip reading it.
+    """
+    return info.size_bytes == 0 or (info.has_bom and info.size_bytes == 3)
+
 def _write_logic(path: Path, content: str, expected_sha256: str, tool: str) -> str:
     """
     Validates the file hash, keeps a backup of the file for restore_file, then writes the content atomically
@@ -199,7 +206,7 @@ def _write_logic(path: Path, content: str, expected_sha256: str, tool: str) -> s
         return _not_changed("read_error", str(e))
 
     # 2. Hash validation
-    if info.sha256 != expected_sha256:
+    if info.sha256 != expected_sha256 and not _is_empty(info):
         return _not_changed("hash_mismatch", "The file has changed since it was read. Read it again with read_file_with_metadata before writing it.",
                             current_sha256=info.sha256)
 
@@ -457,27 +464,33 @@ def _edit_logic(path: Path, old_text: str, new_text: str, expected_sha256: str, 
     except Exception as e:
         return _edit_error("read_error", str(e))
 
-    if info.sha256 != expected_sha256:
+    empty = _is_empty(info)
+    if info.sha256 != expected_sha256 and not empty:
         return _edit_error("hash_mismatch", f"The file has changed since it was read. Current SHA-256: {info.sha256}. Read the file again with 'read_file_with_metadata' before editing it.")
 
     old = _normalize_newlines(old_text)
     new = _normalize_newlines(new_text)
-    if not old:
+    if empty and old.strip():
+        return _edit_error("no_match", f"{_rel(path)} is empty, so old_text cannot match. To fill it, give an empty old_text, or use write_file.")
+    if not old and not empty:
         return _edit_error("empty_old_text", "old_text must not be empty. Use write_file to replace the whole file.", sha256_valid=True)
     if old == new:
-        return _edit_error("no_change", "old_text and new_text are identical.", sha256_valid=True)
+        return _edit_error("no_change", "old_text and new_text are identical.", sha256_valid=not empty)
 
     content = _read_text(path, info.has_bom)
     placeholder = _find_placeholder(new, content)
     if placeholder:
-        return _edit_error("placeholder_in_new_text", f"new_text contains the placeholder comment '{placeholder}'. Text is written literally, so the placeholder would replace real code. Write out the full code in new_text, or make old_text cover only the lines you change.", sha256_valid=True)
+        return _edit_error("placeholder_in_new_text", f"new_text contains the placeholder comment '{placeholder}'. Text is written literally, so the placeholder would replace real code. Write out the full code in new_text, or make old_text cover only the lines you change.", sha256_valid=not empty)
 
-    try:
-        new_content, first_line, last_line, replacements, note = _apply_edit(content, old, new, replace_all)
-    except _EditError as e:
-        return _edit_error(e.error, e.message, sha256_valid=True)
+    if empty:  # The new text is the file's content
+        new_content, first_line, last_line, replacements, note = new, 1, max(1, len(_split_lines(new))), 1, ""
+    else:
+        try:
+            new_content, first_line, last_line, replacements, note = _apply_edit(content, old, new, replace_all)
+        except _EditError as e:
+            return _edit_error(e.error, e.message, sha256_valid=True)
 
-    result = json.loads(_write_logic(path, new_content, expected_sha256, "edit_file"))
+    result = json.loads(_write_logic(path, new_content, info.sha256, "edit_file"))
     if not result.get("success"):
         # The message of _write_logic already says that nothing was changed
         return _text_error(result.get("error", "write_error"), result.get("message", ""))
@@ -665,7 +678,7 @@ def write_file(path: str, content: str, expected_sha256: str = "") -> str:
     Args:
         path: The file.
         content: The complete content.
-        expected_sha256: To replace a file, the SHA-256 from its last read or edit. Empty for a new file.
+        expected_sha256: To replace a file, the SHA-256 from its last read or edit. Empty for a new or empty file.
 
     Returns:
         JSON with the new SHA-256 and, for code and Markdown files, the new outline and removed sections.
@@ -681,20 +694,19 @@ def write_file(path: str, content: str, expected_sha256: str = "") -> str:
             if expected_sha256:
                 return _not_changed("file_not_found", f"File not found: {_rel(p)}. Check the path, or leave expected_sha256 empty to create a new file.")
             return _create_logic(p, content)
-        if not expected_sha256:
-            return _not_changed("file_exists", f"{_rel(p)} already exists. To replace it, give the SHA-256 from read_file_with_metadata as expected_sha256, or change only part of it with edit_file.")
-
         try:
             info = _get_file_info(p)
             original = _read_text(p, info.has_bom)
         except Exception as e:
             return _not_changed("read_error", str(e))
+        if not expected_sha256 and not _is_empty(info):
+            return _not_changed("file_exists", f"{_rel(p)} already exists. To replace it, give the SHA-256 from read_file_with_metadata as expected_sha256, or change only part of it with edit_file.")
 
         placeholder = _find_placeholder(_normalize_newlines(content), original)
         if placeholder:
             return _not_changed("placeholder_in_content", f"content contains the placeholder comment '{placeholder}'. The content is written literally, so the placeholder would replace real code. Write out the complete file, or use edit_file to change only part of it.")
 
-        result = json.loads(_write_logic(p, content, expected_sha256, "write_file"))
+        result = json.loads(_write_logic(p, content, info.sha256 if _is_empty(info) else expected_sha256, "write_file"))
         old_count, new_count = len(_split_lines(original)), len(_split_lines(_normalize_newlines(content)))
         if result.get("success") and old_count >= 20 and new_count < old_count * SHRINK_WARNING_RATIO:
             result["warning"] = f"The file shrank from {old_count} to {new_count} lines. If you meant to change only part of it, restore the missing lines: write_file replaces the whole file, while edit_file changes only part of it."
@@ -703,7 +715,7 @@ def write_file(path: str, content: str, expected_sha256: str = "") -> str:
         return _maybe_changed("write_error", e, f"read_file_with_metadata(path='{path}')")
 
 @mcp.tool()
-def edit_file(path: str, old_text: str, new_text: str, expected_sha256: str, replace_all: bool = False) -> str:
+def edit_file(path: str, old_text: str, new_text: str, expected_sha256: str = "", replace_all: bool = False) -> str:
     """
     Replaces old_text with new_text in an existing file. Prefer this over write_file.
     Copy old_text exactly from read_file_with_metadata, including indentation, without line number
@@ -714,7 +726,7 @@ def edit_file(path: str, old_text: str, new_text: str, expected_sha256: str, rep
         path: The file to edit.
         old_text: The exact text to replace.
         new_text: The replacement text.
-        expected_sha256: The SHA-256 from the last read or edit of the file.
+        expected_sha256: The SHA-256 from the last read or edit of the file. Not needed for an empty file.
         replace_all: Replace every match. Defaults to False.
 
     Returns:
